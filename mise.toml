@@ -1,0 +1,26 @@
+# Quality-gate tasks, as in iscc-lib. Run with `mise run <task>`. Multi-step tasks use a list of
+# commands (run in order, stopping at the first failure), because mise uses cmd on Windows.
+
+[tasks.check]
+description = "Run all prek hooks (pre-commit and pre-push) on all files"
+run = [
+  "uv run prek run --all-files --stage pre-commit",
+  "uv run prek run --all-files --stage pre-push",
+]
+
+[tasks.format]
+description = "Run the pre-commit auto-fix hooks on all files"
+run = "uv run prek run --all-files --stage pre-commit"
+
+[tasks.lint]
+description = "Check formatting, clippy, Biome and the TypeScript types"
+run = [
+  "cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
+  "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
+  "pnpm exec biome ci",
+  "pnpm exec tsc --noEmit",
+]
+
+[tasks.test]
+description = "Run the Rust unit and integration tests"
+run = "cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features"

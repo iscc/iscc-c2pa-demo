@@ -1,0 +1,12 @@
+# Python tooling for the quality gates (prek, taplo), pinned through uv.lock. The app itself has
+# no Python; the fixture scripts in src-tauri/tests/fixtures bring their own `uv run --with` deps.
+[project]
+name = "iscc-c2pa-demo-tools"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[dependency-groups]
+dev = ["prek", "taplo"]
+
+[tool.uv]
+package = false

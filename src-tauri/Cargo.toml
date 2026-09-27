@@ -1,0 +1,100 @@
+[package]
+name = "iscc-c2pa-demo"
+version = "0.1.0"
+description = "Desktop demo: inspect and sign C2PA manifests with ISCC soft bindings"
+license = "Apache-2.0"
+authors = ["ISCC Foundation <info@iscc.io>"]
+repository = "https://github.com/iscc/iscc-c2pa-demo"
+homepage = "https://c2pa-demo.iscc.codes"
+# Two binaries: the app and the c2pa-iscc CLI (feature `cli`); `cargo run` and `tauri dev` start
+# the app. The version here is the release version (tauri.conf.json has none, package.json is
+# private).
+default-run = "iscc-c2pa-demo"
+edition = "2021"
+rust-version = "1.96"
+
+[lib]
+name = "iscc_c2pa_demo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# Pinned: the unstable_* text handlers may change between c2pa releases.
+c2pa = { version = "=0.91.0", default-features = false, features = [
+  "rust_native_crypto",
+  "file_io",
+  "add_thumbnails",
+  "unstable_plain_text",
+  "unstable_structured_text",
+] }
+iscc-lib = "0.6"
+image = "0.25"
+kamadak-exif = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+anyhow = "1"
+clap = { version = "4", features = ["derive"], optional = true }
+rbook = { version = "0.7", default-features = false }
+quick-xml = "0.42.0"
+# The version resvg_py 0.5.0 uses, so SVGs rasterise like in iscc-sdk.
+resvg = "0.48"
+# Same version and features as the copy rbook and c2pa already pull in.
+zip = { version = "8.6", default-features = false, features = [
+  "deflate-flate2-zlib-rs",
+] }
+html-escape = "0.2.15"
+# Timestamp requests only; the same version and features as c2pa's optional `http_ureq`, which
+# stays off so c2pa itself never goes online.
+ureq = { version = "3.3", default-features = false, features = ["rustls"] }
+# Audio: demuxing and decoding of the formats c2pa-rs can sign (MP3, FLAC, WAV, M4A with AAC or
+# ALAC; the ID3 and APE readers let symphonia skip tags), Chromaprint (bit-exact with fpcalc's
+# TEST2 algorithm) and tags with cover art.
+symphonia = { version = "0.6.1", default-features = false, features = [
+  "opt-simd",
+  "all-meta",
+  "mp3",
+  "flac",
+  "pcm",
+  "wav",
+  "aac",
+  "alac",
+  "isomp4",
+] }
+rusty-chromaprint = "0.3.0"
+lofty = "0.25.4"
+
+[features]
+# The c2pa-iscc command-line tool. Off by default, because `tauri build` puts every binary whose
+# required features are enabled into the app bundles, and the CLI is not released yet.
+cli = ["dep:clap"]
+
+[[bin]]
+name = "c2pa-iscc"
+path = "src/bin/c2pa-iscc.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+required-features = ["cli"]
+
+[lints.clippy]
+# Threshold in clippy.toml; the lint is off by default (nursery).
+cognitive_complexity = "warn"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
+
+# Image decoding and hashing are far too slow unoptimized; keep dependencies fast in dev builds.
+[profile.dev.package."*"]
+opt-level = 3

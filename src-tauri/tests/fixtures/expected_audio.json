@@ -1,0 +1,156 @@
+{
+  "demo.flac": {
+    "name": "Belly Button!",
+    "description": null,
+    "meta_field": null,
+    "creator": null,
+    "duration": 4,
+    "meta": "ISCC:AAD2JKSX7OH5PBIEOHOKSRAF6BI2SWBUNMLBJ2YFDLWV7YZ6WQ4WFBA",
+    "audio": "ISCC:EIDXRRBCQ4UMIMRXPDDCFRTYQTEKG7WGVTBSRRBSG54IKSXHPDCLZEY",
+    "data": "ISCC:GADVBE3LSKQ3GLPCL5NLYFAFUREOTS5V4LOE362SUZLHVHXEI63QOKQ",
+    "instance": "ISCC:IADQZZBHD3UBPRTINOUTTVVSIX3YK4AVODUWOA7RUDODNOU24IA4L3Q"
+  },
+  "demo.m4a": {
+    "name": "Belly Button!",
+    "description": null,
+    "meta_field": null,
+    "creator": null,
+    "duration": 16,
+    "meta": "ISCC:AAD2JKSX7OH5PBIEOHOKSRAF6BI2SWBUNMLBJ2YFDLWV7YZ6WQ4WFBA",
+    "audio": "ISCC:EIDWUJFCEZZOJYVDHJHIRB3KQSQCM2REUITBUDVAQNRGJIRENCDCULY",
+    "data": "ISCC:GADTOUJHKUMFLX2ROB7VDMMKRIVEWI6JPOJT7LMORZIB3WI2JARJLUA",
+    "instance": "ISCC:IAD3NBEYSMZ26IWAQNPCFSCOB46LIFPW6JN7UT7DVXKKQKPGZXU54JA"
+  },
+  "demo.mp3": {
+    "name": "Belly Button",
+    "description": null,
+    "meta_field": null,
+    "creator": null,
+    "duration": 16,
+    "meta": "ISCC:AAD2JKSX7OH5PBIEOHOKSRAF6BI2SWBUNMLBJ2YFDLWV7YZ6WQ4WFBA",
+    "audio": "ISCC:EIDWUJFCEZZOJYVDHJHIRB3KQSQCM2REUITDUTVAQNRGJIRENCCCULY",
+    "data": "ISCC:GAD6CIIWI3K4F6CCLGDO2L77UI6OKQXIZPZT4F532QTNFUW3DPQNAWA",
+    "instance": "ISCC:IAD6ZE6AB7NXNJ6OYWD6JIV536UNBIF2ZAIQ2DDRGDBVD2QHYNTNMJQ"
+  },
+  "demo.wav": {
+    "name": "Belly Button!",
+    "description": null,
+    "meta_field": null,
+    "creator": null,
+    "duration": 5,
+    "meta": "ISCC:AAD2JKSX7OH5PBIEOHOKSRAF6BI2SWBUNMLBJ2YFDLWV7YZ6WQ4WFBA",
+    "audio": "ISCC:EIDXRRCKQNUMIMQXPCCMRIYTCZAIE47OZOARABSAUNZOZ24DPCCOVZY",
+    "data": "ISCC:GAD5TCETRL2MN6WR6P4PJV5R6GT3KSA4EZLB2EFXXOFPQWOT2L5QEAY",
+    "instance": "ISCC:IADWJIJEQTXRNVLINDJQ5LXZV75DEDAC4S7TGI3PZCVDJXTQW2MTX4Q"
+  },
+  "iscc-tags.flac": {
+    "name": "Belly Button – tagged by iscc-sdk",
+    "description": "Demo track with ISCC tags, Grüße",
+    "meta_field": "data:application/json;base64,eyJnZW5yZSI6ICJkZW1vIiwgImJwbSI6IDEyMH0=",
+    "creator": null,
+    "duration": 4,
+    "meta": "ISCC:AADTLLST5N7LOKT6V3KQP7PPNK7RT62VRVL5A5GNXMW3DJ3R5OKVQSQ",
+    "audio": "ISCC:EIDXRRBCQ4UMIMRXPDDCFRTYQTEKG7WGVTBSRRBSG54IKSXHPDCLZEY",
+    "data": "ISCC:GADVBE3LSKQ3GLPCL5NLYFAFUREOTS5V4LOE362SUZLHVHXEI6TQOKQ",
+    "instance": "ISCC:IADW2VIB6MHZMWDSAHPAPBVCPSIBZC6BJLIE5634KRHIQUMTMCWY5II"
+  },
+  "iscc-tags.mp3": {
+    "name": "Belly Button – tagged by iscc-sdk",
+    "description": "Demo track with ISCC tags, Grüße",
+    "meta_field": "data:application/json;base64,eyJnZW5yZSI6ICJkZW1vIiwgImJwbSI6IDEyMH0=",
+    "creator": null,
+    "duration": 16,
+    "meta": "ISCC:AADTLLST5N7LOKT6V3KQP7PPNK7RT62VRVL5A5GNXMW3DJ3R5OKVQSQ",
+    "audio": "ISCC:EIDWUJFCEZZOJYVDHJHIRB3KQSQCM2REUITDUTVAQNRGJIRENCCCULY",
+    "data": "ISCC:GAD6CIIWI3K4F6SCLGDO2L77UI7OKQXIZPZT4F532QTNFUW3DPQNAWA",
+    "instance": "ISCC:IADSA7TMXJQRNTJI6QLKHQ7CGH7RYO32PI4UAFGNJ6REJKARXKTTDVY"
+  },
+  "short.wav": {
+    "name": null,
+    "description": null,
+    "meta_field": null,
+    "creator": null,
+    "duration": 1,
+    "meta": "ISCC:AAD4HSRIZCQSK2SMKBNBAMEUEXPWVPGDGO3WUJS2LGXHHOZEHLQFCFQ",
+    "audio": null,
+    "data": "ISCC:GAD3ALYXPHLAZMNMOVY3LUAWPLZ3RZV6JHNFPHONGBEZQNYHWFDX4NI",
+    "instance": "ISCC:IADX7X5YR3NMOXG4CELMLAYAKEJJPTFEZ2GKRGDSL5YPHXEWQU7X7JQ"
+  },
+  "tags-ape.mp3": {
+    "name": "APE ISCC name",
+    "description": "From APE",
+    "meta_field": null,
+    "creator": null,
+    "duration": 1,
+    "meta": "ISCC:AAD5PIWR3CYDCU54WECJ4LUVBPOLHLISH2RKZAXNPCYLRB2ICEO44QA",
+    "audio": null,
+    "data": "ISCC:GADZMNE6QRL3VMMQLYIK2U2Y56ZCI7ZJWQE2C5KVMLFK5VF3DQ4X4EA",
+    "instance": "ISCC:IADS3GM46UKXAA6WRA6FXVJ5VPSOABHKSLJPN5QPYEQ465FAQ5HNJVY"
+  },
+  "tags-composer-only.mp3": {
+    "name": null,
+    "description": null,
+    "meta_field": null,
+    "creator": "A Composer",
+    "duration": 1,
+    "meta": "ISCC:AADRHXLZ4D723M2NSWMFGC7VRV2ENCPKTC6K7OTQSPWT5QDIHXOCHHY",
+    "audio": null,
+    "data": "ISCC:GADZA2YFCL6KNZ34TJN46HKY2DVWQ3PJKB2SG6QPUGGXI4LUNSBOJNQ",
+    "instance": "ISCC:IADUWBCPOD7LR3R5LE4SGMMVKFT3HYQLYFXUL7AI5DDPBRYTJ7E7UWY"
+  },
+  "tags-empty-first.m4a": {
+    "name": "",
+    "description": null,
+    "meta_field": null,
+    "creator": "An Artist",
+    "duration": 1,
+    "meta": "ISCC:AADRQB53QUHHLWKFJXIVLW6TRE74MZ5LXKMTGHPKSX7X4VBZISH35PI",
+    "audio": null,
+    "data": "ISCC:GADRREU7D7354QEBTKK5V27TTNLA5BMHJF5P5Y2IYDWAILEPKF4HGNY",
+    "instance": "ISCC:IADQC5P24NM7ZALQB4YHSBZJOI2NH4W4MOTMWWD5KY5JL7SL6KT2RLY"
+  },
+  "tags-iscc-only.flac": {
+    "name": "ISCC name only",
+    "description": "Only ISCC keys",
+    "meta_field": null,
+    "creator": null,
+    "duration": 1,
+    "meta": "ISCC:AADVP4W7LC72NHLFGMGL43F3EX7MZE4YD5XZKEI346D45V2ZTW7FX5A",
+    "audio": null,
+    "data": "ISCC:GADRD7HF5TXTQ734VYPS5SC7UNZ2TCYR4GZRHUJK4WQ5OVHTPGD64PA",
+    "instance": "ISCC:IADSD25IJMMO4UPO7LXPEWZUSO2XNKTD6JI6IWBXQ6E5N7FQ4MGLFUY"
+  },
+  "tags-iscc-only.mp3": {
+    "name": "ISCC name only",
+    "description": "Only ISCC keys",
+    "meta_field": null,
+    "creator": null,
+    "duration": 1,
+    "meta": "ISCC:AADVP4W7LC72NHLFGMGL43F3EX7MZE4YD5XZKEI346D45V2ZTW7FX5A",
+    "audio": null,
+    "data": "ISCC:GADZLPBYT5BIK4S2QVTD4HG63NNNEJDNIRWGXT727HUXJLRJF3SO7NY",
+    "instance": "ISCC:IAD5F7XVUVBVRYDDDWVALFKNKGN5LJSXUHTM4H5VK5YCP2TNBOD7SDI"
+  },
+  "tags-iscc-only.wav": {
+    "name": "ISCC name only",
+    "description": null,
+    "meta_field": null,
+    "creator": null,
+    "duration": 1,
+    "meta": "ISCC:AADVP4W7LAZQZPTMSOMB634HZ3LVSC26MO3K2OB6W5GZZZR3BPNOMKY",
+    "audio": null,
+    "data": "ISCC:GADRGTH6J6N2CDIAJYYMMQQ4KUCDYZTUUTWIHL2UAXBBALAR6AA5Q2Y",
+    "instance": "ISCC:IAD4GZXFXDOEBWTAPGAI3GL4CTMY7OICQN3UQUQQDKGBFV5WMZZ6S2A"
+  },
+  "withcover.mp3": {
+    "name": "Belly Button",
+    "description": null,
+    "meta_field": null,
+    "creator": "Test Artist",
+    "duration": 16,
+    "meta": "ISCC:AAD2JKSX7OH5PBIEOHOKSRAF6BI2SWBUNMLBJ2YFDLWV7YZ6WQ4WFBA",
+    "audio": "ISCC:EIDWUJFCEZZOJYVDHJHIRB3KQSQCM2REUITDUTVAQNRGJIRENCCCULY",
+    "data": "ISCC:GAD7CIIVI3K4F6CHIGDO6K77UIOOIQXIZDZT4FY32EXNFUG3DPQFAXI",
+    "instance": "ISCC:IAD3LZOXL4V2TXJBMBDMDLTRSO3FJETTLHIWTNV5P4IKAXYEMPJENPQ"
+  }
+}

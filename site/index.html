@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC C2PA Demo: Content Credentials with an ISCC soft binding</title>
+  <meta name="description" content="A desktop app for Windows, macOS and Linux that reads C2PA manifests, calculates the ISCC of images, documents and audio, and signs copies with an ISCC soft binding (IEP-0020). Open source, Apache-2.0.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="ISCC C2PA Demo">
+  <meta property="og:description" content="Read C2PA manifests, calculate the ISCC and sign copies with an ISCC soft binding. For Windows, macOS and Linux.">
+  <meta property="og:url" content="https://c2pa-demo.iscc.codes/">
+  <meta property="og:image" content="https://c2pa-demo.iscc.codes/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="assets/favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top wrap">
+    <a class="brand" href="https://iscc.io" aria-label="ISCC"><img src="assets/iscc-logo-black-coral.svg" alt="ISCC" height="40"></a>
+    <nav>
+      <a href="#why">Why</a>
+      <a href="#formats">Formats</a>
+      <a href="#download">Download</a>
+      <a href="https://github.com/iscc/iscc-c2pa-demo">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero wrap">
+      <p class="label">Desktop app · Windows, macOS, Linux · Apache-2.0</p>
+      <h1>Content Credentials with an ISCC&nbsp;soft&nbsp;binding</h1>
+      <p class="lead">Drop an image, a document or an audio file on the window. You see its C2PA manifest and the
+        ISCC calculated from its content. Then sign a copy whose manifest carries that ISCC, and watch how each part of
+        the code holds up.</p>
+      <div class="actions">
+        <a class="button primary" id="get" href="#download">Download</a>
+        <a class="button" href="https://github.com/iscc/iscc-c2pa-demo">Source on GitHub</a>
+        <span class="label version">{{version_label}}</span>
+      </div>
+      <figure class="shot">
+        <img src="assets/credentials.webp" width="1898" height="1307" alt="The app with a signed illustration open: the Content Credentials tab reports a valid manifest signed with the demo certificate and a verified timestamp, and the ISCC soft binding matches the file at 100 percent for Meta-Code, Content-Code Image and Data-Code, with a matching Instance-Code.">
+      </figure>
+    </section>
+
+    <section class="wrap grid4" aria-label="What the app does">
+      <div>
+        <h3>Inspect</h3>
+        <p>Validation state, signer and trust list, timestamp, actions, ingredients and every assertion of the C2PA
+          manifest store. The official C2PA trust lists are built in. Inspecting never goes online.</p>
+      </div>
+      <div>
+        <h3>Calculate</h3>
+        <p>Meta-Code, Content-Code, Data-Code and Instance-Code, extracted with the rules of
+          <a href="https://github.com/iscc/iscc-sdk">iscc-sdk</a>. The tests check every unit against its output, bit for bit.</p>
+      </div>
+      <div>
+        <h3>Compare</h3>
+        <p>Decode an ISCC soft binding from the manifest and compare each unit with the file in front of you, as a
+          similarity for the codes that measure it and as match or no match for the checksum.</p>
+      </div>
+      <div>
+        <h3>Sign</h3>
+        <p>Write a signed copy with the soft binding, the title behind the Meta-Code, an optional CAWG training and data
+          mining assertion and an RFC&nbsp;3161 timestamp. Use the built-in demo certificate or your own.</p>
+      </div>
+    </section>
+
+    <section class="wrap split" id="why">
+      <div>
+        <p class="label">Why a soft binding</p>
+        <h2>Hard bindings break on purpose. Soft bindings carry on.</h2>
+        <p>A C2PA manifest is tied to its file by a hard binding: a cryptographic hash of the exact bytes. That is right
+          for proving nothing changed, and it breaks as soon as anything does. Platforms strip manifests, and a resized or
+          re-encoded copy no longer matches.</p>
+        <p>A soft binding is calculated from the content itself. A copy that lost its manifest still gives a similar code,
+          which a service can use to find the manifest again. <a href="https://ieps.iscc.codes/iep-0020/">IEP-0020</a>
+          defines how an ISCC is stored as the value of a <code>c2pa.soft-binding</code> assertion with the algorithm
+          <code>io.iscc.v0</code>.</p>
+        <p class="note">This app writes and checks the binding. Looking manifests up by ISCC needs a registry or discovery
+          service, which the app does not include.</p>
+      </div>
+      <ol class="units" aria-label="ISCC units in the soft binding">
+        <li class="meta"><b>Meta-Code</b><span>From title and description. Stored in a <code>cawg.metadata</code>
+          assertion, so a signed copy recalculates the same code.</span></li>
+        <li class="content"><b>Content-Code</b><span>From the pixels, the text in reading order or the audio. Stays
+          close through resizing, re-encoding and format changes.</span></li>
+        <li class="data"><b>Data-Code</b><span>From the raw bytes, similarity-preserving. Calculated with the manifest
+          store removed, on the signing and on the checking side.</span></li>
+        <li class="instance"><b>Instance-Code</b><span>A checksum of the same bytes: an exact match, or none.</span></li>
+      </ol>
+    </section>
+
+    <section class="wrap split" aria-label="Signing">
+      <figure class="shot">
+        <img src="assets/sign.webp" width="1898" height="1307" loading="lazy" alt="The Sign tab: title and description behind the Meta-Code, the digital source type set to generated by AI, and the four ISCC units to embed in the soft binding.">
+      </figure>
+      <div>
+        <p class="label">Sign a copy</p>
+        <h2>Every option in one form</h2>
+        <p>The form is prefilled from the file: its own title and description, all four units, the demo certificate and
+          a timestamp. A file that already has Content Credentials gets a new manifest with the old one as its parent
+          ingredient. The source is never touched; the signed copy lands next to it.</p>
+        <p>Signed copies of JPEG, PNG, GIF, M4A, plain text and Markdown match every unit at 100%. Other formats keep
+          traces of a removed manifest, so their Data-Code lands close to 100% and the Instance-Code does not match. The
+          app says which and why.</p>
+      </div>
+    </section>
+
+    <section class="wrap" id="formats">
+      <p class="label">Formats</p>
+      <h2>Images, documents and audio</h2>
+      <p>Every format c2pa-rs can embed a manifest into, so every file the app opens it can also sign.</p>
+      <div class="table">
+        <table>
+          <thead><tr><th>Kind</th><th>Formats</th><th>Content-Code from</th></tr></thead>
+          <tbody>
+            <tr><td>Images</td><td>JPEG, PNG, WebP, GIF, TIFF, SVG</td><td>the pixels; SVG rendered with resvg</td></tr>
+            <tr><td>Documents</td><td>EPUB, DOCX, PPTX, XLSX, ODT, ODS, ODP, TXT, Markdown</td><td>the text in reading order</td></tr>
+            <tr><td>Audio</td><td>MP3, FLAC, WAV, M4A (AAC, ALAC)</td><td>a Chromaprint fingerprint of the decoded audio</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="wrap" id="download">
+      <p class="label">Download · {{version_label}}</p>
+      <h2>Get the app</h2>
+      <p>The builds are not code-signed yet, so your system will ask once before the first start. Each card says how.</p>
+      <div class="downloads">
+        <article data-os="windows">
+          <h3>Windows</h3>
+          <p class="label">Windows 10 and 11, x64</p>
+          <a class="button primary" href="{{windows_url}}">Installer <span>{{windows_size}}</span></a>
+          <p class="file">{{windows_name}}</p>
+          <p>SmartScreen shows “Windows protected your PC”. Choose <b>More info</b>, then <b>Run anyway</b>. The installer
+            needs no admin rights.</p>
+        </article>
+        <article data-os="macos">
+          <h3>macOS</h3>
+          <p class="label">macOS 11 or later, Apple silicon and Intel</p>
+          <a class="button primary" href="{{macos_url}}">Disk image <span>{{macos_size}}</span></a>
+          <p class="file">{{macos_name}}</p>
+          <p>Drag the app to Applications and open it. macOS refuses the first time: open <b>System Settings → Privacy
+            &amp; Security</b> and choose <b>Open Anyway</b>. Or clear the quarantine flag in a terminal:</p>
+          <pre><code>xattr -dr com.apple.quarantine "/Applications/ISCC C2PA Demo.app"</code></pre>
+        </article>
+        <article data-os="linux">
+          <h3>Linux</h3>
+          <p class="label">x86_64, WebKitGTK 4.1</p>
+          <a class="button primary" href="{{appimage_url}}">AppImage <span>{{appimage_size}}</span></a>
+          <p class="file">{{appimage_name}}</p>
+          <p>Make it executable and run it: <code>chmod +x iscc-c2pa-demo-*.AppImage</code>. Or install the
+            <a href="{{deb_url}}">.deb</a> (Debian, Ubuntu) or the <a href="{{rpm_url}}">.rpm</a> (Fedora, openSUSE).</p>
+        </article>
+      </div>
+      <p class="small">Checksums: <a href="{{sums_url}}">SHA256SUMS</a> · <a href="{{release_url}}">Release notes</a> ·
+        <a href="{{releases_url}}">All releases</a></p>
+    </section>
+
+    <section class="wrap split" id="source">
+      <div>
+        <p class="label">Build from source</p>
+        <h2>Tauri, Rust and a little TypeScript</h2>
+        <p>The core is Rust: <a href="https://crates.io/crates/c2pa">c2pa-rs</a> for Content Credentials,
+          <a href="https://crates.io/crates/iscc-lib">iscc-lib</a> for the ISCC, and pure Rust readers for images,
+          documents and audio. No external tools, no Python. The window is a <a href="https://tauri.app">Tauri</a> web view
+          without a UI framework.</p>
+        <p>The same core ships as a command-line tool, <code>c2pa-iscc</code>, that prints the JSON the app works with.
+          Build it from source for scripts and agents.</p>
+      </div>
+      <div>
+        <pre><code>git clone https://github.com/iscc/iscc-c2pa-demo
+cd iscc-c2pa-demo
+pnpm install
+pnpm tauri dev
+
+# the command-line tool
+cd src-tauri
+cargo run --features cli --bin c2pa-iscc -- inspect photo.jpg --no-preview
+cargo run --features cli --bin c2pa-iscc -- sign photo.jpg</code></pre>
+        <p class="small">Needs Rust 1.96 or later, Node 22.12 or later and pnpm. On Linux also the
+          <a href="https://tauri.app/start/prerequisites/">Tauri system libraries</a>.</p>
+      </div>
+    </section>
+
+    <section class="wrap" id="notes">
+      <p class="label">Good to know</p>
+      <h2>What the demo is and is not</h2>
+      <ul class="notes">
+        <li>The built-in certificate is the c2pa-rs test certificate. Files signed with it show as trusted in this app
+          only; other validators report an unknown signer. Use your own certificate and key for anything real.</li>
+        <li>Signing asks a time stamping authority for an RFC&nbsp;3161 timestamp, <a href="https://tsa.encypher.com">Encypher</a>
+          by default. Only a SHA-256 hash of the signature leaves your computer, and signing goes on without a timestamp
+          when the service does not answer.</li>
+        <li>IEP-0020 is a draft. The format of the soft binding value may still change.</li>
+        <li>A matching ISCC is a strong signal that two files hold the same or similar content. It is not proof of who
+          made them or who holds the rights.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    <p>Made by the <a href="https://iscc.io">ISCC Foundation</a>. The International Standard Content Code (ISCC) is
+      ISO&nbsp;24138:2024. Apache-2.0. The illustration in the screenshots is AI-generated artwork from the ISCC
+      brand kit.</p>
+    <p class="small"><a href="https://ieps.iscc.codes/iep-0020/">IEP-0020</a> · <a href="https://c2pa.org">C2PA</a> ·
+      <a href="https://github.com/contentauth/c2pa-rs">c2pa-rs</a> · <a href="https://github.com/iscc/iscc-lib">iscc-lib</a> ·
+      <a href="https://github.com/iscc/iscc-c2pa-demo">Source</a></p>
+  </footer>
+
+  <script>
+    // Point the hero button at the download for the visitor's system.
+    (() => {
+      const ua = navigator.userAgent;
+      const os = /Windows/.test(ua) ? "windows" : /Mac OS X|Macintosh/.test(ua) ? "macos" : /Linux|X11/.test(ua) && !/Android/.test(ua) ? "linux" : "";
+      const card = os && document.querySelector(`[data-os="${os}"]`);
+      if (!card) return;
+      const get = document.getElementById("get");
+      get.href = card.querySelector("a.button").href;
+      get.textContent = `Download for ${card.querySelector("h3").textContent}`;
+      card.classList.add("yours");
+    })();
+  </script>
+</body>
+</html>

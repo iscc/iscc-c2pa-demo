@@ -1,0 +1,139 @@
+{
+  "CA.jpg": {
+    "name": null,
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "CA",
+    "meta_code": "ISCC:AADQVO6LHKBRXMBJNKYY2UGGBH4W5AITOK5MGPXKOHNMXV4I4FB2UBQ"
+  },
+  "demo.gif": {
+    "name": null,
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "demo",
+    "meta_code": "ISCC:AAD6P2X7C73P72Z4767RP67X5ZXP7Z3X77RWJ2X337VX4LT57V777PY"
+  },
+  "demo.svg": {
+    "name": "ISCC SVG test image",
+    "description": "Overlapping shapes with a gradient and transparency",
+    "meta": null,
+    "creator": "ISCC Foundation",
+    "fallback": "demo",
+    "meta_code": "ISCC:AADXNDTRFYZTG4WUUVXS5U3QIKOQP6EWDL3ANY5J6WG5ZTOB2QNGJOI",
+    "image": "ISCC:EED24FHFOIGXVBJ6LUU4TZI26QFXIFHHOIGXXBJ62AU4XZI26QFXZII"
+  },
+  "demo.tif": {
+    "name": "Concentrated Cat",
+    "description": null,
+    "meta": null,
+    "creator": "Some Cat Lover",
+    "fallback": "demo",
+    "meta_code": "ISCC:AADWRY3VY6R5SNV4NUAGFYLVSJ3I7KX37VO6PYLC22DFONVH2GVZIPY"
+  },
+  "IMG_0003.jpg": {
+    "name": null,
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "IMG 0003",
+    "meta_code": "ISCC:AAD35NEA4UWRUX3Y2UAPLKMCNDSZBJPKHWKGECCBQEXRMKVGZX2VKBY"
+  },
+  "libpng-test.png": {
+    "name": null,
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "libpng test",
+    "meta_code": "ISCC:AADX6HP3R2TC77J77HN4G3JTZX6NJ2ZXY5FN7HP5ULPOUPX3XA6VQHY"
+  },
+  "meta-exif.jpg": {
+    "name": "87 0 105 0 110 0 100 0 111 0 119 0 115 0 32 0 84 0 105 0 116 0 108 0 101 0 0 0",
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "meta exif",
+    "meta_code": "ISCC:AAD3RDNHRKB3L2HGOWIBZJOMXWWHNJBKP4K2XAKMZWKRLEVADFYCWBI"
+  },
+  "meta-headline.jpg": {
+    "name": "Photoshop Headline",
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "meta headline",
+    "meta_code": "ISCC:AADYYWP3IZC23S67IP6AS3EUHTXKX737NNQ7QJCGHVKTXK2CWI2MFEY"
+  },
+  "meta-iptc.jpg": {
+    "name": "IPTC Headline Zürich",
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "meta iptc",
+    "meta_code": "ISCC:AADSVXOTGPP2NVMPJ2XE2Z5THLWKM37P4F55QJENO437XP2HWPCPT3Q"
+  },
+  "meta-iscc.jpg": {
+    "name": "ISCC Name",
+    "description": "ISCC description",
+    "meta": "data:application/json;base64,eyJrZXkiOiAidmFsdWUifQ==",
+    "creator": null,
+    "fallback": "meta iscc",
+    "meta_code": "ISCC:AADX7MXX3WWAI465XGWP43ROK3ATLO5QD7TZCBMSYKY25B2ZARNPDXY"
+  },
+  "meta-xmp.jpg": {
+    "name": "Harbour at Dawn",
+    "description": "Fishing boats leaving the harbour & gulls overhead",
+    "meta": null,
+    "creator": null,
+    "fallback": "meta xmp",
+    "meta_code": "ISCC:AAD3CN74QD37CLW5ZHOQC6NVU6B6WZRPKE76D3MZ67WK6RVZJMDVPWQ"
+  },
+  "meta-xmp.png": {
+    "name": "Nachtzug nach Zürich",
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "meta xmp",
+    "meta_code": "ISCC:AADWXCC3T7LFPYNG7ZP67X6EWLDDZRPO4H63V5573X66TWW777IVSKA"
+  },
+  "meta-xmp.webp": {
+    "name": "WebP Title",
+    "description": "Described in XMP",
+    "meta": null,
+    "creator": null,
+    "fallback": "meta xmp",
+    "meta_code": "ISCC:AADQ4PCC366U6XL5U5ZTDNWT73K5SVP3XX743NRMJJB6B3SL4FFFPHY"
+  },
+  "no_manifest.jpg": {
+    "name": null,
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "no manifest",
+    "meta_code": "ISCC:AAD3NTUXP6ITVMBZZW7G3XO3X5WUGW6BCAO27J7AKEP3OR33UZIJQ6Y"
+  },
+  "synthetic-123x57.png": {
+    "name": null,
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "synthetic 123x57",
+    "meta_code": "ISCC:AADZTXGFZIN3UH7YPTF3SW2ZQH35VPX3ENCEZE7NMQ4HG6YOV6CY76Y"
+  },
+  "synthetic-640x480.png": {
+    "name": null,
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "synthetic 640x480",
+    "meta_code": "ISCC:AAD53HDHZ6D2627ZHTH22USYRV27W6M2EMTP4NPZ6Z7HH55LV6647GY"
+  },
+  "synthetic-64x64.png": {
+    "name": null,
+    "description": null,
+    "meta": null,
+    "creator": null,
+    "fallback": "synthetic 64x64",
+    "meta_code": "ISCC:AADZ7OWH57PL623NDTX73QSNBV33QP47EE7N5NPLS2CHH75K662465Y"
+  }
+}

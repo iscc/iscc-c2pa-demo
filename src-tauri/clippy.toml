@@ -1,0 +1,3 @@
+# Enforces max cognitive complexity of 15 (Radon grade C), as in iscc-lib; the lint itself is
+# enabled in Cargo.toml's [lints.clippy].
+cognitive-complexity-threshold = 15

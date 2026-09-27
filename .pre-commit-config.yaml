@@ -1,0 +1,67 @@
+# Run with prek (drop-in pre-commit replacement): uv run prek run --all-files
+# Install the git hooks once: uv run prek install --hook-type pre-commit --hook-type pre-push
+repos:
+  # File hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: ^(src-tauri/resources/|src/assets/)  # vendored, kept byte-identical
+      - id: end-of-file-fixer
+        exclude: ^(src-tauri/resources/|src/assets/)  # vendored, kept byte-identical
+      - id: trailing-whitespace
+        exclude: ^(src-tauri/resources/|src/assets/)  # vendored, kept byte-identical
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=256]
+      - id: fix-byte-order-marker
+        exclude: ^(src-tauri/resources/|src/assets/)  # vendored, kept byte-identical
+
+  # Local hooks
+  - repo: local
+    hooks:
+      # Pre-commit hooks (fast, auto-fix)
+      - id: cargo-fmt
+        name: Rust formatting
+        entry: cargo fmt --manifest-path src-tauri/Cargo.toml --all --
+        language: system
+        types: [rust]
+        stages: [pre-commit]
+      - id: biome
+        name: TypeScript formatting and linting
+        entry: pnpm exec biome check --write --no-errors-on-unmatched --files-ignore-unknown=true
+        language: system
+        types: [ts]
+        stages: [pre-commit]
+      - id: taplo
+        name: TOML formatting
+        entry: uv run taplo fmt
+        language: system
+        types: [toml]
+        stages: [pre-commit]
+
+      # Pre-push hooks (thorough quality gates)
+      - id: cargo-clippy
+        name: Rust linting
+        entry: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+        language: system
+        always_run: true
+        stages: [pre-push]
+        pass_filenames: false
+      - id: cargo-test
+        name: Rust tests
+        entry: cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features
+        language: system
+        always_run: true
+        stages: [pre-push]
+        pass_filenames: false
+      - id: tsc
+        name: TypeScript type checking
+        entry: pnpm exec tsc --noEmit
+        language: system
+        always_run: true
+        stages: [pre-push]
+        pass_filenames: false

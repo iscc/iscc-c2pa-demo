@@ -1,0 +1,121 @@
+# Release on a version tag (v0.1.0, v0.2.0-rc.1, ...): check the tag against the app version,
+# open a draft release with the CHANGELOG section as notes, build the installers on Windows,
+# macOS and Linux and attach them, publish the release with a SHA256SUMS file, then rebuild the
+# landing page so its download links point at the new files. Tags with a hyphen become
+# prereleases, which the landing page skips.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+env:
+  CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ github.token }}
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the tag against the version in src-tauri/Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -n 1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match version $version in src-tauri/Cargo.toml"
+            exit 1
+          fi
+      - name: Create the draft release
+        run: |
+          awk -v v="${TAG#v}" '/^## /{p = ($2 == v); next} p' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          cat >> notes.md <<EOF
+
+          Downloads and first-run notes: https://c2pa-demo.iscc.codes
+          EOF
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          gh release create "$TAG" --draft --verify-tag --title "ISCC C2PA Demo $TAG" \
+            --notes-file notes.md $flags
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ""
+          - os: macos-latest
+            args: --target universal-apple-darwin
+          - os: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Tauri system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.args }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tauri build ${{ matrix.args }}
+      - name: Attach the installers to the release
+        shell: bash
+        run: |
+          v="${TAG#v}"
+          b=src-tauri/target/release/bundle
+          mkdir out
+          case "$RUNNER_OS" in
+            Windows)
+              cp "$b"/nsis/*-setup.exe "out/iscc-c2pa-demo-$v-windows-x64-setup.exe" ;;
+            macOS)
+              cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg \
+                "out/iscc-c2pa-demo-$v-macos-universal.dmg" ;;
+            Linux)
+              cp "$b"/appimage/*.AppImage "out/iscc-c2pa-demo-$v-linux-x86_64.AppImage"
+              cp "$b"/deb/*.deb "out/iscc-c2pa-demo-$v-linux-amd64.deb"
+              cp "$b"/rpm/*.rpm "out/iscc-c2pa-demo-$v-linux-x86_64.rpm" ;;
+          esac
+          ls -l out
+          gh release upload "$TAG" out/* --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Add SHA256SUMS and publish the release
+        run: |
+          mkdir assets && cd assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'iscc-c2pa-demo-*'
+          sha256sum iscc-c2pa-demo-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+      # A release published with the workflow token triggers no workflow on its own, and the
+      # github-pages environment only accepts deployments from main, so dispatch the page build
+      # on main.
+      - name: Rebuild the landing page
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
