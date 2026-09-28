@@ -73,6 +73,8 @@ pub struct ManifestSummary {
     pub validation_state: String,
     /// Why the manifest is invalid; set exactly when `validation_state` is `Invalid`.
     pub invalid_reason: Option<InvalidReason>,
+    /// URI of the trust list the active manifest's signer chains to; `None` when untrusted.
+    pub trust_list: Option<String>,
     pub validation: Value,
     /// True when the hard binding is a data hash, so the file has a source view: the file
     /// without the byte ranges the data hash excludes (IEP-0020).
@@ -492,6 +494,7 @@ fn summarize(
         manifest_count: reader.manifests().len(),
         validation_state: format!("{:?}", reader.validation_state()),
         invalid_reason: invalid_reason(reader),
+        trust_list: signer_trust_list(reader),
         validation: serde_json::to_value(reader.validation_results()).unwrap_or(Value::Null),
         source_view: view_units.is_some(),
         signature: manifest
@@ -537,6 +540,21 @@ fn summarize(
 /// A failure reported by the validator: code, explanation, and whether it belongs to an
 /// ingredient's manifest rather than the active one.
 type Failure<'a> = (&'a str, Option<&'a str>, bool);
+
+/// Trust list of the active manifest's signer, from its own `signingCredential.trusted` status.
+/// `ValidationResults::trust_list_uri` is not used: c2pa-rs fills it from whichever manifest's
+/// signer it logged last, ingredients included, in no stable order.
+pub(crate) fn signer_trust_list(reader: &Reader) -> Option<String> {
+    let signature = format!("self#jumbf=/c2pa/{}/c2pa.signature", reader.active_label()?);
+    reader
+        .validation_results()?
+        .active_manifest()?
+        .success()
+        .iter()
+        .find(|s| s.code() == "signingCredential.trusted" && s.url() == Some(signature.as_str()))
+        .and_then(|s| s.trust_list_uri())
+        .map(str::to_owned)
+}
 
 /// Reason of an invalid manifest; `None` for any other validation state.
 fn invalid_reason(reader: &Reader) -> Option<InvalidReason> {

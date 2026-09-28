@@ -28,6 +28,11 @@ const TRUST_LISTS: Record<string, { name: string; about: string }> = {
     name: "the C2PA trust list",
     about: "Official C2PA trust list of conforming products, bundled with this app.",
   },
+  "https://github.com/c2pa-org/conformance-public/blob/main/trust-list/C2PA-TSA-TRUST-LIST.pem": {
+    name: "the C2PA timestamp list",
+    about:
+      "Official C2PA list of timestamp services, meant for timestamps only. The C2PA specification keeps it separate from the list for signers, but c2pa-rs accepts signers that chain to it.",
+  },
   "urn:c2pa-rs:test-root-bundle": {
     name: "the c2pa-rs test list",
     about:
@@ -37,7 +42,7 @@ const TRUST_LISTS: Record<string, { name: string; about: string }> = {
 
 /** Validation state label; a trusted signer names the trust list its certificate chains to. */
 function stateText(m: ManifestSummary): string {
-  const list = TRUST_LISTS[m.validation?.trustListUri ?? ""];
+  const list = TRUST_LISTS[m.trust_list ?? ""];
   if (m.validation_state === "Trusted" && list) return `Valid, signer on ${list.name}`;
   return STATE_TEXT[m.validation_state] ?? m.validation_state;
 }
@@ -45,7 +50,7 @@ function stateText(m: ManifestSummary): string {
 /** Hover text of the validation state: what the trust list is, or its URI when unknown. */
 function stateTitle(m: ManifestSummary): string {
   if (m.validation_state !== "Trusted") return "";
-  const uri = m.validation?.trustListUri ?? "";
+  const uri = m.trust_list ?? "";
   return TRUST_LISTS[uri]?.about ?? uri;
 }
 

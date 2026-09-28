@@ -912,4 +912,42 @@ mod tests {
         assert_eq!(inspection.meta_fields.name_source, "filename");
         assert!(inspection.preview.starts_with("data:image/jpeg;base64,"));
     }
+
+    /// The trust list shown is the active signer's, even when a parent's signer chains to
+    /// another list. c2pa's `trustListUri` can name the parent's list, in no stable order, so
+    /// read several times.
+    #[test]
+    fn trust_list_is_the_active_signers() {
+        use crate::context::tests::{sign_with_c2pa_eku, with_eku_root, EKU_TRUST_URI};
+        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-trust-list");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("eku.jpg");
+        std::fs::write(&source, sign_with_c2pa_eku()).unwrap();
+        let output = dir.join("eku-signed.jpg");
+        let _ = std::fs::remove_file(&output);
+        let mut req = request("eku/base.jpg", &output);
+        req.source = source.to_string_lossy().into_owned();
+        sign(&req).unwrap();
+
+        let settings = with_eku_root(context::base_settings());
+        let mut c2pa_uris = std::collections::HashSet::new();
+        for _ in 0..16 {
+            let context = Context::new().with_settings(settings.clone()).unwrap();
+            let reader = c2pa::Reader::from_context(context)
+                .with_file(&output)
+                .unwrap();
+            assert_eq!(
+                inspect::signer_trust_list(&reader).as_deref(),
+                Some("urn:c2pa-rs:test-root-bundle")
+            );
+            let results = serde_json::to_value(reader.validation_results()).unwrap();
+            c2pa_uris.insert(results["trustListUri"].as_str().map(str::to_owned));
+        }
+        // If this fails after an upgrade, c2pa-rs names the active signer's list itself and
+        // `signer_trust_list` may be replaceable by `trustListUri`.
+        assert!(
+            c2pa_uris.contains(&Some(EKU_TRUST_URI.to_owned())),
+            "{c2pa_uris:?}"
+        );
+    }
 }

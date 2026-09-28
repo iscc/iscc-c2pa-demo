@@ -106,7 +106,6 @@ export interface ValidationResults {
   };
   ingredientDeltas?: unknown[];
   specVersion?: string;
-  trustListUri?: string;
 }
 
 export interface ManifestSummary {
@@ -117,6 +116,8 @@ export interface ManifestSummary {
   validation_state: "Trusted" | "Valid" | "Invalid" | string;
   /** Why the manifest is invalid; set exactly when `validation_state` is `Invalid`. */
   invalid_reason: InvalidReason | null;
+  /** URI of the trust list the active manifest's signer chains to; null when untrusted. */
+  trust_list: string | null;
   validation: ValidationResults | null;
   /** True when the hard binding is a data hash, so the file has a source view (the file without the byte ranges it excludes). */
   source_view: boolean;
