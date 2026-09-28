@@ -135,8 +135,8 @@
       <p class="label">Download · {{version_label}}</p>
       <h2>Try it with a file you know</h2>
       <p>Images: JPEG, PNG, WebP, GIF, TIFF, SVG. Documents: EPUB, Word, PowerPoint, Excel, OpenDocument, plain text,
-        Markdown. Audio: MP3, FLAC, WAV, M4A. The builds are not code-signed yet, so your system asks once before the
-        first start. Each card says how.</p>
+        Markdown. Audio: MP3, FLAC, WAV, M4A. The builds are not code-signed yet, so each card says how to get past the
+        system's warning at the first start.</p>
       <div class="downloads">
         <article data-os="windows">
           <h3>Windows</h3>
@@ -146,14 +146,17 @@
           <p>SmartScreen shows “Windows protected your PC”. Choose <b>More info</b>, then <b>Run anyway</b>. The installer
             needs no admin rights.</p>
         </article>
-        <article data-os="macos">
+        <article data-os="macos" id="macos">
           <h3>macOS</h3>
           <p class="label">macOS 11 or later, Apple silicon and Intel</p>
-          <a class="button primary" href="{{macos_url}}">Disk image <span>{{macos_size}}</span></a>
-          <p class="file">{{macos_name}}</p>
-          <p>Drag the app to Applications and open it. macOS refuses the first time: open <b>System Settings → Privacy
-            &amp; Security</b> and choose <b>Open Anyway</b>. Or clear the quarantine flag in a terminal:</p>
-          <pre><code>xattr -dr com.apple.quarantine "/Applications/ISCC C2PA Demo.app"</code></pre>
+          <button class="button primary" type="button" data-copy="curl -fsSL https://c2pa-demo.iscc.codes/install-mac.sh | bash">Copy install command</button>
+          <p class="file">for Terminal · <a href="install-mac.sh">read the script</a></p>
+          <pre><code>curl -fsSL https://c2pa-demo.iscc.codes/install-mac.sh | bash</code></pre>
+          <p>Paste it into Terminal. It downloads the latest release, checks its checksum, installs the app and opens
+            it, with no security warning.</p>
+          <p class="small">Prefer the <a href="{{macos_url}}">disk image</a> ({{macos_size}})? Then macOS says it “could
+            not verify” the app: choose <b>Done</b>, not Move to Bin, and <b>Open Anyway</b> in System Settings →
+            Privacy &amp; Security.</p>
         </article>
         <article data-os="linux">
           <h3>Linux</h3>
@@ -215,17 +218,28 @@ cargo run --features cli --bin c2pa-iscc -- sign photo.jpg</code></pre>
   </footer>
 
   <script>
-    // Point the hero button at the download for the visitor's system.
+    // Point the hero button at the download for the visitor's system, or at its card when it has
+    // no download button (macOS installs with a terminal command).
     (() => {
       const ua = navigator.userAgent;
       const os = /Windows/.test(ua) ? "windows" : /Mac OS X|Macintosh/.test(ua) ? "macos" : /Linux|X11/.test(ua) && !/Android/.test(ua) ? "linux" : "";
       const card = os && document.querySelector(`[data-os="${os}"]`);
       if (!card) return;
       const get = document.getElementById("get");
-      get.href = card.querySelector("a.button").href;
+      const button = card.querySelector("a.button");
+      get.href = button ? button.href : `#${card.id}`;
       get.textContent = `Download for ${card.querySelector("h3").textContent}`;
       card.classList.add("yours");
     })();
+    // Copy a terminal command to the clipboard and confirm on the button.
+    for (const button of document.querySelectorAll("[data-copy]")) {
+      button.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(button.dataset.copy);
+        const label = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => (button.textContent = label), 1600);
+      });
+    }
   </script>
 </body>
 </html>

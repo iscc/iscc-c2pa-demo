@@ -190,6 +190,13 @@ skips. The builds are not code-signed.
 The landing page lives in `site/`. `node site/build.mjs` writes it to `_site/` with the links of
 the latest release; the `pages` workflow deploys it to https://c2pa-demo.iscc.codes.
 
+`site/install-mac.sh` is published with the page and is the recommended way to install on macOS:
+`curl -fsSL https://c2pa-demo.iscc.codes/install-mac.sh | bash` downloads the disk image of the
+latest release, checks it against `SHA256SUMS`, copies the app to `/Applications` and opens it.
+The app is not notarized, so a disk image downloaded in a browser carries the quarantine flag and
+Gatekeeper refuses it at the first start; curl sets no such flag. The arm64 slice carries the
+linker's ad-hoc signature, which Apple silicon needs to run it at all.
+
 `scripts/shot.ps1` drives and screenshots the running app on Windows, for checking the UI by eye.
 
 ## Licences

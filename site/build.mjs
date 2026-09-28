@@ -1,6 +1,7 @@
 // Build the landing page into _site/: fill the download links in site/index.html from the latest
-// GitHub release (prereleases and drafts excluded) and copy the static files, the fonts and the
-// logos next to it. Without a release, or offline, the links point at the releases page.
+// GitHub release (prereleases and drafts excluded) and copy the static files (the macOS install
+// script among them), the fonts and the logos next to it. Without a release, or offline, the
+// links point at the releases page.
 // Usage: node site/build.mjs   (GITHUB_REPOSITORY and GITHUB_TOKEN are optional)
 
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -74,7 +75,7 @@ for (const logo of ["iscc-logo-black-coral.svg", "favicon.svg"]) {
   cpSync(join(root, "src/assets", logo), join(out, "assets", logo));
 }
 cpSync(join(root, "site/style.css"), join(out, "style.css"));
-cpSync(join(root, "site/CNAME"), join(out, "CNAME"));
+for (const file of ["CNAME", "install-mac.sh"]) cpSync(join(root, "site", file), join(out, file));
 const html = render(readFileSync(join(root, "site/index.html"), "utf8"), fields(release));
 writeFileSync(join(out, "index.html"), html);
 console.log(`built ${out} for ${release ? release.tag_name : "no release"}`);
