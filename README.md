@@ -131,6 +131,7 @@ requirements, the CLI, tests, timestamps and releases.
 
 ## Licence
 
+A technology demonstration, provided as is without warranty (see LICENSE sections 7 and 8).
 Apache-2.0, see [LICENSE](LICENSE). Made by the [ISCC Foundation](https://iscc.io). The ISCC logos
 are marks of the ISCC Foundation and are not covered by the licence. Third-party fixtures,
 certificates and fonts keep their own licences, listed in [DEVELOPMENT.md](DEVELOPMENT.md#licences).
