@@ -1,198 +1,136 @@
-# ISCC C2PA Demo
+<p align="center">
+  <a href="https://iscc.io">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="src/assets/iscc-logo-white-coral.svg">
+      <img src="src/assets/iscc-logo-black-coral.svg" alt="ISCC home" height="56">
+    </picture>
+  </a>
+</p>
 
-A small native desktop app that shows what is inside a file's Content Credentials and signs
-images, documents and audio with a C2PA manifest carrying an ISCC soft binding. A command-line tool,
-`c2pa-iscc`, does the same from a terminal or a script.
+<h1 align="center">ISCC C2PA Demo</h1>
 
-**Download** the app for Windows, macOS and Linux from
-[c2pa-demo.iscc.codes](https://c2pa-demo.iscc.codes) or the
+<p align="center">
+  <b>Bind Content Credentials to the content, not just the bytes.</b><br>
+  A tech demo of the International Standard Content Code (ISCC)<br>
+  as a soft binding in C2PA Content Credentials, for images, documents and audio.
+</p>
+
+<p align="center">
+  <a href="https://c2pa-demo.iscc.codes"><b>Download</b></a> ·
+  <a href="#why-we-built-it">Why</a> ·
+  <a href="#what-goes-into-the-manifest">The assertion</a> ·
+  <a href="https://ieps.iscc.codes/iep-0020/">IEP-0020</a>
+</p>
+
+![A signed image, re-encoded at half size with its Content Credentials copied back in. C2PA reports the credentials as invalid because the file changed after signing; the ISCC soft binding still matches the Content-Code at 100 percent, while the byte-based Data-Code and Instance-Code no longer match.](site/assets/changed.webp)
+
+<p align="center"><sub>To show what each binding sees, we re-encoded a signed image at half size and copied its
+Content Credentials back in. C2PA says <b>Invalid</b> (<code>assertion.dataHash.mismatch</code>):
+the hash no longer matches the bytes. The ISCC Content-Code still matches the pixels at
+<b>100%</b>, and at 81% after a crop; unrelated images score around 50%. The credentials stay
+invalid, but the ISCC shows which content they were made for.</sub></p>
+
+C2PA Content Credentials record where a file comes from. They are tied to the file by a hash of
+its exact bytes, so a resized or re-encoded copy no longer matches them, and a copy whose manifest
+was stripped has lost them. A **soft binding** connects credentials and content through the content
+itself, so a service can find the credentials of a copy again. This demo uses **ISCC**
+(ISO 24138:2024), a code that anyone can calculate from the content:
+
+1. **Inspect** any image, document or audio file: its Content Credentials (who signed it, when, and
+   whether the signature holds) and its ISCC.
+2. **Sign** a copy whose Content Credentials carry the ISCC and, if you choose, whether AI training
+   and data mining is allowed.
+3. **Check** a signed file, changed or not: the app calculates the ISCC again and compares it with
+   the one in the Content Credentials, unit by unit.
+
+## Why we built it
+
+**To show that it runs.** ISCC has been on the C2PA soft binding algorithm list as
+`io.iscc.v0` since 2024. This demo runs it end to end with
+[c2pa-rs](https://github.com/contentauth/c2pa-rs), the open source C2PA SDK of the Content
+Authenticity Initiative, on 19 file formats.
+
+**To show what a computed soft binding does.** C2PA soft bindings come in two kinds. A watermark is
+put into the content and read back with a decoder. A fingerprint such as ISCC is calculated from
+the content as it is, so anyone with software that implements the open standard can calculate it
+again from a copy and compare.
+
+**To build it together.** [IEP-0020](https://ieps.iscc.codes/iep-0020/) defines how an ISCC is
+stored in a C2PA manifest, and it is still a draft. Try the demo on files you know, reuse the code
+and tell us what works and what does not, in the
+[issues](https://github.com/iscc/iscc-c2pa-demo/issues) or at info@iscc.io.
+
+## What goes into the manifest
+
+A `c2pa.soft-binding` assertion whose value is an ISCC-SEQ: the ISCC units of the file (here
+Meta-Code, Content-Code Image, Data-Code and Instance-Code), each a header and a 256-bit body,
+concatenated. In CBOR the value is a byte string; the JSON view shows it in base64.
+
+```json
+{
+  "label": "c2pa.soft-binding",
+  "data": {
+    "alg": "io.iscc.v0",
+    "blocks": [{ "scope": {}, "value": "AAfn6v8X9v/rPP+/F/v37m7/53f/42Tq+9/rfi59/X//vyEHw0Mw…" }],
+    "bindingMetadata": {
+      "description": "International Standard Content Code (ISCC - ISO 24138:2024) - Open Source Content Identification",
+      "contact": "info@iscc.io",
+      "informationalUrl": "https://ieps.iscc.codes/iep-0020/"
+    }
+  }
+}
+```
+
+Next to it: a `cawg.metadata` assertion with the title and description behind the Meta-Code, an
+optional `cawg.training-mining` assertion, and an RFC 3161 timestamp.
+[DEVELOPMENT.md](DEVELOPMENT.md#notes-on-the-soft-binding) explains how each unit is calculated
+and where this version still differs from the IEP-0020 draft.
+
+## Download
+
+Installers for Windows, macOS and Linux are on
+**[c2pa-demo.iscc.codes](https://c2pa-demo.iscc.codes)** and the
 [releases page](https://github.com/iscc/iscc-c2pa-demo/releases). The builds are not code-signed
 yet; the download page says how to open them the first time.
 
-Supported formats:
-
-| Kind | Formats | Content-Code |
-|---|---|---|
-| Images | JPEG, PNG, WebP, GIF, TIFF, SVG | Content-Code Image from the pixels (SVG: rendered with resvg) |
-| Documents | EPUB, Word (DOCX), PowerPoint (PPTX), Excel (XLSX), OpenDocument text, spreadsheet and presentation (ODT, ODS, ODP), plain text, Markdown | Content-Code Text from the text in reading order |
-| Audio | MP3, FLAC, WAV, M4A (AAC or ALAC) | Content-Code Audio from a Chromaprint fingerprint of the decoded audio |
-
-These are the formats c2pa-rs can embed a manifest into, so every file the app opens it can also
-sign.
-
-Drop a file onto the window to see:
-
-- the C2PA manifest store with validation state, signer, actions, ingredients and every assertion;
-- the ISCC units of the file (Meta-Code, Content-Code Image, Text or Audio, Data-Code,
-  Instance-Code), computed with any embedded manifest store stripped. Title, description, text
-  and audio fingerprint are extracted with the same rules as
-  [iscc-sdk](https://github.com/iscc/iscc-sdk), and the test suite checks the units against
-  iscc-sdk's output for every fixture;
-- the ISCC soft binding embedded in the manifest, decoded from its ISCC-SEQ value and compared
-  unit by unit with the file;
-- the CAWG training and data mining assertion, if present.
-
-The Sign tab writes a signed copy with:
-
-- a `c2pa.soft-binding` assertion using algorithm `io.iscc.v0`, whose value is the ISCC-SEQ
-  defined by [IEP-0020](https://ieps.iscc.codes/iep-0020/) (one or more 256-bit ISCC-UNITs,
-  header and body concatenated);
-- a `cawg.metadata` assertion with the title and description behind the Meta-Code, so a signed
-  copy recomputes the Meta-Code it was signed with;
-- an optional `cawg.training-mining` assertion (CAWG Training and Data Mining Assertion 1.1);
-- a `c2pa.created` action with the chosen digital source type, or, when the source already has
-  Content Credentials, a new manifest with the existing one as parent ingredient;
-- an RFC 3161 timestamp from a time stamping authority, so the manifest proves when it was
-  signed (see below).
-
-## Stack
-
-| Layer | What |
+| Kind | Formats |
 |---|---|
-| Shell | [Tauri 2](https://tauri.app) (Rust core, system web view) |
-| C2PA | [`c2pa`](https://crates.io/crates/c2pa) 0.91 with Rust native crypto, no OpenSSL |
-| ISCC | [`iscc-lib`](https://crates.io/crates/iscc-lib) 0.6 plus a Pillow-equivalent image normalisation in `src-tauri/src/iscc.rs` |
-| EPUB | [`rbook`](https://crates.io/crates/rbook) for metadata, cover and reading order; text extracted with `quick-xml` |
-| Office | [`zip`](https://crates.io/crates/zip) and `quick-xml`; text follows Tika's inclusion rules, Excel number formats rendered as Apache POI does |
-| SVG | [`resvg`](https://crates.io/crates/resvg) 0.48 with the settings iscc-sdk uses through resvg_py |
-| Audio | [`symphonia`](https://crates.io/crates/symphonia) 0.6 decodes, a resampler with fpcalc's settings in `src-tauri/src/resample.rs`, [`rusty-chromaprint`](https://crates.io/crates/rusty-chromaprint) fingerprints, [`lofty`](https://crates.io/crates/lofty) reads tags and cover art; no external tools |
-| CLI | [`clap`](https://crates.io/crates/clap) |
-| UI | Vite + TypeScript, no framework; ISCC brand tokens, Readex Pro and JetBrains Mono |
-| Content Credentials pin | `src/assets/content_credentials_{icon,logo}.svg`, copied from [c2pa-conformance-tool](https://github.com/contentauth/c2pa-conformance-tool) (Apache 2.0). The icon and the name are C2PA trademarks; shown unmodified as the presence indicator per the [C2PA UX guidance](https://spec.c2pa.org/specifications/specifications/2.2/ux/UX_Recommendations.html) |
+| Images | JPEG, PNG, WebP, GIF, TIFF, SVG |
+| Documents | EPUB, DOCX, PPTX, XLSX, ODT, ODS, ODP, TXT, Markdown |
+| Audio | MP3, FLAC, WAV, M4A |
 
-Trust lists compiled into the binary: the public C2PA trust list and TSA trust list from
-`c2pa-org/conformance-public`, and the c2pa-rs test root bundle (sources and licences in
-[`src-tauri/resources/certs/README.md`](src-tauri/resources/certs/README.md)) so files signed with the built-in
-demo key validate as trusted inside the app. The demo key is the c2pa-rs ES256 test certificate;
-other validators will report its signer as unknown. Use "My own certificate and key" in the Sign
-tab to sign with a real credential.
+## Good to know
 
-## Run
+- **It does not look credentials up yet.** Finding the credentials of a stripped copy by its ISCC
+  needs a lookup service, which C2PA specifies as the Soft Binding Resolution API. That is the next
+  step.
+- **The built-in certificate is a test certificate.** Anyone can check the ISCC, but only this app
+  trusts the demo signature. Sign with your own certificate and key for anything real.
+- **A matching ISCC is a strong signal, not proof.** It suggests that two files hold the same or
+  similar content. It says nothing about who made them or who holds the rights.
+- **Your files stay on your computer.** Signing sends only a hash of the signature to a timestamp
+  service, never the file. Inspecting stays offline.
 
-Requirements: Rust 1.96+, Node 22.12+ (CI uses 24), pnpm 10, and the
-[Tauri prerequisites](https://tauri.app/start/prerequisites/) of your system: the WebView2
-runtime on Windows (present on Windows 10/11), the Xcode command line tools on macOS, and
-WebKitGTK 4.1 with its development packages on Linux (also needed for `cargo test`).
+## For developers
+
+Rust on [Tauri 2](https://tauri.app): [c2pa-rs](https://crates.io/crates/c2pa) 0.91 with Rust
+native crypto (no OpenSSL) and [iscc-lib](https://crates.io/crates/iscc-lib), with pure Rust readers
+for every format. No external tools, no Python. The tests check every ISCC unit against iscc-core,
+the ISCC reference implementation, and iscc-sdk. The same core also builds as `c2pa-iscc`, a
+command-line tool that prints JSON.
 
 ```sh
 pnpm install
-pnpm tauri dev                 # dev build with hot reload, Vite on port 43172
-pnpm tauri dev -- -- /full/path/to/image.jpg  # open a file at startup (absolute path)
-pnpm tauri build               # installers under src-tauri/target/release/bundle
+pnpm tauri dev                                                               # the app
+cd src-tauri && cargo run --features cli --bin c2pa-iscc -- sign photo.jpg   # the CLI
 ```
 
-## Command line
-
-The CLI is not part of the installers yet. Build and run it from source with the `cli` feature:
-
-```sh
-cd src-tauri
-cargo run --features cli --bin c2pa-iscc -- inspect ../photo.jpg --no-preview          # inspection as JSON
-cargo run --features cli --bin c2pa-iscc -- sign ../report.docx --training cawg.ai_training=notAllowed
-cargo run --features cli --bin c2pa-iscc -- meta-code --title "A title" --description "Some text"
-cargo run --features cli --bin c2pa-iscc -- formats                                    # supported formats
-cargo run --features cli --bin c2pa-iscc -- sign --help                                # every option
-```
-
-The CLI prints the same JSON the desktop app works with (`--compact` for one line,
-`--no-preview` to leave out the base64 preview image). `sign` fills in every option you leave
-out the way the Sign tab prefills its form: the file's own title and description, all four
-units, the built-in demo certificate, a timestamp from Encypher, and a `-signed` copy next to
-the source. `--tsa URL` picks another timestamp service, `--no-timestamp` signs without network
-access. Errors print one line on stderr and exit with code 1.
-
-## Test
-
-```sh
-cd src-tauri
-cargo test --tests --all-features   # --all-features includes the CLI tests
-```
-
-The tests compare every unit, title and description with reference values produced by the
-Python ISCC tools, and sign and re-inspect a file of every format. The reference files live in
-`src-tauri/tests/fixtures` with the scripts that generate them:
-
-```sh
-cd src-tauri/tests/fixtures
-uv run --with pillow --with iscc-core expected_iscc.py   # raster images (Pillow + iscc-core)
-uv run --with iscc-sdk expected_meta.py                  # image and SVG metadata (iscc-sdk)
-uv run --with iscc-sdk expected_text.py                  # documents (iscc-sdk with Tika)
-uv run --with iscc-sdk expected_audio.py                 # audio (iscc-sdk with fpcalc and TagLib)
-```
-
-Sources and licences of the fixtures are listed in
-[`src-tauri/tests/fixtures/README.md`](src-tauri/tests/fixtures/README.md).
-
-## Timestamps
-
-Signing asks a time stamping authority (TSA) to countersign the signature, so the manifest
-proves that it existed at a given time and stays verifiable after the signing certificate
-expires. This is the only network access of the app: it sends a SHA-256 hash of the signature,
-nothing of the file. The default service is [Encypher](https://tsa.encypher.com), the only free
-service found whose timestamps are on the C2PA TSA trust list; the Sign tab also offers DigiCert
-and Sectigo (valid timestamps, but not on that list) and any other RFC 3161 URL. Timestamping is
-best effort: when the service fails, does not answer within 10 seconds, or returns a timestamp
-that C2PA would not accept (too large, or a certificate that breaks the C2PA rules), the file is
-signed without a timestamp and the app says so. Inspecting never goes online.
-
-The Content Credentials tab shows the timestamp as *Verified time* (service on the C2PA trust
-list), *Unverified time* (valid, but the service is not on the list), *No timestamp*, or
-*Timestamp rejected* (the token is broken or does not belong to the signature). Manifests with a v1 claim get
-*Verified time* for any valid timestamp, because c2pa-rs does not check their service against
-the trust list; the tab says so.
-
-## Notes on the soft binding
-
-Data-Code and Instance-Code are computed over the asset with its C2PA manifest store stripped, on
-both the signing and the verifying side. Embedding a manifest therefore does not break them: a
-signed file matches all embedded units exactly until its content bytes change. IEP-0020 leaves the
-inputs of the units to the implementer; this is the convention used here. Content-Code Image and
-Content-Code Audio also survive re-encoding.
-
-EPUB and the office formats are ZIP containers. c2pa-rs embeds the manifest as
-`META-INF/content_credential.c2pa` with a collection data hash as hard binding, and removing it
-again rewrites the central directory, so the stripped bytes differ from the original. A signed
-document therefore shows a Data-Code that stays close and a failed Instance-Code; Content-Code
-Text, computed from the text in reading order, is the unit that identifies the document. SVG,
-WebP, TIFF, MP3 (c2pa-rs rewrites its ID3 tag), FLAC and WAV keep similar traces of a removed
-manifest; plain text, Markdown, JPEG, PNG, GIF and M4A come back byte for byte, so all four
-units match exactly. Content-Code Audio, like Content-Code Image, survives re-encoding.
-
-The assertion also carries the optional `bindingMetadata` map of the C2PA specification (2.3
-and later) with a description of the ISCC, the contact `info@iscc.io` and a link to IEP-0020, so
-anyone reading the manifest learns how to interpret the value without consulting the soft binding
-algorithm list. Validators ignore the map by spec; the Content Credentials tab shows it for any
-soft-binding assertion that has one.
-
-IEP-0020 is a draft. The assertion is built in `src-tauri/src/sign.rs` and decoded in
-`src-tauri/src/inspect.rs`; both go through `iscc::encode_seq` / `iscc::decode_seq`.
-
-## Release
-
-Releases are built by GitHub Actions. To publish version `X.Y.Z`:
-
-1. Set `version` in `src-tauri/Cargo.toml` (the only place that holds the app version) and run
-   `cargo check` so `Cargo.lock` follows.
-2. Add a `## X.Y.Z - YYYY-MM-DD` section to [CHANGELOG.md](CHANGELOG.md); it becomes the release
-   notes.
-3. Commit, then tag and push: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
-
-The `release` workflow checks the tag against the version, builds the Windows installer, the
-universal macOS disk image and the Linux AppImage, `.deb` and `.rpm`, attaches them with a
-`SHA256SUMS` file to a GitHub release, and rebuilds the landing page so its download links point
-at the new files. A tag with a hyphen (`v0.2.0-rc.1`) makes a prerelease, which the landing page
-skips. The builds are not code-signed.
-
-The landing page lives in `site/`. `node site/build.mjs` writes it to `_site/` with the links of
-the latest release; the `pages` workflow deploys it to https://c2pa-demo.iscc.codes.
-
-`scripts/shot.ps1` drives and screenshots the running app on Windows, for checking the UI by eye.
+The assertion is built in [`src-tauri/src/sign.rs`](src-tauri/src/sign.rs) and read in
+[`src-tauri/src/inspect.rs`](src-tauri/src/inspect.rs). [DEVELOPMENT.md](DEVELOPMENT.md) covers
+requirements, the CLI, tests, timestamps and releases.
 
 ## Licence
 
-Apache-2.0, see [LICENSE](LICENSE). Test fixtures and certificates from other projects keep
-their own licences, listed in [`src-tauri/tests/fixtures/README.md`](src-tauri/tests/fixtures/README.md)
-and [`src-tauri/resources/certs/README.md`](src-tauri/resources/certs/README.md). The fonts
-(Readex Pro, JetBrains Mono) are under the SIL Open Font License, with the licence texts in
-`src/assets/fonts`. The ISCC logos in `src/assets` are marks of the ISCC Foundation and are not
-covered by the Apache-2.0 licence.
+Apache-2.0, see [LICENSE](LICENSE). Made by the [ISCC Foundation](https://iscc.io). The ISCC logos
+are marks of the ISCC Foundation and are not covered by the licence. Third-party fixtures,
+certificates and fonts keep their own licences, listed in [DEVELOPMENT.md](DEVELOPMENT.md#licences).

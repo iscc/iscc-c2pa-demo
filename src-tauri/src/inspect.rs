@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use c2pa::assertions::{labels, SoftBinding};
-use c2pa::{Context, Manifest, Reader};
+use c2pa::{Context, Manifest, Reader, ValidationState};
 use image::codecs::jpeg::JpegEncoder;
 use serde::Serialize;
 use serde_json::Value;
@@ -73,12 +73,27 @@ pub struct ManifestSummary {
     pub claim_generator: Option<String>,
     pub manifest_count: usize,
     pub validation_state: String,
+    /// Why the manifest is invalid; set exactly when `validation_state` is `Invalid`.
+    pub invalid_reason: Option<InvalidReason>,
     pub validation: Value,
     pub signature: Option<SignatureSummary>,
     pub assertions: Vec<AssertionSummary>,
     pub ingredients: Vec<IngredientSummary>,
     pub soft_bindings: Vec<SoftBindingSummary>,
     pub training_mining: Option<Value>,
+}
+
+/// The failure that makes a manifest invalid, in plain language, so the verdict is never bare.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct InvalidReason {
+    /// Plain-language sentence; c2pa's own explanation for codes without one.
+    pub text: String,
+    /// Validation code of that failure; `None` when c2pa names no failure.
+    pub code: Option<String>,
+    /// c2pa's explanation of that failure.
+    pub explanation: Option<String>,
+    /// Further failures that make the manifest invalid.
+    pub more: usize,
 }
 
 #[derive(Serialize, Debug)]
@@ -409,6 +424,7 @@ fn summarize(reader: &Reader, json: &Value, computed: &[IsccUnit]) -> ManifestSu
         claim_generator,
         manifest_count: reader.manifests().len(),
         validation_state: format!("{:?}", reader.validation_state()),
+        invalid_reason: invalid_reason(reader),
         validation: serde_json::to_value(reader.validation_results()).unwrap_or(Value::Null),
         signature: manifest
             .and_then(Manifest::signature_info)
@@ -440,6 +456,150 @@ fn summarize(reader: &Reader, json: &Value, computed: &[IsccUnit]) -> ManifestSu
             .unwrap_or_default(),
         training_mining,
         assertions,
+    }
+}
+
+/// A failure reported by the validator: code, explanation, and whether it belongs to an
+/// ingredient's manifest rather than the active one.
+type Failure<'a> = (&'a str, Option<&'a str>, bool);
+
+/// Reason of an invalid manifest; `None` for any other validation state.
+fn invalid_reason(reader: &Reader) -> Option<InvalidReason> {
+    if reader.validation_state() != ValidationState::Invalid {
+        return None;
+    }
+    let results = reader.validation_results();
+    let active = results
+        .and_then(|r| r.active_manifest())
+        .into_iter()
+        .flat_map(|c| c.failure())
+        .map(|v| (v.code(), v.explanation(), false));
+    let ingredients = results
+        .and_then(|r| r.ingredient_deltas())
+        .into_iter()
+        .flatten()
+        .flat_map(|d| d.validation_deltas().failure())
+        .map(|v| (v.code(), v.explanation(), true));
+    let failures: Vec<Failure> = active.chain(ingredients).collect();
+    Some(reason_for(&failures))
+}
+
+/// Failures c2pa does not count against the manifest (`is_tolerated_manifest_failure_code`
+/// in c2pa-rs): an untrusted signer and CAWG identity assertion failures.
+fn tolerated(code: &str) -> bool {
+    code == "signingCredential.untrusted"
+        || code.starts_with("cawg.x509.")
+        || code.starts_with("cawg.identity.")
+}
+
+/// Reason from the failures in validator order: the first one that counts leads, the others
+/// are counted. Without such a failure, c2pa found the claim signature unconfirmed.
+fn reason_for(failures: &[Failure]) -> InvalidReason {
+    let counted: Vec<&Failure> = failures.iter().filter(|f| !tolerated(f.0)).collect();
+    let Some(&&(code, explanation, ingredient)) = counted.first() else {
+        return InvalidReason {
+            text: "The signature could not be confirmed.".to_owned(),
+            code: None,
+            explanation: None,
+            more: 0,
+        };
+    };
+    let plain = if ingredient {
+        Some(INGREDIENT_INVALID)
+    } else {
+        plain_reason(code)
+    };
+    let text = plain
+        .map(str::to_owned)
+        .or_else(|| explanation.filter(|e| !e.trim().is_empty()).map(sentence))
+        .unwrap_or_else(|| "Validation failed.".to_owned());
+    InvalidReason {
+        text,
+        code: Some(code.to_owned()),
+        explanation: explanation.map(str::to_owned),
+        more: counted.len() - 1,
+    }
+}
+
+const INGREDIENT_INVALID: &str =
+    "A source this file was made from (an ingredient) does not validate.";
+
+/// Plain-language sentence for the failure codes of c2pa-rs 0.91 a reader can act on.
+fn plain_reason(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "assertion.dataHash.mismatch"
+        | "assertion.bmffHash.mismatch"
+        | "assertion.boxesHash.mismatch"
+        | "assertion.boxesHash.unknownBox"
+        | "assertion.collectionHash.mismatch" => {
+            "The file changed after signing: its hash no longer matches."
+        }
+        "claim.hardBindings.missing"
+        | "assertion.multipleHardBindings"
+        | "assertion.dataHash.malformed"
+        | "assertion.bmffHash.malformed"
+        | "assertion.boxesHash.malformed"
+        | "assertion.collectionHash.malformed"
+        | "assertion.collectionHash.invalidURI"
+        | "assertion.dataHash.redacted"
+        | "assertion.hardBinding.redacted" => {
+            "The manifest has no usable hash of the file, so the file cannot be checked against it."
+        }
+        "claimSignature.mismatch" => {
+            "The signature does not match the manifest: the manifest changed after signing."
+        }
+        "claimSignature.missing" => "The manifest carries no signature.",
+        "claimSignature.outsideValidity" => {
+            "The file was signed outside the validity period of the signing certificate."
+        }
+        "signingCredential.expired" => "The signing certificate has expired.",
+        "signingCredential.invalid" => {
+            "The signing certificate does not meet the C2PA certificate requirements."
+        }
+        "signingCredential.ocsp.revoked" => "The signing certificate has been revoked.",
+        "assertion.hashedURI.mismatch" | "hashedURI.mismatch" => {
+            "Part of the manifest changed after signing."
+        }
+        "assertion.missing"
+        | "assertion.inaccessible"
+        | "assertion.required.missing"
+        | "claim.required.missing"
+        | "hashedURI.missing" => "Part of the manifest that the signature covers is missing.",
+        "assertion.undeclared" => "The manifest holds a part the signature does not cover.",
+        "claim.missing"
+        | "claim.multiple"
+        | "claim.malformed"
+        | "claim.cbor.invalid"
+        | "assertion.json.invalid"
+        | "assertion.cbor.invalid"
+        | "manifest.compressed.invalid" => "The manifest is malformed.",
+        "timeStamp.mismatch" | "timeStamp.malformed" | "timeStamp.outsideValidity" => {
+            "The timestamp is invalid or does not belong to this signature."
+        }
+        "algorithm.unsupported" => "The manifest uses an algorithm this app cannot check.",
+        "manifest.inaccessible" => "A manifest this file refers to could not be found.",
+        c if c.starts_with("assertion.action.") => {
+            "The recorded edit history (actions) is inconsistent."
+        }
+        c if c.starts_with("ingredient.") => INGREDIENT_INVALID,
+        _ => return None,
+    })
+}
+
+/// c2pa's explanation as a sentence: capital first letter, closing full stop.
+fn sentence(explanation: &str) -> String {
+    let mut chars = explanation.trim().chars();
+    let first: String = chars
+        .next()
+        .map(char::to_uppercase)
+        .into_iter()
+        .flatten()
+        .collect();
+    let text = format!("{first}{}", chars.as_str());
+    if text.ends_with(['.', '!', '?', ')']) {
+        text
+    } else {
+        format!("{text}.")
     }
 }
 
@@ -683,6 +843,97 @@ mod tests {
         assert_eq!(
             timestamp_status(&[validated], true),
             ("untrusted", false, None)
+        );
+    }
+
+    #[test]
+    fn invalid_reason_leads_with_the_first_counted_failure() {
+        let hash = (
+            "assertion.dataHash.mismatch",
+            Some("hashes do not match"),
+            false,
+        );
+        let untrusted = ("signingCredential.untrusted", Some("not on a list"), false);
+        let identity = ("cawg.identity.well-formed", None, false);
+        let reason = reason_for(&[untrusted, identity, hash]);
+        assert_eq!(
+            reason,
+            InvalidReason {
+                text: "The file changed after signing: its hash no longer matches.".to_owned(),
+                code: Some(hash.0.to_owned()),
+                explanation: Some("hashes do not match".to_owned()),
+                more: 0,
+            }
+        );
+        let signature = ("claimSignature.mismatch", None, false);
+        let two = reason_for(&[signature, untrusted, hash]);
+        assert_eq!(two.code.as_deref(), Some(signature.0));
+        assert!(two.text.starts_with("The signature does not match"));
+        assert_eq!(two.more, 1);
+    }
+
+    #[test]
+    fn invalid_reason_maps_codes_and_falls_back_to_the_explanation() {
+        for code in [
+            "assertion.bmffHash.mismatch",
+            "assertion.boxesHash.mismatch",
+            "assertion.collectionHash.mismatch",
+        ] {
+            assert_eq!(
+                plain_reason(code),
+                plain_reason("assertion.dataHash.mismatch"),
+                "{code}"
+            );
+        }
+        assert!(plain_reason("assertion.action.malformed").is_some());
+        assert_eq!(
+            plain_reason("ingredient.manifest.mismatch"),
+            Some(INGREDIENT_INVALID)
+        );
+        assert_eq!(plain_reason("general.error"), None);
+
+        let unmapped = reason_for(&[("general.error", Some("something broke"), false)]);
+        assert_eq!(unmapped.text, "Something broke.");
+        assert_eq!(unmapped.code.as_deref(), Some("general.error"));
+        let bare = reason_for(&[("general.error", None, false)]);
+        assert_eq!(bare.text, "Validation failed.");
+
+        // An ingredient's own hash failure is not this file's hash failure.
+        let delta = reason_for(&[("assertion.dataHash.mismatch", None, true)]);
+        assert_eq!(delta.text, INGREDIENT_INVALID);
+
+        let unconfirmed = reason_for(&[("signingCredential.untrusted", None, false)]);
+        assert_eq!(unconfirmed.code, None);
+        assert_eq!(unconfirmed.text, "The signature could not be confirmed.");
+    }
+
+    #[test]
+    fn changed_pixels_give_a_hash_mismatch_reason() {
+        let signed = inspect(Path::new(&fixture("tsa/encypher.jpg"))).unwrap();
+        let manifest = signed.manifest.unwrap();
+        assert_ne!(manifest.validation_state, "Invalid");
+        assert_eq!(manifest.invalid_reason, None);
+
+        let mut file = std::fs::read(fixture("tsa/encypher.jpg")).unwrap();
+        // A byte of entropy-coded data just before the end-of-image marker, off any 0xFF.
+        let at = (2..file.len() - 2)
+            .rev()
+            .find(|&i| file[i - 1] < 0xFE && file[i] < 0xFE && file[i + 1] < 0xFE)
+            .unwrap();
+        file[at] ^= 1;
+        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-changed-pixels");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("changed.jpg");
+        std::fs::write(&path, &file).unwrap();
+        let manifest = inspect(&path).unwrap().manifest.unwrap();
+        assert_eq!(manifest.validation_state, "Invalid");
+        let reason = manifest
+            .invalid_reason
+            .expect("an invalid manifest has a reason");
+        assert_eq!(reason.code.as_deref(), Some("assertion.dataHash.mismatch"));
+        assert_eq!(
+            reason.text,
+            "The file changed after signing: its hash no longer matches."
         );
     }
 

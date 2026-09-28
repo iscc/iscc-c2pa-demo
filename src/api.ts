@@ -55,6 +55,17 @@ export interface TimestampSummary {
   reason: string | null;
 }
 
+/** The failure that makes a manifest invalid, in plain language. */
+export interface InvalidReason {
+  /** Plain-language sentence; c2pa's own explanation for codes without one. */
+  text: string;
+  /** Validation code of that failure; null when c2pa names no failure. */
+  code: string | null;
+  explanation: string | null;
+  /** Further failures that make the manifest invalid. */
+  more: number;
+}
+
 export interface AssertionSummary {
   label: string;
   data: unknown;
@@ -90,6 +101,8 @@ export interface ManifestSummary {
   claim_generator: string | null;
   manifest_count: number;
   validation_state: "Trusted" | "Valid" | "Invalid" | string;
+  /** Why the manifest is invalid; set exactly when `validation_state` is `Invalid`. */
+  invalid_reason: InvalidReason | null;
   validation: ValidationResults | null;
   signature: SignatureSummary | null;
   assertions: AssertionSummary[];

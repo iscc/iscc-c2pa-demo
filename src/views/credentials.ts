@@ -4,6 +4,7 @@ import type {
   AssertionSummary,
   BindingMetadata,
   Inspection,
+  InvalidReason,
   ManifestSummary,
   TimestampSummary,
   TrainingEntry,
@@ -143,6 +144,7 @@ function statusCard(m: ManifestSummary): string {
         <span class="grow"></span>
         <span class="hint">${m.manifest_count} manifest${m.manifest_count === 1 ? "" : "s"} in store</span>
       </header>
+      ${invalidReason(m.invalid_reason)}
       <div class="body">
         <dl class="kv">
           <dt>Title</dt><dd>${esc(m.title ?? "—")}</dd>
@@ -154,6 +156,18 @@ function statusCard(m: ManifestSummary): string {
         </dl>
       </div>
     </section>`;
+}
+
+/** Why the manifest is invalid: a plain sentence, the failure code under it, and how many more failures the Validation card lists. */
+function invalidReason(r: InvalidReason | null): string {
+  if (!r) return "";
+  const more = r.more > 0 ? `+${r.more} more, see Validation` : "";
+  const detail = [r.code ? `<span class="mono">${esc(r.code)}</span>` : "", esc(more)].filter(Boolean).join(" · ");
+  return `
+      <div class="reason" title="${esc(r.explanation ?? "")}">
+        <p>${esc(r.text)}</p>
+        ${detail ? `<p class="detail">${detail}</p>` : ""}
+      </div>`;
 }
 
 function softBindingCard(m: ManifestSummary, inspection: Inspection): string {
