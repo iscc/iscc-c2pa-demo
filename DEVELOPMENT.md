@@ -9,12 +9,13 @@ Opening a file shows:
 
 - the C2PA manifest store with validation state, signer, actions, ingredients and every assertion;
 - the ISCC units of the file (Meta-Code, Content-Code Image, Text or Audio, Data-Code,
-  Instance-Code), computed with any embedded manifest store stripped. Title, description, text
+  Instance-Code), computed from the whole file as any ISCC tool computes them. Title, description, text
   and audio fingerprint are extracted with the same rules as
   [iscc-sdk](https://github.com/iscc/iscc-sdk), and the test suite checks the units against
   iscc-sdk's output for every fixture;
 - the ISCC soft binding embedded in the manifest, decoded from its ISCC-SEQ value and compared
-  unit by unit with the file;
+  unit by unit with the file, and whether the file is source-preserving (see
+  [Notes on the soft binding](#notes-on-the-soft-binding));
 - the CAWG training and data mining assertion, if present.
 
 The Sign tab writes a signed copy with:
@@ -25,8 +26,8 @@ The Sign tab writes a signed copy with:
 - a `cawg.metadata` assertion with the title and description behind the Meta-Code, so a signed
   copy recomputes the Meta-Code it was signed with;
 - an optional `cawg.training-mining` assertion (CAWG Training and Data Mining Assertion 1.1);
-- a `c2pa.created` action with the chosen digital source type, or, when the source already has
-  Content Credentials, a new manifest with the existing one as parent ingredient;
+- a `c2pa.opened` action with the source as parent ingredient, which carries the chosen digital
+  source type or, when the source already has Content Credentials, the existing manifest;
 - an RFC 3161 timestamp from a time stamping authority, so the manifest proves when it was
   signed (see below).
 
@@ -128,19 +129,37 @@ the trust list; the tab says so.
 
 ## Notes on the soft binding
 
-Data-Code and Instance-Code are computed over the asset with its C2PA manifest store stripped, on
-both the signing and the verifying side. Embedding a manifest therefore does not break them: a
-signed file matches all embedded units exactly until its content bytes change. Content-Code Image
-and Content-Code Audio also survive re-encoding.
+The app follows [IEP-0020](https://ieps.iscc.codes/iep-0020/) in full.
 
-EPUB and the office formats are ZIP containers. c2pa-rs embeds the manifest as
-`META-INF/content_credential.c2pa` with a collection data hash as hard binding, and removing it
-again rewrites the central directory, so the stripped bytes differ from the original. A signed
-document therefore shows a Data-Code that stays close and a failed Instance-Code; Content-Code
-Text, computed from the text in reading order, is the unit that identifies the document. SVG,
-WebP, TIFF, MP3 (c2pa-rs rewrites its ID3 tag), FLAC and WAV keep similar traces of a removed
-manifest; plain text, Markdown, JPEG, PNG, GIF and M4A come back byte for byte, so all four
-units match exactly. Content-Code Audio, like Content-Code Image, survives re-encoding.
+**What is embedded.** Every unit is computed from the file handed to the signer exactly as it is,
+including any Content Credentials it already carries. These are the units the left panel shows for
+that file, and the ones iscc-sdk computes for it. No ISCC code path knows anything about C2PA.
+
+**Source preservation.** A signed file is *source-preserving* when its *source view* (the file
+without the byte ranges its C2PA data hash excludes) is byte for byte the file that was signed. The
+embedded Instance-Code proves it: the app computes the Instance-Code of the source view and
+compares. The soft binding card shows one of three results:
+
+| Result | When | Formats signed here (c2pa-rs 0.91) |
+|---|---|---|
+| Source preserved | Instance-Codes equal | JPEG, PNG, GIF, TXT, Markdown |
+| Source not preserved | embedding changed other bytes, or the source already had Content Credentials | WebP, WAV (RIFF size field), TIFF (new image directory), SVG (namespace declaration), MP3 (ID3 tag rewritten), FLAC (ID3 tag in front); any re-signed file |
+| Not verifiable | no data hash, no Instance-Code, a signature that does not validate or no longer covers the manifest as it is, or the file changed after signing | EPUB, DOCX, PPTX, XLSX, ODT, ODS, ODP (collection hash), M4A (BMFF hash) |
+
+`source_preservation_per_format` in `src-tauri/src/sign.rs` pins the table.
+
+**What the embedded units are compared with.** When the file is source-preserving, every unit is
+recomputed from the source view, which then is the original. Otherwise Meta-Code and Content-Code
+are recomputed from the file itself, because the source view of a file whose embedding changed other
+bytes need not decode (TIFF) or decodes wrongly (MP3). Data-Code and Instance-Code always come from
+the source view where there is one, so the manifest store never counts as a change. When a file is
+not source-preserving but its hash still matches, Data-Code and Instance-Code describe the file as
+it was before signing; the card shows them in grey, with "Before signing" in place of "No match".
+
+**Inception.** Signing records the source as the `parentOf` ingredient and a `c2pa.opened`
+action with `allActionsIncluded: true`, as the C2PA specification requires for a file that is opened
+and saved with Content Credentials but otherwise unchanged. The digital source type chosen in the
+Sign tab goes on that ingredient when the source has no Content Credentials of its own.
 
 The assertion also carries the optional `bindingMetadata` map of the C2PA specification (2.3
 and later) with a description of the ISCC, the contact `info@iscc.io` and a link to IEP-0020, so
@@ -148,23 +167,9 @@ anyone reading the manifest learns how to interpret the value without consulting
 algorithm list. Validators ignore the map by spec; the Content Credentials tab shows it for any
 soft-binding assertion that has one.
 
-IEP-0020 is a draft. The assertion is built in `src-tauri/src/sign.rs` and decoded in
-`src-tauri/src/inspect.rs`; both go through `iscc::encode_seq` / `iscc::decode_seq`.
-
-### Known deviations from IEP-0020
-
-IEP-0020 is a draft and has moved since this version was built. The ISCC-SEQ value format is
-conformant. Three points are not yet:
-
-- IEP-0020 requires every unit to be generated from the complete source, including a manifest
-  store the source already carries. This version strips an existing store first, so re-signing a
-  file that already has Content Credentials deviates. Files without Content Credentials are not
-  affected.
-- The recommended `io.iscc.source` entry (hash of the source) is not written yet.
-- For EPUB and the office formats, the Instance-Code of a signed copy is reported as a failed
-  match; IEP-0020 recommends not reporting that difference as a failure.
-
-Source-preserving signing, planned for the next version, resolves all three.
+The assertion is built in `src-tauri/src/sign.rs` and verified in `src-tauri/src/inspect.rs`
+(`source_view`, `preservation`, `summarize_assertion`); both go through `iscc::encode_seq` /
+`iscc::decode_seq`.
 
 ## Release
 

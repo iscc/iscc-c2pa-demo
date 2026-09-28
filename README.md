@@ -84,7 +84,7 @@ concatenated. In CBOR the value is a byte string; the JSON view shows it in base
 Next to it: a `cawg.metadata` assertion with the title and description behind the Meta-Code, an
 optional `cawg.training-mining` assertion, and an RFC 3161 timestamp.
 [DEVELOPMENT.md](DEVELOPMENT.md#notes-on-the-soft-binding) explains how each unit is calculated
-and where this version still differs from the IEP-0020 draft.
+and checked, including whether signing left the original file intact byte for byte.
 
 ## Download
 

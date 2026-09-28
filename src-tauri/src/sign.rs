@@ -2,12 +2,13 @@
 //! a CAWG training and data mining assertion and an RFC 3161 timestamp.
 
 use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use c2pa::assertions::{labels, DigitalSourceType, Metadata, SoftBinding};
-use c2pa::{create_signer, BoxedSigner, Builder, BuilderIntent, Context, Reader, SigningAlg};
+use c2pa::{create_signer, BoxedSigner, Builder, BuilderIntent, Context, SigningAlg};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -30,7 +31,8 @@ pub struct SignRequest {
     /// Meta-Code equals the one shown for the source.
     #[serde(default)]
     pub meta: Option<String>,
-    /// Digital source type URI used for the `c2pa.created` action of new manifests.
+    /// Digital source type URI recorded on the parent ingredient when the source carries no
+    /// Content Credentials; a source with Content Credentials keeps its own history instead.
     pub source_type: String,
     /// ISCC unit slugs to embed: meta, the Content-Code (image, text or audio), data, instance.
     pub units: Vec<String>,
@@ -101,15 +103,16 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
     let format = inspect::asset_format(source)?;
     let mime = format.mime;
 
+    // IEP-0020: every unit is generated from the source as a whole, including any Content
+    // Credentials it already carries.
     let selection = UnitSelection::from_slugs(&request.units);
-    let (content_bytes, _) = inspect::content_bytes(source, &bytes, mime);
-    let asset = asset::read(source, &content_bytes, format)?;
+    let asset = asset::read(source, &bytes, format)?;
     let meta = MetaInput {
         name: Some(&request.title),
         description: request.description.as_deref(),
         meta: request.meta.as_deref(),
     };
-    let units = iscc::units_for(&content_bytes, asset.content(), meta, &selection)?;
+    let units = iscc::units_for(&bytes, asset.content(), meta, &selection)?;
     if units.is_empty() {
         bail!("select at least one ISCC unit for the soft binding");
     }
@@ -125,7 +128,8 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
         "title": request.title,
         "format": mime,
     }))?;
-    builder.set_intent(intent_for(source, &request.source_type)?);
+    builder.set_intent(BuilderIntent::Edit);
+    add_parent(&mut builder, source, &bytes, mime, &request.source_type)?;
 
     let soft_binding: SoftBinding = serde_json::from_value(json!({
         "alg": ISCC_SOFT_BINDING_ALG,
@@ -248,21 +252,28 @@ fn temp_sibling(output: &Path) -> Result<std::path::PathBuf> {
     Ok(output.with_file_name(format!("~{}", name.to_string_lossy())))
 }
 
-/// Edit intent when the source already carries a manifest store, otherwise a creation.
-fn intent_for(source: &Path, source_type: &str) -> Result<BuilderIntent> {
-    let has_manifest = match Reader::from_context(Context::new().with_settings(base_settings())?)
-        .with_file(source)
-    {
-        Ok(_) => true,
-        Err(c2pa::Error::JumbfNotFound) => false,
-        Err(e) => bail!("existing manifest cannot be read: {e}"),
-    };
-    if has_manifest {
-        return Ok(BuilderIntent::Edit);
+/// Record the source as the parent ingredient; with the edit intent c2pa then adds the
+/// `c2pa.opened` action that references it. A source without Content Credentials gets the
+/// digital source type chosen by the user.
+fn add_parent(
+    builder: &mut Builder,
+    source: &Path,
+    bytes: &[u8],
+    mime: &str,
+    source_type: &str,
+) -> Result<()> {
+    let title = source.file_name().map(|n| n.to_string_lossy().into_owned());
+    let parent = builder.add_ingredient_from_stream(
+        json!({ "title": title, "relationship": "parentOf" }).to_string(),
+        mime,
+        &mut Cursor::new(bytes),
+    )?;
+    if parent.active_manifest().is_none() {
+        let dst: DigitalSourceType = serde_json::from_value(json!(source_type))
+            .with_context(|| format!("unknown digital source type {source_type}"))?;
+        parent.set_digital_source_type(dst);
     }
-    let dst: DigitalSourceType = serde_json::from_value(json!(source_type))
-        .with_context(|| format!("unknown digital source type {source_type}"))?;
-    Ok(BuilderIntent::Create(dst))
+    Ok(())
 }
 
 /// Resolve credentials to (algorithm, certificate chain PEM, private key PEM).
@@ -290,6 +301,7 @@ fn load_credentials(credentials: &Credentials) -> Result<(String, String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inspect::Preservation;
 
     fn fixture(name: &str) -> String {
         format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
@@ -359,14 +371,14 @@ mod tests {
         let result = sign_no_manifest("iscc-c2pa-demo-test-match");
         assert_eq!(result.units.len(), 4);
         assert_eq!(result.timestamp, TimestampOutcome::Off);
-        // Bitstream units are computed without the manifest store on both sides, so they match.
-        assert!(result.inspection.iscc_excludes_manifest);
-        let sb = &result
+        let manifest = result
             .inspection
             .manifest
             .as_ref()
-            .expect("manifest present")
-            .soft_bindings[0];
+            .expect("manifest present");
+        // Embedding a JPEG only inserts the manifest store, so the source view is the source.
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::Preserved));
         assert_eq!(unit_match(sb, "Content-Code Image").similarity, Some(1.0));
         // Title and description typed at signing are stored in cawg.metadata and recomputed.
         assert_eq!(unit_match(sb, "Meta-Code").similarity, Some(1.0));
@@ -484,9 +496,42 @@ mod tests {
         assert_eq!(manifest.ingredients[0].relationship, "ParentOf");
         assert!(manifest.training_mining.is_none());
         assert_eq!(manifest.soft_bindings[0].units.len(), 2);
-        // The source already carried a manifest; stripping it on both sides keeps the match exact.
+        // The units describe the source as a whole, its old manifest store included, which
+        // embedding replaced: the Instance-Code identifies the source, not this file.
+        let source = std::fs::read(fixture("CA.jpg")).unwrap();
         let instance = unit_match(&manifest.soft_bindings[0], "Instance-Code");
-        assert_eq!(instance.similarity, Some(1.0));
+        assert_eq!(instance.embedded, iscc::instance_unit(&source).unwrap());
+        assert!(instance.similarity < Some(1.0));
+        assert_eq!(
+            manifest.soft_bindings[0].preservation,
+            Some(Preservation::Resigned)
+        );
+        assert_eq!(manifest.ingredients[0].digital_source_type, None);
+    }
+
+    #[test]
+    fn unsigned_source_records_opened_action() {
+        let result = sign_no_manifest("iscc-c2pa-demo-test-opened");
+        let manifest = result.inspection.manifest.expect("manifest present");
+        assert_eq!(manifest.ingredients.len(), 1);
+        let parent = &manifest.ingredients[0];
+        assert_eq!(parent.relationship, "ParentOf");
+        assert_eq!(parent.title.as_deref(), Some("no_manifest.jpg"));
+        assert_eq!(
+            parent.digital_source_type.as_deref(),
+            Some("http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture")
+        );
+        let actions = &manifest
+            .assertions
+            .iter()
+            .find(|a| a.label.starts_with(labels::ACTIONS))
+            .expect("actions assertion")
+            .data;
+        let list = actions["actions"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "{actions}");
+        assert_eq!(list[0]["action"], "c2pa.opened");
+        assert!(list[0].get("digitalSourceType").is_none());
+        assert_eq!(actions["allActionsIncluded"], true, "{actions}");
     }
 
     // Windows and macOS file systems are case-insensitive by default.
@@ -546,7 +591,6 @@ mod tests {
         assert_eq!(result.units.len(), 4);
         let inspection = &result.inspection;
         assert_eq!(inspection.kind, crate::formats::Kind::Text);
-        assert!(inspection.iscc_excludes_manifest);
         assert!(
             inspection.preview.starts_with("data:image/jpeg;base64,"),
             "cover preview"
@@ -565,11 +609,12 @@ mod tests {
         assert_eq!(unit_match(sb, "Content-Code Text").similarity, Some(1.0));
         // The book's own title outranks the one typed at signing.
         assert!(unit_match(sb, "Meta-Code").similarity.unwrap() < 1.0);
-        // Removing a manifest from a zip rewrites the central directory and leaves the manifest
-        // bytes behind, so the bitstream units of the stripped file only approximate those of the
-        // source. Data-Code varies with those (partly random) bytes: 94-100% over 15 signatures.
+        // A zip has a collection hash, not a data hash, so there is no source view: the units
+        // are compared with the whole file, whose manifest entry and rewritten directory differ
+        // from the source.
+        assert_eq!(sb.preservation, Some(Preservation::NoSourceView));
         let data = unit_match(sb, "Data-Code").similarity.unwrap();
-        assert!(data > 0.9, "Data-Code similarity {data}");
+        assert!(data > 0.5, "Data-Code similarity {data}");
         assert!(unit_match(sb, "Instance-Code").similarity.unwrap() < 1.0);
     }
 
@@ -623,6 +668,10 @@ mod tests {
         let inspection = inspect::inspect(&output).unwrap();
         let manifest = inspection.manifest.expect("manifest still readable");
         assert_eq!(manifest.validation_state, "Invalid");
+        assert_eq!(
+            manifest.soft_bindings[0].preservation,
+            Some(Preservation::FileChanged)
+        );
         // One flipped bit: pixels practically unchanged, bytes nearly equal, exact hash gone.
         assert!(
             unit_match(&manifest.soft_bindings[0], "Content-Code Image")
@@ -644,10 +693,63 @@ mod tests {
         );
     }
 
+    /// Replace the embedded Instance-Code of the signed file `path` with the one the file's
+    /// source view has now, as an attacker would to fake source preservation.
+    fn forge_instance_code(path: &Path) {
+        let inspection = inspect::inspect(path).unwrap();
+        let sb = &inspection.manifest.expect("manifest present").soft_bindings[0];
+        let row = unit_match(sb, "Instance-Code");
+        let raw = |iscc: &str| crate::iscc::encode_seq(&[iscc.to_owned()]).unwrap();
+        let (embedded, forged) = (raw(&row.embedded.iscc), raw(row.computed.as_ref().unwrap()));
+        let mut bytes = std::fs::read(path).unwrap();
+        let pos = bytes
+            .windows(embedded.len())
+            .position(|w| w == embedded)
+            .expect("Instance-Code stored uncompressed");
+        bytes[pos..pos + forged.len()].copy_from_slice(&forged);
+        std::fs::write(path, &bytes).unwrap();
+    }
+
+    #[test]
+    fn forged_instance_code_is_not_source_preservation() {
+        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-forged");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Bytes appended after signing, Instance-Code replaced with the one of the altered file.
+        let jpeg = dir.join("appended.jpg");
+        sign(&request("no_manifest.jpg", &jpeg)).unwrap();
+        let mut bytes = std::fs::read(&jpeg).unwrap();
+        bytes.extend_from_slice(b"appended after signing");
+        std::fs::write(&jpeg, &bytes).unwrap();
+        forge_instance_code(&jpeg);
+
+        // Hard binding intact, but a WebP is not source-preserving: forge the proof it lacks.
+        let webp = dir.join("synthetic.webp");
+        image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8, y as u8, 128]))
+            .save(&webp)
+            .unwrap();
+        let signed_webp = dir.join("synthetic-signed.webp");
+        let mut req = request("no_manifest.jpg", &signed_webp);
+        req.source = webp.to_string_lossy().into_owned();
+        sign(&req).unwrap();
+        forge_instance_code(&signed_webp);
+
+        for path in [jpeg, signed_webp] {
+            let manifest = inspect::inspect(&path).unwrap().manifest.unwrap();
+            assert_eq!(
+                manifest.soft_bindings[0].preservation,
+                Some(Preservation::SignatureInvalid),
+                "{}: {:?}",
+                path.display(),
+                manifest.validation
+            );
+        }
+    }
+
     #[test]
     fn webp_and_tiff_sign_and_verify_content() {
         // c2pa-rs 0.91 rewrites the RIFF size (WebP) and appends a new IFD (TIFF) when embedding,
-        // and cannot strip either back to the original; Content-Code is unaffected.
+        // so neither is source-preserving; Content-Code is unaffected.
         let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-formats");
         std::fs::create_dir_all(&dir).unwrap();
         let img = image::RgbImage::from_fn(96, 64, |x, y| {
@@ -676,51 +778,43 @@ mod tests {
                 Some(1.0),
                 "{ext}"
             );
-            // Stripping a WebP keeps its manifest, and the panel must not claim otherwise. (TIFF
-            // stripping unlinks the manifest but leaves its bytes and a new IFD behind.)
-            if ext == "webp" {
-                assert!(!result.inspection.iscc_excludes_manifest);
-            }
+            assert_eq!(
+                manifest.soft_bindings[0].preservation,
+                Some(Preservation::Changed),
+                "{ext}"
+            );
         }
     }
 
-    /// What removing the manifest from a signed copy restores.
-    #[derive(Clone, Copy, PartialEq)]
-    enum Strip {
-        /// The source's bytes, exactly.
-        Exact,
-        /// Bytes close to the source's.
-        Traces,
-        /// Nothing: c2pa-rs reports success but keeps the manifest.
-        Kept,
-    }
-
     #[test]
-    fn every_format_signs_and_matches_its_content() {
-        // Stripping restores TXT, Markdown, GIF and M4A byte for byte. Zip containers keep the
-        // removed manifest's bytes and a rewritten directory (Data-Code 69-92% over five
-        // signatures of these small files), SVG keeps the c2pa namespace declaration (67%), MP3
-        // its ID3 tag as c2pa-rs rewrote it (v2.4, no padding), FLAC the empty ID3 tag c2pa-rs
-        // put in front. c2pa-rs 0.91 cannot remove the manifest chunk from a WAV, as from WebP.
+    fn source_preservation_per_format() {
+        // Measured with c2pa-rs 0.91. Preserved: embedding only inserts the manifest store.
+        // Changed: SVG gains a namespace declaration (and a metadata wrapper), MP3 gets its ID3
+        // tag rewritten as v2.4, FLAC an ID3 tag in front, WAV a new RIFF size, TIFF a new IFD.
+        // No source view: zip containers (collection hash) and M4A (BMFF hash).
+        use Preservation::*;
         let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-formats-all");
         std::fs::create_dir_all(&dir).unwrap();
         let cases = [
-            ("demo.txt", Strip::Exact),
-            ("demo.md", Strip::Exact),
-            ("demo.gif", Strip::Exact),
-            ("demo.m4a", Strip::Exact),
-            ("demo.mp3", Strip::Traces),
-            ("demo.flac", Strip::Traces),
-            ("demo.wav", Strip::Kept),
-            ("demo.svg", Strip::Traces),
-            ("demo.docx", Strip::Traces),
-            ("demo.pptx", Strip::Traces),
-            ("demo.xlsx", Strip::Traces),
-            ("demo.odt", Strip::Traces),
-            ("demo.ods", Strip::Traces),
-            ("demo.odp", Strip::Traces),
+            ("demo.txt", Preserved),
+            ("demo.md", Preserved),
+            ("demo.gif", Preserved),
+            ("libpng-test.png", Preserved),
+            ("demo.m4a", NoSourceView),
+            ("demo.mp3", Changed),
+            ("demo.flac", Changed),
+            ("demo.wav", Changed),
+            ("demo.svg", Changed),
+            ("demo.tif", Changed),
+            ("demo.docx", NoSourceView),
+            ("demo.pptx", NoSourceView),
+            ("demo.xlsx", NoSourceView),
+            ("demo.odt", NoSourceView),
+            ("demo.ods", NoSourceView),
+            ("demo.odp", NoSourceView),
         ];
-        for (file, strip) in cases {
+        let mut failures = Vec::new();
+        for (file, expected) in cases {
             let source = inspect::inspect(Path::new(&fixture(file))).unwrap();
             let mut req = request(file, &dir.join(file));
             req.title = source.meta_fields.name.clone();
@@ -731,23 +825,26 @@ mod tests {
                 .to_vec();
             let result = sign(&req).unwrap();
 
-            assert_eq!(
-                result.inspection.iscc_excludes_manifest,
-                strip != Strip::Kept,
-                "{file}"
-            );
+            // The embedded units are those shown for the source.
+            assert_eq!(result.units, source.iscc, "{file}");
             let manifest = result.inspection.manifest.as_ref().unwrap();
             assert_eq!(manifest.validation_state, "Trusted", "{file}");
-            let similarity = |i: usize| manifest.soft_bindings[0].matches[i].similarity.unwrap();
+            let sb = &manifest.soft_bindings[0];
+            let similarity = |i: usize| sb.matches[i].similarity.unwrap();
+            if sb.preservation != Some(expected) {
+                failures.push(format!("{file}: {:?}", sb.preservation));
+                continue;
+            }
             assert_eq!(similarity(0), 1.0, "{file} Meta-Code");
             assert_eq!(similarity(1), 1.0, "{file} Content-Code");
-            if strip == Strip::Exact {
+            if expected == Preserved {
                 assert_eq!((similarity(2), similarity(3)), (1.0, 1.0), "{file}");
             } else {
                 assert!(similarity(2) > 0.5, "{file} Data-Code {}", similarity(2));
                 assert!(similarity(3) < 1.0, "{file} Instance-Code");
             }
         }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// Sign `no_manifest.jpg` through the timestamp service `url` into the directory `name`.
@@ -809,7 +906,6 @@ mod tests {
         let inspection = inspect::inspect(Path::new(&fixture("no_manifest.jpg"))).unwrap();
         assert!(inspection.manifest.is_none());
         assert!(inspection.manifest_error.is_none());
-        assert!(!inspection.iscc_excludes_manifest);
         assert_eq!(inspection.iscc.len(), 4);
         assert_eq!(inspection.iscc[0].name, "Meta-Code");
         assert_eq!(inspection.meta_fields.name, "no manifest");

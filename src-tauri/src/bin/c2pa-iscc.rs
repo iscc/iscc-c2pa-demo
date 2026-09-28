@@ -76,7 +76,8 @@ struct SignArgs {
     /// without meta or the Content-Code when it cannot be computed].
     #[arg(long, value_delimiter = ',', value_parser = ["meta", "image", "text", "audio", "data", "instance"])]
     units: Option<Vec<String>>,
-    /// Digital source type URI for a new manifest.
+    /// Digital source type URI, recorded on the parent ingredient when the file has no Content
+    /// Credentials yet.
     #[arg(long, default_value = DEFAULT_SOURCE_TYPE)]
     source_type: String,
     /// CAWG training and data mining entry, repeatable, e.g. `cawg.ai_training=notAllowed` or

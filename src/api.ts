@@ -31,7 +31,19 @@ export interface SoftBindingSummary {
   matches: UnitMatch[];
   error: string | null;
   metadata: BindingMetadata | null;
+  /** Whether the file is source-preserving (IEP-0020); null unless the block decoded as ISCC. */
+  preservation: Preservation | null;
 }
+
+/** Result of the IEP-0020 Source Preservation check, with the reason when not preserved. */
+export type Preservation =
+  | "preserved"
+  | "changed"
+  | "resigned"
+  | "no_source_view"
+  | "no_instance_code"
+  | "signature_invalid"
+  | "file_changed";
 
 export interface SignatureSummary {
   alg: string | null;
@@ -75,6 +87,8 @@ export interface IngredientSummary {
   title: string | null;
   relationship: string;
   format: string | null;
+  /** How the content of an ingredient without Content Credentials was made (URI). */
+  digital_source_type: string | null;
   validation_state: string | null;
 }
 
@@ -104,6 +118,8 @@ export interface ManifestSummary {
   /** Why the manifest is invalid; set exactly when `validation_state` is `Invalid`. */
   invalid_reason: InvalidReason | null;
   validation: ValidationResults | null;
+  /** True when the hard binding is a data hash, so the file has a source view (the file without the byte ranges it excludes). */
+  source_view: boolean;
   signature: SignatureSummary | null;
   assertions: AssertionSummary[];
   ingredients: IngredientSummary[];
@@ -157,7 +173,6 @@ export interface Inspection {
   meta_error: string | null;
   /** Why the Content-Code could not be computed (audio too short); `iscc` then lacks it. */
   content_error: string | null;
-  iscc_excludes_manifest: boolean;
   manifest: ManifestSummary | null;
   manifest_json: unknown;
   manifest_error: string | null;
@@ -203,6 +218,7 @@ export interface SignRequest {
   description?: string;
   /** The source's embedded ISCC metadata, passed through so the Meta-Code stays reproducible. */
   meta?: string;
+  /** Digital source type URI, recorded on the parent ingredient when the source has no Content Credentials. */
   source_type: string;
   units: string[];
   training: Record<string, TrainingEntry>;

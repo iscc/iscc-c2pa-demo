@@ -6,12 +6,14 @@ import type {
   Inspection,
   InvalidReason,
   ManifestSummary,
+  Preservation,
+  SoftBindingSummary,
   TimestampSummary,
   TrainingEntry,
   UnitMatch,
   ValidationStatus,
 } from "../api";
-import { contentSource, stripCaveat } from "../formats";
+import { contentSource, embedding } from "../formats";
 import { esc, formatTime, fullStop, isccHtml, json, percent, shortUri } from "../util";
 
 const STATE_TEXT: Record<string, string> = {
@@ -184,25 +186,28 @@ function softBindingCard(m: ManifestSummary, inspection: Inspection): string {
             ${bindingMetadata(sb.metadata)}
           </section>`;
         }
+        const beforeSigning = describesSource(sb.preservation);
         const rows = sb.matches
           .map((mt) => {
             const u = mt.embedded;
+            const neutral = beforeSigning && (u.unit === "data" || u.unit === "instance");
             return `
             <tr>
               <td class="unit-name"><span class="swatch" data-unit="${u.unit}"></span>${esc(u.name)}</td>
               <td><span class="mono">${isccHtml(u.iscc)}</span></td>
-              <td class="num">${verdict(mt)}</td>
+              <td class="num">${verdict(mt, neutral)}</td>
             </tr>`;
           })
           .join("");
         return `
         <section class="card">
           <header><h2>Soft binding</h2><span class="grow"></span><span class="hint mono">${esc(sb.alg)}</span></header>
+          ${preservationBlock(sb.preservation, inspection)}
           <table>
             <thead><tr><th>Unit</th><th>Embedded in manifest</th><th style="text-align:right">Match with this file</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
-          <div class="note">${esc(matchNote(sb.matches, inspection))}</div>
+          <div class="note">${esc(matchNote(sb, m, inspection))}</div>
           ${bindingMetadata(sb.metadata)}
         </section>`;
       })
@@ -210,28 +215,88 @@ function softBindingCard(m: ManifestSummary, inspection: Inspection): string {
   );
 }
 
-/** Match column: yes or no for the exact Instance-Code, a similarity meter for the other units. */
-function verdict(mt: UnitMatch): string {
-  if (mt.similarity === null) return `<span class="hint">not compared</span>`;
-  if (mt.embedded.unit === "instance") {
-    const exact = mt.similarity === 1;
-    return `<span class="exact" data-match="${exact}"><span class="dot"></span>${exact ? "Match" : "No match"}</span>`;
-  }
-  const pct = Math.round(mt.similarity * 100);
-  return `<span class="similarity"><span class="meter"><i style="width:${pct}%"></i></span>${percent(mt.similarity)}</span>`;
+/** True when Data-Code and Instance-Code describe the file as it was before signing rather than
+ * this file (IEP-0020: not source-preserving, but the hard binding matches). */
+function describesSource(p: Preservation | null): boolean {
+  return p === "changed" || p === "resigned" || p === "no_source_view" || p === "no_instance_code";
 }
 
-/** Explains how each unit in the match column was recomputed, for the units present. */
-function matchNote(matches: UnitMatch[], inspection: Inspection): string {
-  const has = (unit: string) => matches.some((mt) => mt.embedded.unit === unit);
+/** Headline and explanation of a preservation result. */
+function preservationText(p: Preservation, inspection: Inspection): [string, string] {
+  const before = "Data-Code and Instance-Code describe the file as it was before signing.";
+  const e = embedding(inspection);
+  const why = e.kind === "preserved" ? "" : e.why;
+  switch (p) {
+    case "preserved":
+      return ["Source preserved", "Without its Content Credentials, this file is byte for byte the file that was signed."];
+    case "changed":
+      return ["Source not preserved", `${why ? `Signing ${why}.` : "Signing changed bytes outside the Content Credentials."} ${before}`];
+    case "resigned":
+      return [
+        "Source not preserved",
+        "The file already had Content Credentials when it was signed, and signing replaced them. Data-Code and Instance-Code describe that earlier file, credentials included.",
+      ];
+    case "no_source_view":
+      return [
+        "Source preservation not verifiable",
+        `${why ? `${why[0].toUpperCase()}${why.slice(1)}` : "The C2PA hash of this file is not a byte-range hash"}, so the file has no defined form without its Content Credentials. ${before}`,
+      ];
+    case "no_instance_code":
+      return ["Source preservation not verifiable", "The soft binding has no Instance-Code, the unit that would show it."];
+    case "signature_invalid":
+      return [
+        "Source preservation not verifiable",
+        "The signature does not validate or no longer covers the manifest as it is, so the embedded ISCC cannot be relied on.",
+      ];
+    case "file_changed":
+      return [
+        "Source preservation not verifiable",
+        "The file changed after signing. The comparison shows how far it moved from the file that was signed.",
+      ];
+  }
+}
+
+/** Whether the file is source-preserving (IEP-0020), in one line with its reason. */
+function preservationBlock(p: Preservation | null, inspection: Inspection): string {
+  if (!p) return "";
+  const [title, text] = preservationText(p, inspection);
+  const state = p === "preserved" ? "preserved" : p === "changed" || p === "resigned" ? "not_preserved" : "not_verifiable";
+  return `
+          <div class="preservation" data-state="${state}">
+            <p>${esc(title)}</p>
+            <p class="detail">${esc(text)}</p>
+          </div>`;
+}
+
+/** Match column: yes or no for the exact Instance-Code, a similarity meter for the other units.
+ * A `neutral` unit describes the file before signing, so its difference is no failed match. */
+function verdict(mt: UnitMatch, neutral: boolean): string {
+  if (mt.similarity === null) return `<span class="hint">not compared</span>`;
+  const tip = neutral ? ` data-neutral title="Describes the file as it was before signing, not this file"` : "";
+  if (mt.embedded.unit === "instance") {
+    const exact = mt.similarity === 1;
+    const text = exact ? "Match" : neutral ? "Before signing" : "No match";
+    return `<span class="exact" data-match="${exact}"${tip}><span class="dot"></span>${text}</span>`;
+  }
+  const pct = Math.round(mt.similarity * 100);
+  return `<span class="similarity"${tip}><span class="meter"><i style="width:${pct}%"></i></span>${percent(mt.similarity)}</span>`;
+}
+
+/** Explains what each unit in the match column was recomputed from, for the units present. */
+function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspection): string {
+  const has = (unit: string) => sb.matches.some((mt) => mt.embedded.unit === unit);
   const parts: string[] = [];
-  if (has("content")) parts.push(`Content-Code is recomputed from this file's ${contentSource(inspection)}.`);
+  if (sb.preservation === "preserved") {
+    parts.push("Every unit is recomputed from this file without its Content Credentials, which is the file that was signed.");
+  } else {
+    if (has("content")) parts.push(`Content-Code is recomputed from this file's ${contentSource(inspection)}.`);
+    if (has("data") || has("instance")) {
+      const from = m.source_view ? "this file's bytes without its Content Credentials" : "the whole file, Content Credentials included";
+      parts.push(`Data-Code and Instance-Code are recomputed from ${from}.`);
+    }
+  }
   if (has("data") || has("instance")) {
-    parts.push(
-      "Data-Code and Instance-Code are recomputed from this file without its manifest store: Data-Code tolerates small byte changes, Instance-Code is exact and either matches or not.",
-    );
-    const caveat = stripCaveat(inspection);
-    if (caveat) parts.push(caveat.note);
+    parts.push("Data-Code tolerates small byte changes; Instance-Code is exact and either matches or not.");
   }
   if (has("meta")) {
     parts.push(
@@ -342,6 +407,7 @@ function ingredientsCard(m: ManifestSummary): string {
         <td>${esc(i.title ?? "untitled")}</td>
         <td class="mono">${esc(i.relationship)}</td>
         <td class="mono" style="color:var(--muted)">${esc(i.format ?? "")}</td>
+        <td class="mono" style="color:var(--muted)">${esc(shortUri(i.digital_source_type ?? undefined))}</td>
         <td>${i.validation_state ? `<span class="status" data-state="${esc(i.validation_state)}"><span class="dot"></span>${esc(i.validation_state)}</span>` : ""}</td>
       </tr>`,
     )
@@ -349,7 +415,7 @@ function ingredientsCard(m: ManifestSummary): string {
   return `
     <section class="card">
       <header><h2>Ingredients</h2></header>
-      <table><thead><tr><th>Title</th><th>Relationship</th><th>Format</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
+      <table><thead><tr><th>Title</th><th>Relationship</th><th>Format</th><th>Digital source type</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
     </section>`;
 }
 

@@ -2,7 +2,7 @@
 // the timestamp service.
 
 import type { AppInfo, Credentials, Inspection, IsccUnit, SignRequest, SignResult, TrainingEntry, TsaPreset } from "../api";
-import { contentSource, stripCaveat } from "../formats";
+import { contentSource, embedding } from "../formats";
 import { esc, fullStop, isccHtml, splitPath } from "../util";
 import { USE_CASES } from "./credentials";
 
@@ -65,10 +65,20 @@ function contentOption(inspection: Inspection): UnitOption {
   };
 }
 
-/** Units offered for an asset. Formats whose manifest cannot be removed without traces say why
- * their bitstream units will not survive signing. */
+/** What the Instance-Code will prove after signing (IEP-0020, Source Preservation). */
+function afterSigning(inspection: Inspection): string {
+  if (inspection.manifest) {
+    return "This file already has Content Credentials, which signing replaces, so after signing Data-Code and Instance-Code identify this file, not the signed copy.";
+  }
+  const e = embedding(inspection);
+  if (e.kind === "preserved") {
+    return "Signing only inserts the Content Credentials, so it will show that the signed copy without them is this file, byte for byte.";
+  }
+  return `After signing, Data-Code and Instance-Code identify this file, not the signed copy: ${e.kind === "changed" ? "signing " : ""}${e.why}.`;
+}
+
+/** Units offered for an asset, all computed from the file exactly as it is (IEP-0020). */
 function unitOptions(inspection: Inspection): UnitOption[] {
-  const caveat = stripCaveat(inspection);
   return [
     {
       slug: "meta",
@@ -81,13 +91,13 @@ function unitOptions(inspection: Inspection): UnitOption[] {
       slug: "data",
       unit: "data",
       title: "Data-Code",
-      desc: `Similarity hash of the raw bytes without the manifest store. ${caveat ? `Stays close after signing; ${caveat.reason}.` : "Tolerates small byte-level edits, not re-encoding."}`,
+      desc: "Similarity hash of the file's bytes. Tolerates small byte-level edits, not re-encoding.",
     },
     {
       slug: "instance",
       unit: "instance",
       title: "Instance-Code",
-      desc: `Cryptographic checksum of the bytes without the manifest store. ${caveat ? `Will not match after signing; ${caveat.reason}.` : "Matches only while the content bytes are untouched."}`,
+      desc: `Cryptographic hash of the file's bytes, the identity of this exact file. ${afterSigning(inspection)}`,
     },
   ];
 }
@@ -292,7 +302,7 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
   return `
     <form class="card form" id="sign-form" autocomplete="off">
       <div class="fieldset">
-        <div class="legend">Manifest <span class="hint">${hasManifest ? "the existing Content Credentials become the parent ingredient of a new manifest" : "a new manifest with a c2pa.created action"}</span></div>
+        <div class="legend">Manifest <span class="hint">${hasManifest ? "this file and its Content Credentials become the parent ingredient of a new manifest (c2pa.opened)" : "this file becomes the parent ingredient of a new manifest (c2pa.opened)"}</span></div>
         <div class="field">
           <label for="f-title">Title</label>
           <input type="text" id="f-title" name="title" value="${esc(form.title)}" required />
@@ -305,7 +315,7 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
           hasManifest
             ? ""
             : `<div class="field">
-          <label for="f-source">How was this ${inspection.kind === "image" ? "image" : "file"} made?</label>
+          <label for="f-source">How was this ${inspection.kind === "image" ? "image" : "file"} made? <span class="hint">(recorded on the parent ingredient)</span></label>
           <select id="f-source" name="source_type">
             ${SOURCE_TYPES.map((s) => `<option value="${s.uri}" ${s.uri === form.sourceType ? "selected" : ""}>${esc(s.label)}</option>`).join("")}
           </select>

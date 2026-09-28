@@ -211,6 +211,11 @@ main { flex: 1; min-height: 0; position: relative; }
 .card > .reason { padding: 12px 16px 12px 12px; border-left: 4px solid var(--coral); border-bottom: 1px solid var(--rule-soft); }
 .card > .reason p { margin: 0; font-size: 14px; line-height: 20px; }
 .card > .reason .detail { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 16px; }
+.card > .preservation { padding: 12px 16px 12px 12px; border-left: 4px solid var(--rule); border-bottom: 1px solid var(--rule-soft); }
+.card > .preservation[data-state="preserved"] { border-left-color: var(--lime); }
+.card > .preservation[data-state="not_preserved"] { border-left-color: var(--yellow); }
+.card > .preservation p { margin: 0; font-size: 14px; line-height: 20px; }
+.card > .preservation .detail { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 16px; }
 
 .preview { position: relative; background: var(--paper); border-bottom: 1px solid var(--rule-soft); }
 .preview img { display: block; width: 100%; max-height: 300px; object-fit: contain; }
@@ -457,6 +462,8 @@ td.unit-name { white-space: nowrap; }
 .exact { display: inline-flex; align-items: center; gap: 8px; }
 .exact .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--coral); }
 .exact[data-match="true"] .dot { background: var(--lime); }
+.exact[data-neutral], .similarity[data-neutral] { color: var(--muted); }
+.exact[data-neutral] .dot, .similarity[data-neutral] .meter i { background: var(--rule); }
 
 .similarity { display: inline-flex; align-items: center; gap: 8px; }
 .similarity .meter { width: 72px; height: 4px; background: var(--rule-soft); border-radius: 2px; overflow: hidden; }

@@ -65,7 +65,10 @@ pub fn base_settings() -> Value {
             "claim_generator_info": {
                 "name": CLAIM_GENERATOR_NAME,
                 "version": env!("CARGO_PKG_VERSION")
-            }
+            },
+            // The demo records no action besides `c2pa.opened`, so the spec requires
+            // `allActionsIncluded: true`.
+            "actions": { "auto_all_actions_included": true }
         }
     })
 }

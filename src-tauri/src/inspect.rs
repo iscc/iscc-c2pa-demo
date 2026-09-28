@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::asset::{self, AssetContent};
 use crate::context::{base_settings, ISCC_SOFT_BINDING_ALG};
 use crate::formats::{self, Format, Kind};
-use crate::iscc::{self, IsccUnit, MetaInput, UnitSelection};
+use crate::iscc::{self, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
 
 /// Longest edge of the preview image sent to the UI.
@@ -47,8 +47,8 @@ pub struct Inspection {
     pub duration_secs: Option<f64>,
     /// Creator named in the asset's own metadata; display only.
     pub creator: Option<String>,
-    /// Meta, Content, Data and Instance units; Data and Instance computed from the asset without
-    /// its manifest store.
+    /// Meta, Content, Data and Instance units of the whole file, as any ISCC tool computes them
+    /// and as signing this file would embed them.
     pub iscc: Vec<IsccUnit>,
     /// Title, description and ISCC metadata behind the Meta-Code, and where the title came from.
     pub meta_fields: MetaFields,
@@ -56,8 +56,6 @@ pub struct Inspection {
     pub meta_error: Option<String>,
     /// Why the Content-Code could not be computed (audio too short); `iscc` then lacks it.
     pub content_error: Option<String>,
-    /// True when a manifest store was stripped before computing `iscc`.
-    pub iscc_excludes_manifest: bool,
     pub manifest: Option<ManifestSummary>,
     /// Full manifest store as produced by `Reader::json`, for the raw view.
     pub manifest_json: Option<Value>,
@@ -76,6 +74,9 @@ pub struct ManifestSummary {
     /// Why the manifest is invalid; set exactly when `validation_state` is `Invalid`.
     pub invalid_reason: Option<InvalidReason>,
     pub validation: Value,
+    /// True when the hard binding is a data hash, so the file has a source view: the file
+    /// without the byte ranges the data hash excludes (IEP-0020).
+    pub source_view: bool,
     pub signature: Option<SignatureSummary>,
     pub assertions: Vec<AssertionSummary>,
     pub ingredients: Vec<IngredientSummary>,
@@ -134,6 +135,8 @@ pub struct IngredientSummary {
     pub title: Option<String>,
     pub relationship: String,
     pub format: Option<String>,
+    /// How the content of an ingredient without Content Credentials was made (URI).
+    pub digital_source_type: Option<String>,
     pub validation_state: Option<String>,
 }
 
@@ -144,11 +147,36 @@ pub struct SoftBindingSummary {
     pub supported: bool,
     pub value_base64: String,
     pub units: Vec<IsccUnit>,
-    /// Comparison of each embedded unit against the freshly computed unit of the same kind.
+    /// Comparison of each embedded unit against the freshly computed unit of the same kind
+    /// (IEP-0020, Soft Binding Verification).
     pub matches: Vec<UnitMatch>,
     pub error: Option<String>,
     /// Informational `bindingMetadata` of the assertion, shared by all its blocks.
     pub metadata: Option<BindingMetadata>,
+    /// Whether the file is source-preserving; `None` unless the block decoded as ISCC.
+    pub preservation: Option<Preservation>,
+}
+
+/// Whether a signed file is source-preserving (IEP-0020, Source Preservation), with the reason
+/// when it is not or cannot be told.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Preservation {
+    /// The source view equals the source: the Instance-Codes match.
+    Preserved,
+    /// Not preserved: embedding changed bytes outside the manifest store.
+    Changed,
+    /// Not preserved: the source already carried a manifest store, which embedding replaced.
+    Resigned,
+    /// Not verifiable: the hard binding is not a data hash, so there is no source view.
+    NoSourceView,
+    /// Not verifiable: the soft binding has no Instance-Code.
+    NoInstanceCode,
+    /// Not verifiable: the claim signature does not validate, or an assertion no longer matches
+    /// its hash in the claim, so the signature does not vouch for the soft binding as it is.
+    SignatureInvalid,
+    /// Not verifiable: the file changed after signing; its hard binding no longer matches.
+    FileChanged,
 }
 
 /// Informational `bindingMetadata` of a soft-binding assertion (spec 2.3+).
@@ -197,13 +225,12 @@ pub fn asset_format(path: &Path) -> Result<&'static Format> {
     formats::by_path(path).ok_or_else(|| anyhow!("unsupported file type"))
 }
 
-/// Inspect the file at `path`. The asset is read from its bytes without the manifest store, so
-/// a manifest embedded as text (Markdown, say) never leaks into the Content-Code.
+/// Inspect the file at `path`. The units in `iscc` are those of the whole file; see
+/// [`summarize_assertion`] for what soft bindings are compared with.
 pub fn inspect(path: &Path) -> Result<Inspection> {
     let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     let format = asset_format(path)?;
-    let (content_bytes, iscc_excludes_manifest) = content_bytes(path, &bytes, format.mime);
-    let asset = asset::read(path, &content_bytes, format)?;
+    let asset = asset::read(path, &bytes, format)?;
 
     let (reader, manifest_error) = match read_manifest(path) {
         Ok(reader) => (Some(reader), None),
@@ -228,23 +255,21 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     // fingerprint only the Content-Code, not the inspection.
     let (meta, meta_error) = unit_or_error(iscc::meta_unit(meta_input(&meta_fields)));
     let (content, content_error) = unit_or_error(iscc::content_unit(asset.content()));
-    let selection = UnitSelection {
-        meta: false,
-        content: false,
-        data: true,
-        instance: true,
-    };
-    let bitstream = iscc::units_for(
-        &content_bytes,
-        asset.content(),
-        MetaInput::default(),
-        &selection,
-    )?;
+    let bitstream = [iscc::data_unit(&bytes)?, iscc::instance_unit(&bytes)?];
     let units: Vec<IsccUnit> = meta.into_iter().chain(content).chain(bitstream).collect();
+    let view_units = reader
+        .as_ref()
+        .and_then(data_hash_exclusions)
+        .map(|ranges| source_view_units(path, format, &source_view(&bytes, &ranges), &units))
+        .transpose()?;
+    let compared = match &view_units {
+        Some(view) => with_bitstream_of(&units, view),
+        None => units.clone(),
+    };
     let manifest = reader
         .as_ref()
         .zip(json.as_ref())
-        .map(|(r, j)| summarize(r, j, &units));
+        .map(|(r, j)| summarize(r, j, &compared, view_units.as_deref()));
     let (width, height) = match &asset.content {
         AssetContent::Image(rgb) => rgb.dimensions(),
         AssetContent::Text(_) | AssetContent::Audio(_) => (0, 0),
@@ -281,7 +306,6 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         meta_fields,
         meta_error,
         content_error,
-        iscc_excludes_manifest,
         manifest,
         manifest_json: json,
         manifest_error,
@@ -331,38 +355,75 @@ pub fn meta_input(fields: &MetaFields) -> MetaInput<'_> {
     }
 }
 
-/// Bytes of the asset without its C2PA manifest store, and whether one was stripped. Data-Code
-/// and Instance-Code are defined over these bytes on both the signing and the verifying side, so
-/// they match as long as the content itself is untouched. c2pa only strips manifests from files,
-/// so the work happens on a temporary copy. A store that cannot be stripped leaves the bytes as is;
-/// that includes WebP, where c2pa-rs 0.91 reports success but keeps the `C2PA` chunk.
-pub fn content_bytes(path: &Path, bytes: &[u8], mime: &str) -> (Vec<u8>, bool) {
-    if c2pa::jumbf_io::load_jumbf_from_memory(mime, bytes).is_err() {
-        return (bytes.to_vec(), false);
-    }
-    match strip_manifest(path, bytes) {
-        Ok(stripped) if c2pa::jumbf_io::load_jumbf_from_memory(mime, &stripped).is_err() => {
-            (stripped, true)
-        }
-        _ => (bytes.to_vec(), false),
-    }
+/// Byte ranges `(start, length)` that the data hash of the active manifest excludes; `None`
+/// when its hard binding is not a data hash (collection, BMFF and box hashes define no source
+/// view).
+fn data_hash_exclusions(reader: &Reader) -> Option<Vec<(u64, u64)>> {
+    let json: Value = serde_json::from_str(&reader.detailed_json()).ok()?;
+    let store = json
+        .get("manifests")?
+        .get(reader.active_label()?)?
+        .get("assertion_store")?
+        .as_object()?;
+    let (_, data_hash) = store
+        .iter()
+        .find(|(label, _)| is_label(label, labels::DATA_HASH))?;
+    let ranges = data_hash
+        .get("exclusions")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|r| Some((r.get("start")?.as_u64()?, r.get("length")?.as_u64()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(ranges)
 }
 
-/// Write `bytes` to a temporary file with the extension of `path`, strip its manifest, read it back.
-fn strip_manifest(path: &Path, bytes: &[u8]) -> Result<Vec<u8>> {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let ext = path
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
-    let tmp = std::env::temp_dir().join(format!("iscc-c2pa-demo-{}-{n}{ext}", std::process::id()));
-    std::fs::write(&tmp, bytes)?;
-    let result = c2pa::jumbf_io::remove_jumbf_from_file(&tmp)
-        .map_err(anyhow::Error::from)
-        .and_then(|_| Ok(std::fs::read(&tmp)?));
-    let _ = std::fs::remove_file(&tmp);
-    result
+/// The source view (IEP-0020): `bytes` without the `(start, length)` exclusion ranges, which
+/// may come in any order, overlap or reach past the end.
+pub fn source_view(bytes: &[u8], exclusions: &[(u64, u64)]) -> Vec<u8> {
+    let clamp = |n: u64| usize::try_from(n).unwrap_or(usize::MAX).min(bytes.len());
+    let mut ranges = exclusions.to_vec();
+    ranges.sort_unstable();
+    let mut view = Vec::with_capacity(bytes.len());
+    let mut pos = 0;
+    for (start, length) in ranges {
+        let (start, end) = (clamp(start), clamp(start.saturating_add(length)));
+        if start > pos {
+            view.extend_from_slice(&bytes[pos..start]);
+        }
+        pos = pos.max(end);
+    }
+    view.extend_from_slice(&bytes[pos..]);
+    view
+}
+
+/// `units` with the Data-Code and Instance-Code of `view` in place of their own.
+fn with_bitstream_of(units: &[IsccUnit], view: &[IsccUnit]) -> Vec<IsccUnit> {
+    let bitstream = |u: &&IsccUnit| u.unit == "data" || u.unit == "instance";
+    let content = units.iter().filter(|u| !bitstream(u));
+    content
+        .chain(view.iter().filter(bitstream))
+        .cloned()
+        .collect()
+}
+
+/// Units of the source view. The Meta-Code is the file's, since its inputs never lie inside the
+/// manifest store. The view of a file that is not source-preserving need not decode, so a
+/// Content-Code that cannot be computed from it is left out.
+fn source_view_units(
+    path: &Path,
+    format: &'static Format,
+    view: &[u8],
+    file_units: &[IsccUnit],
+) -> Result<Vec<IsccUnit>> {
+    let meta = file_units.iter().find(|u| u.unit == "meta").cloned();
+    let content = asset::read(path, view, format)
+        .ok()
+        .and_then(|a| iscc::content_unit(a.content()).ok());
+    let bitstream = [iscc::data_unit(view)?, iscc::instance_unit(view)?];
+    Ok(meta.into_iter().chain(content).chain(bitstream).collect())
 }
 
 /// Open the manifest store with the shared trust settings.
@@ -388,8 +449,14 @@ fn preview_data_url(rgb: &image::RgbImage) -> Result<String> {
     ))
 }
 
-/// Build the display summary of the active manifest.
-fn summarize(reader: &Reader, json: &Value, computed: &[IsccUnit]) -> ManifestSummary {
+/// Build the display summary of the active manifest. `view_units` are the units of the source
+/// view, when the hard binding is a data hash; see [`summarize_assertion`] for `compared`.
+fn summarize(
+    reader: &Reader,
+    json: &Value,
+    compared: &[IsccUnit],
+    view_units: Option<&[IsccUnit]>,
+) -> ManifestSummary {
     let label = reader.active_label().unwrap_or_default().to_owned();
     let manifest = reader.active_manifest();
     let assertions: Vec<AssertionSummary> = json
@@ -426,6 +493,7 @@ fn summarize(reader: &Reader, json: &Value, computed: &[IsccUnit]) -> ManifestSu
         validation_state: format!("{:?}", reader.validation_state()),
         invalid_reason: invalid_reason(reader),
         validation: serde_json::to_value(reader.validation_results()).unwrap_or(Value::Null),
+        source_view: view_units.is_some(),
         signature: manifest
             .and_then(Manifest::signature_info)
             .map(|s| SignatureSummary {
@@ -444,6 +512,10 @@ fn summarize(reader: &Reader, json: &Value, computed: &[IsccUnit]) -> ManifestSu
                         title: i.title().map(str::to_owned),
                         relationship: format!("{:?}", i.relationship()),
                         format: i.format().map(str::to_owned),
+                        digital_source_type: i
+                            .digital_source_type()
+                            .and_then(|d| serde_json::to_value(d).ok())
+                            .and_then(|v| v.as_str().map(str::to_owned)),
                         validation_state: i
                             .validation_results()
                             .map(|r| format!("{:?}", r.validation_state())),
@@ -452,7 +524,10 @@ fn summarize(reader: &Reader, json: &Value, computed: &[IsccUnit]) -> ManifestSu
             })
             .unwrap_or_default(),
         soft_bindings: manifest
-            .map(|m| soft_bindings(m, computed))
+            .map(|m| {
+                let facts = binding_facts(reader, m, view_units.is_some());
+                soft_bindings(m, compared, view_units, &facts)
+            })
             .unwrap_or_default(),
         training_mining,
         assertions,
@@ -527,11 +602,7 @@ const INGREDIENT_INVALID: &str =
 /// Plain-language sentence for the failure codes of c2pa-rs 0.91 a reader can act on.
 fn plain_reason(code: &str) -> Option<&'static str> {
     Some(match code {
-        "assertion.dataHash.mismatch"
-        | "assertion.bmffHash.mismatch"
-        | "assertion.boxesHash.mismatch"
-        | "assertion.boxesHash.unknownBox"
-        | "assertion.collectionHash.mismatch" => {
+        c if HARD_BINDING_MISMATCH.contains(&c) => {
             "The file changed after signing: its hash no longer matches."
         }
         "claim.hardBindings.missing"
@@ -714,26 +785,133 @@ fn claim_generator_from_json(json: &Value, label: &str) -> Option<String> {
 }
 
 /// Decode every soft-binding assertion of a manifest.
-fn soft_bindings(manifest: &Manifest, computed: &[IsccUnit]) -> Vec<SoftBindingSummary> {
+fn soft_bindings(
+    manifest: &Manifest,
+    compared: &[IsccUnit],
+    view_units: Option<&[IsccUnit]>,
+    facts: &BindingFacts,
+) -> Vec<SoftBindingSummary> {
     manifest
         .assertions()
         .iter()
         .filter(|a| is_label(a.label(), labels::SOFT_BINDING))
         .filter_map(|a| a.to_assertion::<SoftBinding>().ok())
-        .flat_map(|sb| summarize_assertion(&sb, computed))
+        .flat_map(|sb| summarize_assertion(&sb, compared, view_units, facts))
         .collect()
 }
 
 /// One summary per block of a soft-binding assertion; the metadata belongs to the assertion and
-/// is repeated on each block.
-fn summarize_assertion(sb: &SoftBinding, computed: &[IsccUnit]) -> Vec<SoftBindingSummary> {
+/// is repeated on each block. IEP-0020, Soft Binding Verification: when the file is
+/// source-preserving, the embedded units are compared with `view_units`, because the source view
+/// then is the source. Otherwise they are compared with `compared`: Meta-Code and Content-Code
+/// of the file, which always decodes, with Data-Code and Instance-Code of the source view where
+/// there is one, so that the manifest store does not count as a change.
+fn summarize_assertion(
+    sb: &SoftBinding,
+    compared: &[IsccUnit],
+    view_units: Option<&[IsccUnit]>,
+    facts: &BindingFacts,
+) -> Vec<SoftBindingSummary> {
     let metadata = binding_metadata(sb);
+    let summarize = |value: &[u8], units: &[IsccUnit]| {
+        summarize_soft_binding(sb.alg.clone(), value, units, metadata.clone())
+    };
     sb.blocks
         .iter()
         .map(|block| {
-            summarize_soft_binding(sb.alg.clone(), &block.value, computed, metadata.clone())
+            let on_view = view_units.map(|units| summarize(&block.value, units));
+            let instance_equal = on_view.as_ref().and_then(|s| {
+                let instance = s.matches.iter().find(|m| m.embedded.unit == "instance")?;
+                Some(instance.similarity == Some(1.0))
+            });
+            let verdict = preservation(facts, instance_equal);
+            let mut summary = match on_view {
+                Some(s) if verdict == Preservation::Preserved => s,
+                _ => summarize(&block.value, compared),
+            };
+            if summary.supported && summary.error.is_none() {
+                summary.preservation = Some(verdict);
+            }
+            summary
         })
         .collect()
+}
+
+/// What the preservation check needs to know about the active manifest besides the units.
+#[derive(Debug, Clone, Copy)]
+struct BindingFacts {
+    /// The hard binding is a data hash, so there is a source view.
+    source_view: bool,
+    /// The claim signature validates and covers every assertion as it is.
+    signature_valid: bool,
+    hard_binding_matches: bool,
+    /// The parent ingredient carried a manifest store: the source had Content Credentials.
+    resigned: bool,
+}
+
+/// Codes of a hard binding that no longer matches the file.
+const HARD_BINDING_MISMATCH: [&str; 5] = [
+    "assertion.dataHash.mismatch",
+    "assertion.bmffHash.mismatch",
+    "assertion.boxesHash.mismatch",
+    "assertion.boxesHash.unknownBox",
+    "assertion.collectionHash.mismatch",
+];
+
+/// Codes of an assertion that does not match its hashed URI in the claim.
+const ASSERTION_MISMATCH: [&str; 3] = [
+    "assertion.hashedURI.mismatch",
+    "assertion.missing",
+    "assertion.inaccessible",
+];
+
+/// Facts about the active manifest `manifest` from the validator's failure codes and its
+/// ingredients.
+fn binding_facts(reader: &Reader, manifest: &Manifest, source_view: bool) -> BindingFacts {
+    let failures: Vec<&str> = reader
+        .validation_results()
+        .and_then(|r| r.active_manifest())
+        .map(|c| c.failure().iter().map(|v| v.code()).collect())
+        .unwrap_or_default();
+    BindingFacts {
+        source_view,
+        signature_valid: !failures.iter().any(|c| {
+            ((c.starts_with("claimSignature.") || c.starts_with("signingCredential."))
+                && !tolerated(c))
+                || ASSERTION_MISMATCH.contains(c)
+        }),
+        hard_binding_matches: !failures.iter().any(|c| HARD_BINDING_MISMATCH.contains(c)),
+        resigned: manifest
+            .ingredients()
+            .iter()
+            .any(|i| i.is_parent() && i.active_manifest().is_some()),
+    }
+}
+
+/// The Source Preservation check of IEP-0020, with the reason for every result other than
+/// preserved. `instance_equal` tells whether the embedded Instance-Code equals the one of the
+/// source view, `None` without an embedded Instance-Code.
+fn preservation(facts: &BindingFacts, instance_equal: Option<bool>) -> Preservation {
+    let unverifiable = |reason| {
+        if facts.hard_binding_matches {
+            reason
+        } else {
+            Preservation::FileChanged
+        }
+    };
+    if !facts.signature_valid {
+        return Preservation::SignatureInvalid;
+    }
+    if !facts.source_view {
+        return unverifiable(Preservation::NoSourceView);
+    }
+    match instance_equal {
+        None => unverifiable(Preservation::NoInstanceCode),
+        Some(true) => Preservation::Preserved,
+        Some(false) if !facts.hard_binding_matches => Preservation::FileChanged,
+        Some(false) if facts.resigned => Preservation::Resigned,
+        Some(false) => Preservation::Changed,
+    }
 }
 
 /// Known fields of the assertion's `bindingMetadata`; `None` when absent or none of them is set.
@@ -800,6 +978,7 @@ fn summarize_soft_binding(
         matches,
         error,
         metadata,
+        preservation: None,
     }
 }
 
@@ -1142,6 +1321,57 @@ mod tests {
         assert_eq!(inspection.iscc[1].name, "Content-Code Audio");
     }
 
+    /// A validly signed, unchanged file with a data hash, signed from a file without a manifest.
+    const FACTS: BindingFacts = BindingFacts {
+        source_view: true,
+        signature_valid: true,
+        hard_binding_matches: true,
+        resigned: false,
+    };
+
+    #[test]
+    fn source_view_cuts_the_exclusion_ranges() {
+        let bytes: Vec<u8> = (0..10).collect();
+        assert_eq!(source_view(&bytes, &[]), bytes);
+        assert_eq!(source_view(&bytes, &[(2, 3)]), [0, 1, 5, 6, 7, 8, 9]);
+        // Unsorted, adjacent and trailing ranges.
+        assert_eq!(
+            source_view(&bytes, &[(8, 2), (2, 1), (3, 2)]),
+            [0, 1, 5, 6, 7]
+        );
+        // Overlapping ranges and ranges past the end.
+        assert_eq!(source_view(&bytes, &[(1, 4), (3, 4), (9, 100)]), [0, 7, 8]);
+        assert_eq!(source_view(&bytes, &[(20, 5), (0, 0)]), bytes);
+        assert_eq!(source_view(&bytes, &[(0, u64::MAX)]), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn preservation_follows_iep_0020() {
+        use Preservation::*;
+        let with = |f: fn(&mut BindingFacts)| {
+            let mut facts = FACTS;
+            f(&mut facts);
+            facts
+        };
+        assert_eq!(preservation(&FACTS, Some(true)), Preserved);
+        assert_eq!(preservation(&FACTS, Some(false)), Changed);
+        let resigned = with(|f| f.resigned = true);
+        assert_eq!(preservation(&resigned, Some(false)), Resigned);
+        assert_eq!(preservation(&FACTS, None), NoInstanceCode);
+        let no_view = with(|f| f.source_view = false);
+        assert_eq!(preservation(&no_view, Some(false)), NoSourceView);
+        let changed = with(|f| f.hard_binding_matches = false);
+        assert_eq!(preservation(&changed, Some(false)), FileChanged);
+        assert_eq!(preservation(&changed, None), FileChanged);
+        let changed_zip = with(|f| {
+            f.source_view = false;
+            f.hard_binding_matches = false;
+        });
+        assert_eq!(preservation(&changed_zip, Some(false)), FileChanged);
+        let unsigned = with(|f| f.signature_valid = false);
+        assert_eq!(preservation(&unsigned, Some(true)), SignatureInvalid);
+    }
+
     #[test]
     fn inspect_soft_binding_without_binding_metadata() {
         // Files signed by other tools, or by this demo before it wrote the map, carry no metadata.
@@ -1150,7 +1380,7 @@ mod tests {
             "blocks": [{ "scope": {}, "value": [1, 2, 3] }],
         }))
         .unwrap();
-        let summaries = summarize_assertion(&sb, &[]);
+        let summaries = summarize_assertion(&sb, &[], None, &FACTS);
         assert_eq!(summaries.len(), 1);
         assert!(summaries[0].metadata.is_none());
 

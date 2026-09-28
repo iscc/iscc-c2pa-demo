@@ -134,14 +134,22 @@ pub fn units_for(
         units.push(content_unit(content)?);
     }
     if selection.data {
-        let code = iscc_lib::gen_data_code_v0(bytes, UNIT_BITS)?;
-        units.push(describe_unit(&code.iscc)?);
+        units.push(data_unit(bytes)?);
     }
     if selection.instance {
-        let code = iscc_lib::gen_instance_code_v0(bytes, UNIT_BITS)?;
-        units.push(describe_unit(&code.iscc)?);
+        units.push(instance_unit(bytes)?);
     }
     Ok(units)
+}
+
+/// The Data-Code of `bytes`.
+pub fn data_unit(bytes: &[u8]) -> Result<IsccUnit> {
+    describe_unit(&iscc_lib::gen_data_code_v0(bytes, UNIT_BITS)?.iscc)
+}
+
+/// The Instance-Code of `bytes`.
+pub fn instance_unit(bytes: &[u8]) -> Result<IsccUnit> {
+    describe_unit(&iscc_lib::gen_instance_code_v0(bytes, UNIT_BITS)?.iscc)
 }
 
 /// The Content-Code of `content`. An empty fingerprint means the audio was too short for
