@@ -6,7 +6,7 @@
   <title>ISCC C2PA Demo: ISCC as a soft binding in Content Credentials</title>
   <meta name="description" content="A tech demo of the International Standard Content Code (ISCC, ISO 24138:2024) as a soft binding in C2PA Content Credentials. When a signed file is re-encoded, the hash breaks and the ISCC Content-Code still matches. Open source, for Windows, macOS and Linux.">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="ISCC C2PA Demo: bind Content Credentials to the content, not just the bytes">
+  <meta property="og:title" content="ISCC C2PA Demo: match Content Credentials to their content, even after it changes">
   <meta property="og:description" content="Tech demo of ISCC (ISO 24138:2024) as a soft binding in C2PA Content Credentials. Images, documents and audio. Open source, for Windows, macOS and Linux.">
   <meta property="og:url" content="https://c2pa-demo.iscc.codes/">
   <meta property="og:image" content="https://c2pa-demo.iscc.codes/assets/og.jpg">
@@ -27,7 +27,7 @@
   <main>
     <section class="hero wrap">
       <p class="label">Tech demo · ISCC soft binding for C2PA · Windows, macOS, Linux</p>
-      <h1>Bind Content Credentials to the content, not just the&nbsp;bytes.</h1>
+      <h1>Match Content Credentials to their content, even after it&nbsp;changes.</h1>
       <p class="lead">Content Credentials are tied to a file by a hash of its exact bytes. Resize or re-encode the
         file and they no longer match. This tech demo adds the International Standard Content Code (ISCC,
         ISO&nbsp;24138) to the credentials: a code anyone can calculate from the content itself.</p>
@@ -39,10 +39,10 @@
       <figure class="shot">
         <img src="assets/changed.webp" width="1898" height="1277" alt="The app with a changed copy of a signed image open: the Content Credentials tab says Invalid because the file changed after signing, and the ISCC soft binding still matches the Content-Code Image at 100 percent, while the byte-based Data-Code and Instance-Code no longer match.">
       </figure>
-      <p class="caption">To show what each binding sees, we re-encoded a signed image at half size and copied its
-        Content Credentials back in. C2PA says <b>Invalid</b>: the hash no longer matches the bytes. The ISCC
-        Content-Code still matches the pixels at <b>100%</b>, and at 81% after a crop; unrelated images score around
-        50%. The credentials stay invalid, but the ISCC shows which content they were made for.</p>
+      <p class="caption">A signed image, re-encoded at half size, with its Content Credentials copied back in. C2PA
+        now says <b>Invalid</b>: the bytes changed. The ISCC Content-Code still matches the pixels at <b>100%</b>, and
+        at 81% after a crop, where unrelated images score around 50%. The credentials stay invalid, but the ISCC tells
+        you which content they were made for.</p>
     </section>
 
     <section class="wrap grid3" aria-label="What you can do">
@@ -65,11 +65,12 @@
 
     <section class="wrap" id="why">
       <p class="label">Why soft bindings</p>
-      <h2>A hash breaks when one byte changes. That is the point, and the problem.</h2>
-      <p>C2PA binds a manifest to its file with a cryptographic hash of the exact bytes. That proves nothing has
-        changed. But platforms re-encode files and strip manifests every day: a re-encoded copy no longer matches its
-        credentials, and a stripped copy has lost them. A soft binding connects credentials and content through the
-        content itself, so a service can find the credentials of a copy again. C2PA allows two kinds:</p>
+      <h2>Re-encode a file and its Content Credentials no longer match</h2>
+      <p>C2PA binds a manifest to its file with a cryptographic hash of the exact bytes, which proves that nothing
+        has changed. Platforms re-encode files and strip manifests every day, so a re-encoded copy no longer matches
+        its credentials and a stripped copy has lost them.</p>
+      <p>A soft binding connects credentials and content through the content itself, so a service can find the
+        credentials of a copy again. C2PA allows two kinds:</p>
       <div class="kinds">
         <article>
           <p class="label">Watermark</p>
@@ -88,8 +89,8 @@
 
     <section class="wrap split" aria-label="ISCC units in the soft binding">
       <div>
-        <p class="label">Four codes, one soft binding</p>
-        <h2>Similar content. Similar codes.</h2>
+        <p class="label">Inside the soft binding</p>
+        <h2>Similar content gets similar codes</h2>
         <p>An ISCC is made of units, each calculated from a different part of the file. The demo stores them in one
           <code>c2pa.soft-binding</code> assertion with the algorithm <code>io.iscc.v0</code>, as
           <a href="https://ieps.iscc.codes/iep-0020/">IEP-0020</a> defines.</p>
@@ -106,36 +107,21 @@
       </ol>
     </section>
 
-    <section class="wrap" aria-label="Why we built it">
-      <p class="label">Why we built it</p>
-      <h2>To show it, not just say it</h2>
-      <div class="grid3">
-        <div>
-          <h3>It runs</h3>
-          <p><code>io.iscc.v0</code> has been on the C2PA soft binding algorithm list since 2024. Here it runs end to
-            end with <a href="https://github.com/contentauth/c2pa-rs">c2pa-rs</a>, the open source C2PA SDK of the
-            Content Authenticity Initiative, on 19&nbsp;file formats.</p>
-        </div>
-        <div>
-          <h3>Anyone can check it</h3>
-          <p>ISCC is an ISO standard with an open source reference implementation, so anyone can calculate it again
-            and compare. The tests check every unit of this app against iscc-core and iscc-sdk, bit for bit.</p>
-        </div>
-        <div>
-          <h3>Let's build it together</h3>
-          <p>The Rust core and a command-line tool are Apache-2.0.
-            <a href="https://ieps.iscc.codes/iep-0020/">IEP-0020</a> is still a draft: try the demo on your own files
-            and tell us what works and what does not, on
-            <a href="https://github.com/iscc/iscc-c2pa-demo/issues">GitHub</a> or at info@iscc.io.</p>
-        </div>
-      </div>
+    <section class="wrap" id="motivation">
+      <p class="label">Motivation</p>
+      <h2>See ISCC work inside C2PA</h2>
+      <p><code>io.iscc.v0</code> has been on the C2PA soft binding algorithm list since 2024. This demo runs it end
+        to end with <a href="https://github.com/contentauth/c2pa-rs">c2pa-rs</a>, the open source C2PA SDK of the
+        Content Authenticity Initiative, on 19&nbsp;file formats.</p>
+      <p>ISCC is an ISO standard with an open source reference implementation, so you can calculate the codes again
+        and compare. The tests check every unit of this app against iscc-core and iscc-sdk, bit for bit.</p>
     </section>
 
     <section class="wrap" id="download">
       <p class="label">Download · {{version_label}}</p>
       <h2>Try it with a file you know</h2>
       <p>Images: JPEG, PNG, WebP, GIF, TIFF, SVG. Documents: EPUB, Word, PowerPoint, Excel, OpenDocument, plain text,
-        Markdown. Audio: MP3, FLAC, WAV, M4A. The builds are not code-signed yet, so each card says how to get past the
+        Markdown. Audio: MP3, FLAC, WAV, M4A. The builds are not code-signed, so each card says how to get past the
         system's warning at the first start.</p>
       <div class="downloads">
         <article data-os="windows">
@@ -175,14 +161,14 @@
       <p class="label">Good to know</p>
       <h2>What the demo does not do</h2>
       <ul class="notes">
-        <li><b>It does not look credentials up yet.</b> Finding the credentials of a stripped copy by its ISCC needs
-          a lookup service, which C2PA specifies as the Soft Binding Resolution API. That is the next step.</li>
-        <li><b>The built-in certificate is a test certificate.</b> Anyone can check the ISCC, but only this app trusts
-          the demo signature. Sign with your own certificate and key for anything real.</li>
-        <li><b>A matching ISCC is a strong signal, not proof.</b> It suggests that two files hold the same or similar
-          content. It says nothing about who made them or who holds the rights.</li>
-        <li><b>Your files stay on your computer.</b> Signing sends only a hash of the signature to a timestamp
-          service, never the file. Inspecting stays offline.</li>
+        <li><b>It does not look up credentials.</b> The app compares ISCCs, but it does not find the credentials of a
+          stripped copy. That needs a lookup service, which C2PA specifies as the Soft Binding Resolution API.</li>
+        <li><b>The built-in certificate is for testing.</b> Anyone can check the ISCC, but only this app trusts the
+          demo signature. Sign with your own certificate and key for anything real.</li>
+        <li><b>A matching ISCC shows similar content.</b> It is a strong signal, not proof, that two files hold the
+          same or similar content. It says nothing about who made them or who holds the rights.</li>
+        <li><b>Your files stay on your computer.</b> Inspecting works offline. When you sign, only a hash of the
+          signature goes to a timestamp service.</li>
       </ul>
     </section>
 
@@ -191,9 +177,9 @@
         <p class="label">For developers</p>
         <h2>Rust, Tauri and a little TypeScript</h2>
         <p>The core is Rust: <a href="https://crates.io/crates/c2pa">c2pa-rs</a> for Content Credentials,
-          <a href="https://crates.io/crates/iscc-lib">iscc-lib</a> for ISCC, and pure Rust readers for every
-          format. No external tools, no Python. The same core also builds as <code>c2pa-iscc</code>, a command-line tool
-          that prints JSON, for scripts and agents.</p>
+          <a href="https://crates.io/crates/iscc-lib">iscc-lib</a> for ISCC, and pure Rust readers for every format,
+          so you need no external tools and no Python. The same core also builds as <code>c2pa-iscc</code>, a
+          command-line tool that prints JSON, for scripts and agents. Both are Apache-2.0.</p>
         <p class="small">Needs Rust 1.96 or later, Node 22.12 or later and pnpm. On Linux also the
           <a href="https://tauri.app/start/prerequisites/">Tauri system libraries</a>.</p>
       </div>
@@ -205,6 +191,18 @@ pnpm tauri dev
 # the command-line tool
 cd src-tauri
 cargo run --features cli --bin c2pa-iscc -- sign photo.jpg</code></pre>
+    </section>
+
+    <section class="wrap" id="feedback">
+      <p class="label">Feedback</p>
+      <h2>Help shape IEP-0020</h2>
+      <p><a href="https://ieps.iscc.codes/iep-0020/">IEP-0020</a> defines how an ISCC is stored in a C2PA manifest,
+        and it is still a draft. If you try the demo on files you know or reuse the code, tell us what worked and what
+        didn't.</p>
+      <div class="actions">
+        <a class="button" href="https://github.com/iscc/iscc-c2pa-demo/issues">Open an issue</a>
+        <span class="small">or write to info@iscc.io</span>
+      </div>
     </section>
   </main>
 
