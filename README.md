@@ -106,6 +106,10 @@ yet; the download page says how to open them the first time.
   step.
 - **The built-in certificate is a test certificate.** Anyone can check the ISCC, but only this app
   trusts the demo signature. Sign with your own certificate and key for anything real.
+- **It checks signers against the official C2PA trust list.** The app bundles the
+  [C2PA trust list and TSA trust list](https://github.com/c2pa-org/conformance-public/tree/main/trust-list)
+  plus the c2pa-rs test roots of the demo certificate. A certificate that chains to the C2PA trust
+  list shows as "Valid, signer on a trust list"; timestamps are checked against both official lists.
 - **A matching ISCC is a strong signal, not proof.** It suggests that two files hold the same or
   similar content. It says nothing about who made them or who holds the rights.
 - **Your files stay on your computer.** Signing sends only a hash of the signature to a timestamp
