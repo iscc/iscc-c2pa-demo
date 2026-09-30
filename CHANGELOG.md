@@ -8,6 +8,9 @@
   ingredient no longer gets a second copy. Signed files shrink accordingly: `no_manifest.jpg`
   (98 KB) grows by 10.5 KB instead of 98 KB, and a 3.7 KB PNG signs to 11 KB instead of
   853 KB.
+- The Content Credentials tab shows the thumbnail stored in the manifest next to the file, so a
+  manifest can be checked by eye against the file it claims to describe. It works for any
+  signer's claim thumbnail.
 
 ## 0.1.0 - 2026-09-28
 

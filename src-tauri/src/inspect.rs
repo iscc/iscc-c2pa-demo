@@ -85,6 +85,9 @@ pub struct ManifestSummary {
     pub ingredients: Vec<IngredientSummary>,
     pub soft_bindings: Vec<SoftBindingSummary>,
     pub training_mining: Option<Value>,
+    /// Claim thumbnail of the active manifest as a data URL, for comparing by eye with the
+    /// file; empty when the manifest has none in an image format.
+    pub thumbnail: String,
 }
 
 /// The failure that makes a manifest invalid, in plain language, so the verdict is never bare.
@@ -523,8 +526,28 @@ fn summarize(
             })
             .unwrap_or_default(),
         training_mining,
+        thumbnail: manifest.map(thumbnail_data_url).unwrap_or_default(),
         assertions,
     }
+}
+
+/// Claim thumbnail of `manifest` as a data URL; empty without one.
+fn thumbnail_data_url(manifest: &Manifest) -> String {
+    manifest
+        .thumbnail()
+        .and_then(|(format, bytes)| image_data_url(format, &bytes))
+        .unwrap_or_default()
+}
+
+/// `bytes` as a data URL of the media type `format`, which comes from the manifest and must be
+/// a plain `image/*` type to end up in the URL.
+fn image_data_url(format: &str, bytes: &[u8]) -> Option<String> {
+    let subtype = format.strip_prefix("image/")?;
+    let plain = !subtype.is_empty()
+        && subtype
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-'));
+    plain.then(|| format!("data:{format};base64,{}", B64.encode(bytes)))
 }
 
 /// A failure reported by the validator: code, explanation, and whether it belongs to an
@@ -1129,6 +1152,36 @@ mod tests {
     /// Path of a test fixture.
     fn fixture(name: &str) -> String {
         format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn claim_thumbnail_of_any_signer_is_shown() {
+        let manifest = inspect(Path::new(&fixture("CA.jpg")))
+            .unwrap()
+            .manifest
+            .unwrap();
+        let b64 = manifest
+            .thumbnail
+            .strip_prefix("data:image/jpeg;base64,")
+            .expect("JPEG claim thumbnail");
+        let jpeg = B64.decode(b64).unwrap();
+        image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg).unwrap();
+    }
+
+    #[test]
+    fn thumbnail_format_must_be_a_plain_image_type() {
+        assert_eq!(
+            image_data_url("image/svg+xml", b"x").as_deref(),
+            Some("data:image/svg+xml;base64,eA==")
+        );
+        for format in [
+            "text/html",
+            "image/",
+            "image/png;x=\"\"",
+            "image/png onerror",
+        ] {
+            assert_eq!(image_data_url(format, b"x"), None, "{format}");
+        }
     }
 
     /// Timestamp summary of the active manifest of the file at `path`.

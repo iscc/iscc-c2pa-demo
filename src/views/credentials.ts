@@ -131,6 +131,7 @@ export function credentialsTab(inspection: Inspection): string {
   return [
     statusCard(m),
     softBindingCard(m, inspection),
+    thumbnailCard(m, inspection),
     trainingCard(m),
     actionsCard(m),
     ingredientsCard(m),
@@ -344,6 +345,32 @@ function bindingMetadata(md: BindingMetadata | null): string {
 /** URL without scheme and trailing slash, for display. */
 function linkText(url: string): string {
   return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+/** The claim thumbnail stored at signing next to this file's picture, to compare by eye. Left out
+ * when there is neither: a text file has nothing to compare. */
+function thumbnailCard(m: ManifestSummary, inspection: Inspection): string {
+  if (!m.thumbnail && !inspection.preview) return "";
+  const header = `<header><h2>Thumbnail</h2><span class="grow"></span><span class="hint mono">c2pa.thumbnail.claim</span></header>`;
+  if (!m.thumbnail) {
+    return `
+      <section class="card">
+        ${header}
+        <div class="note">This manifest carries no thumbnail to compare with the file.</div>
+      </section>`;
+  }
+  const current = inspection.preview
+    ? `<img src="${inspection.preview}" alt="${esc(inspection.file_name)}" draggable="false" />`
+    : `<div class="nopreview">no picture</div>`;
+  return `
+    <section class="card">
+      ${header}
+      <div class="thumbs">
+        <figure><img src="${esc(m.thumbnail)}" alt="Thumbnail stored in the manifest" draggable="false" /><figcaption>Stored in the manifest</figcaption></figure>
+        <figure>${current}<figcaption>This file</figcaption></figure>
+      </div>
+      <div class="note">The signer stored this picture in the manifest. Both should show the same content; if they do not, the manifest belongs to another file.</div>
+    </section>`;
 }
 
 function trainingCard(m: ManifestSummary): string {

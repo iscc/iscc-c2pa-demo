@@ -126,6 +126,8 @@ export interface ManifestSummary {
   ingredients: IngredientSummary[];
   soft_bindings: SoftBindingSummary[];
   training_mining: TrainingMining | null;
+  /** Claim thumbnail of the active manifest as a data URL; empty when it has none. */
+  thumbnail: string;
 }
 
 export interface TrainingEntry {

@@ -16,6 +16,8 @@ Opening a file shows:
 - the ISCC soft binding embedded in the manifest, decoded from its ISCC-SEQ value and compared
   unit by unit with the file, and whether the file is source-preserving (see
   [Notes on the soft binding](#notes-on-the-soft-binding));
+- the claim thumbnail of the manifest next to the file's own picture, to compare by eye (see
+  [Thumbnail](#thumbnail));
 - the CAWG training and data mining assertion, if present.
 
 The Sign tab writes a signed copy with:
@@ -193,6 +195,12 @@ c2pa-rs's own thumbnails are off (`add_thumbnails` feature not enabled, `builder
 to disabled): they measure 1024 px, enlarge small images and keep lossless formats lossless, so
 a 3.7 KB PNG became an 853 KB signed file with the same 422 KB thumbnail twice. The thumbnail is
 made in `src-tauri/src/thumbnail.rs`, which also makes the preview.
+
+The Content Credentials tab shows the active manifest's claim thumbnail, whoever signed it, next
+to the picture of the file as it is now (`ManifestSummary.thumbnail`, a data URL of any `image/*`
+type). There is no similarity figure for the pair: the soft binding table already holds the
+computed comparison, and the thumbnail is for the eye. A manifest without a claim thumbnail
+says so when the file has a picture; for files without one the card is left out.
 
 ## Release
 

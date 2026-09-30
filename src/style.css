@@ -309,6 +309,12 @@ td.num { text-align: right; font-family: var(--font-mono); font-size: 12px; whit
 
 .note { color: var(--muted); font-size: 12px; line-height: 18px; padding: 12px 16px; border-top: 1px solid var(--rule-soft); }
 
+.thumbs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+.thumbs figure { margin: 0; min-width: 0; }
+.thumbs img, .thumbs .nopreview { display: block; width: 100%; height: 200px; object-fit: contain; background: var(--paper); border: 1px solid var(--rule-soft); border-radius: var(--radius); }
+.thumbs .nopreview { display: flex; align-items: center; justify-content: center; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+.thumbs figcaption { margin-top: 8px; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+
 .card.callout { border-left: 4px solid var(--coral); }
 .callout p { margin: 0; max-width: 72ch; font-size: 13px; line-height: 20px; }
 .callout .cta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 16px; }

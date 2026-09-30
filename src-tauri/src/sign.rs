@@ -918,6 +918,16 @@ mod tests {
                 parent.thumbnail_ref().is_none(),
                 "{file}: ingredient thumbnail"
             );
+            let shown = inspect::inspect(&output)
+                .unwrap()
+                .manifest
+                .unwrap()
+                .thumbnail;
+            assert_eq!(
+                shown.starts_with("data:image/jpeg;base64,"),
+                has_picture,
+                "{file}: thumbnail for the UI"
+            );
             let thumbnail = manifest.thumbnail();
             assert_eq!(thumbnail.is_some(), has_picture, "{file}: claim thumbnail");
             let Some((format, jpeg)) = thumbnail else {
