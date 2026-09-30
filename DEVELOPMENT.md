@@ -28,6 +28,7 @@ The Sign tab writes a signed copy with:
 - an optional `cawg.training-mining` assertion (CAWG Training and Data Mining Assertion 1.1);
 - a `c2pa.opened` action with the source as parent ingredient, which carries the chosen digital
   source type or, when the source already has Content Credentials, the existing manifest;
+- a claim thumbnail when the file has a picture (see [Thumbnail](#thumbnail));
 - an RFC 3161 timestamp from a time stamping authority, so the manifest proves when it was
   signed (see below).
 
@@ -170,6 +171,28 @@ soft-binding assertion that has one.
 The assertion is built in `src-tauri/src/sign.rs` and verified in `src-tauri/src/inspect.rs`
 (`source_view`, `preservation`, `summarize_assertion`); both go through `iscc::encode_seq` /
 `iscc::decode_seq`.
+
+## Thumbnail
+
+Each signed file carries one thumbnail, the claim thumbnail (`c2pa.thumbnail.claim`), made by the
+app from the same picture the Content-Code or the preview is computed from: the image itself
+(EXIF-rotated, transparency flattened on white), the rendered SVG, the EPUB cover, the thumbnail
+an office file was saved with, or the cover art of an audio file. It is a JPEG at quality 75,
+scaled down to 256 px on its long edge and never enlarged, without metadata. Files without a
+picture (TXT, Markdown, audio without cover art, office files saved without a thumbnail, EPUBs
+without a cover) get none. Its purpose is visual verification: when a file has lost its
+manifest and the manifest is found again through its soft binding, the thumbnail shows whether
+it belongs to the file at hand.
+
+The parent ingredient gets no thumbnail of its own. The demo signs the file unchanged, so it
+would be a second copy of the claim thumbnail. This deviates from the C2PA specification, which
+says a thumbnail should be generated for an ingredient that has none. A source that already has
+Content Credentials keeps the reference to its own claim thumbnail.
+
+c2pa-rs's own thumbnails are off (`add_thumbnails` feature not enabled, `builder.thumbnail` set
+to disabled): they measure 1024 px, enlarge small images and keep lossless formats lossless, so
+a 3.7 KB PNG became an 853 KB signed file with the same 422 KB thumbnail twice. The thumbnail is
+made in `src-tauri/src/thumbnail.rs`, which also makes the preview.
 
 ## Release
 

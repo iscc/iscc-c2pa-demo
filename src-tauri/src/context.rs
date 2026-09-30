@@ -113,7 +113,9 @@ pub fn base_settings() -> Value {
             },
             // The demo records no action besides `c2pa.opened`, so the spec requires
             // `allActionsIncluded: true`.
-            "actions": { "auto_all_actions_included": true }
+            "actions": { "auto_all_actions_included": true },
+            // The app writes its own claim thumbnail (`thumbnail.rs`) and none for ingredients.
+            "thumbnail": { "enabled": false }
         }
     })
 }

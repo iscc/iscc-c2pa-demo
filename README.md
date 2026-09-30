@@ -77,7 +77,9 @@ body, concatenated. CBOR stores the value as a byte string; the JSON view shows 
 ```
 
 Next to it, the app writes a `cawg.metadata` assertion with the title and description behind the
-Meta-Code, an optional `cawg.training-mining` assertion, and an RFC 3161 timestamp.
+Meta-Code, an optional `cawg.training-mining` assertion, and an RFC 3161 timestamp. When the file
+has a picture (the image itself, a book cover, the thumbnail a document was saved with, or cover
+art), signing also stores a 256 px JPEG thumbnail of it.
 [DEVELOPMENT.md](DEVELOPMENT.md#notes-on-the-soft-binding) explains how each unit is calculated
 and checked, including whether signing left the original file intact byte for byte.
 

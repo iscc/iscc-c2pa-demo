@@ -15,6 +15,7 @@ pub mod plain;
 pub mod resample;
 pub mod sign;
 pub mod svg;
+pub mod thumbnail;
 pub mod timestamp;
 
 use std::path::PathBuf;

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Signing writes one thumbnail per manifest, made by the app: a JPEG of at most 256 px on its
+  long edge, never enlarged, from the image, the SVG, the EPUB cover, an office file's saved
+  thumbnail or audio cover art. SVG, EPUB, office and audio files had none before. The parent
+  ingredient no longer gets a second copy. Signed files shrink accordingly: `no_manifest.jpg`
+  (98 KB) grows by 10.5 KB instead of 98 KB, and a 3.7 KB PNG signs to 11 KB instead of
+  853 KB.
+
 ## 0.1.0 - 2026-09-28
 
 First public release: installers for Windows, macOS and Linux.

@@ -766,7 +766,6 @@ dependencies = [
  "hex",
  "http",
  "id3",
- "image",
  "img-parts",
  "iref",
  "jfifdump",

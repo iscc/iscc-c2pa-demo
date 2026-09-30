@@ -1,13 +1,11 @@
 //! Read an asset: file facts, preview, ISCC units and the C2PA manifest store with validation.
 
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use c2pa::assertions::{labels, SoftBinding};
 use c2pa::{Context, Manifest, Reader, ValidationState};
-use image::codecs::jpeg::JpegEncoder;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -16,9 +14,12 @@ use crate::context::{base_settings, ISCC_SOFT_BINDING_ALG};
 use crate::formats::{self, Format, Kind};
 use crate::iscc::{self, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
+use crate::thumbnail;
 
 /// Longest edge of the preview image sent to the UI.
 const PREVIEW_EDGE: u32 = 640;
+/// JPEG quality of the preview image.
+const PREVIEW_QUALITY: u8 = 82;
 /// Label of the CAWG training and data mining assertion.
 pub const TRAINING_MINING_LABEL: &str = "cawg.training-mining";
 
@@ -436,19 +437,8 @@ fn read_manifest(path: &Path) -> c2pa::Result<Reader> {
 
 /// Down-scale the flattened image and encode it as a JPEG data URL.
 fn preview_data_url(rgb: &image::RgbImage) -> Result<String> {
-    let (w, h) = rgb.dimensions();
-    let scale = (PREVIEW_EDGE as f64 / w.max(h).max(1) as f64).min(1.0);
-    let (pw, ph) = (
-        ((w as f64 * scale) as u32).max(1),
-        ((h as f64 * scale) as u32).max(1),
-    );
-    let small = image::imageops::resize(rgb, pw, ph, image::imageops::FilterType::Triangle);
-    let mut buf = Cursor::new(Vec::new());
-    JpegEncoder::new_with_quality(&mut buf, 82).encode_image(&small)?;
-    Ok(format!(
-        "data:image/jpeg;base64,{}",
-        B64.encode(buf.into_inner())
-    ))
+    let jpeg = thumbnail::scaled_jpeg(rgb, PREVIEW_EDGE, PREVIEW_QUALITY)?;
+    Ok(format!("data:image/jpeg;base64,{}", B64.encode(jpeg)))
 }
 
 /// Build the display summary of the active manifest. `view_units` are the units of the source
@@ -1003,6 +993,8 @@ fn summarize_soft_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::codecs::jpeg::JpegEncoder;
+    use std::io::Cursor;
 
     #[test]
     fn timestamp_status_follows_the_codes() {

@@ -1,5 +1,6 @@
-//! Create, sign and embed a C2PA manifest carrying an ISCC soft binding and, optionally,
-//! a CAWG training and data mining assertion and an RFC 3161 timestamp.
+//! Create, sign and embed a C2PA manifest carrying an ISCC soft binding, a claim thumbnail when
+//! the source has a picture and, optionally, a CAWG training and data mining assertion and an
+//! RFC 3161 timestamp.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -12,11 +13,12 @@ use c2pa::{create_signer, BoxedSigner, Builder, BuilderIntent, Context, SigningA
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::asset;
+use crate::asset::{self, Asset};
 use crate::context::{self, base_settings, ISCC_SOFT_BINDING_ALG};
 use crate::inspect::{self, Inspection, TRAINING_MINING_LABEL};
 use crate::iscc::{self, IsccUnit, MetaInput, UnitSelection};
 use crate::metadata;
+use crate::thumbnail::{self, THUMBNAIL_EDGE, THUMBNAIL_MIME, THUMBNAIL_QUALITY};
 use crate::timestamp::{BestEffortTsa, FailureSlot};
 
 /// Signing request as sent by the UI.
@@ -130,6 +132,7 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
     }))?;
     builder.set_intent(BuilderIntent::Edit);
     add_parent(&mut builder, source, &bytes, mime, &request.source_type)?;
+    add_thumbnail(&mut builder, &asset)?;
 
     let soft_binding: SoftBinding = serde_json::from_value(json!({
         "alg": ISCC_SOFT_BINDING_ALG,
@@ -276,6 +279,16 @@ fn add_parent(
     Ok(())
 }
 
+/// Set the claim thumbnail from the asset's picture: the image itself, a cover, a saved document
+/// thumbnail or cover art. An asset without a picture gets none.
+fn add_thumbnail(builder: &mut Builder, asset: &Asset) -> Result<()> {
+    if let Some(picture) = asset.picture() {
+        let jpeg = thumbnail::scaled_jpeg(picture, THUMBNAIL_EDGE, THUMBNAIL_QUALITY)?;
+        builder.set_thumbnail(THUMBNAIL_MIME, &mut Cursor::new(jpeg))?;
+    }
+    Ok(())
+}
+
 /// Resolve credentials to (algorithm, certificate chain PEM, private key PEM).
 fn load_credentials(credentials: &Credentials) -> Result<(String, String, String)> {
     match credentials {
@@ -302,6 +315,7 @@ fn load_credentials(credentials: &Credentials) -> Result<(String, String, String
 mod tests {
     use super::*;
     use crate::inspect::Preservation;
+    use c2pa::ValidationState;
 
     fn fixture(name: &str) -> String {
         format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
@@ -845,6 +859,110 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Open the manifest store of `path` with the app's settings.
+    fn reader(path: &Path) -> c2pa::Reader {
+        let context = Context::new().with_settings(base_settings()).unwrap();
+        c2pa::Reader::from_context(context).with_file(path).unwrap()
+    }
+
+    /// Sign the fixture `file` with only Data- and Instance-Code into the directory `dir`.
+    fn sign_fixture(file: &str, dir: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join(file);
+        let mut req = request(file, &output);
+        req.units = vec!["data".into(), "instance".into()];
+        sign(&req).unwrap();
+        output
+    }
+
+    #[test]
+    fn signed_files_carry_one_jpeg_thumbnail() {
+        let with_picture = [
+            "no_manifest.jpg",
+            "libpng-test.png",
+            "meta-xmp.webp",
+            "demo.gif",
+            "demo.tif",
+            "demo.svg",
+            "demo.epub",
+            "demo.odt",
+            "demo.pptx",
+            "withcover.mp3",
+        ];
+        let without_picture = [
+            "demo.docx",
+            "demo.xlsx",
+            "demo.txt",
+            "demo.md",
+            "demo.mp3",
+            "demo.m4a",
+        ];
+        let cases = with_picture
+            .iter()
+            .map(|f| (*f, true))
+            .chain(without_picture.iter().map(|f| (*f, false)));
+        for (file, has_picture) in cases {
+            let output = sign_fixture(file, "iscc-c2pa-demo-test-thumbnails");
+            let reader = reader(&output);
+            assert_eq!(
+                reader.validation_state(),
+                ValidationState::Trusted,
+                "{file}"
+            );
+            let manifest = reader.active_manifest().unwrap();
+            let parent = &manifest.ingredients()[0];
+            assert!(
+                parent.thumbnail_ref().is_none(),
+                "{file}: ingredient thumbnail"
+            );
+            let thumbnail = manifest.thumbnail();
+            assert_eq!(thumbnail.is_some(), has_picture, "{file}: claim thumbnail");
+            let Some((format, jpeg)) = thumbnail else {
+                continue;
+            };
+            assert_eq!(format, THUMBNAIL_MIME, "{file}");
+            assert!(jpeg.len() < 12_000, "{file}: {} bytes", jpeg.len());
+            let decoded =
+                image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg).unwrap();
+            assert!(
+                decoded.width().max(decoded.height()) <= THUMBNAIL_EDGE,
+                "{file}"
+            );
+        }
+    }
+
+    #[test]
+    fn signed_source_keeps_its_parents_thumbnail() {
+        let output = sign_fixture("CA.jpg", "iscc-c2pa-demo-test-parent-thumbnail");
+        let reader = reader(&output);
+        let manifest = reader.active_manifest().unwrap();
+        let (format, jpeg) = manifest.thumbnail().expect("claim thumbnail");
+        assert_eq!(format, THUMBNAIL_MIME);
+        let decoded = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg).unwrap();
+        assert_eq!(decoded.width().max(decoded.height()), THUMBNAIL_EDGE);
+
+        let parent = &manifest.ingredients()[0];
+        let parent_label = parent.active_manifest().expect("parent manifest");
+        let identifier = &parent.thumbnail_ref().expect("parent thumbnail").identifier;
+        assert!(
+            identifier.contains(parent_label),
+            "{identifier} is not in {parent_label}"
+        );
+    }
+
+    #[test]
+    fn signing_adds_little_to_a_jpeg() {
+        let result = sign_no_manifest("iscc-c2pa-demo-test-growth");
+        let source = std::fs::metadata(fixture("no_manifest.jpg")).unwrap().len();
+        let signed = std::fs::metadata(&result.output).unwrap().len();
+        assert!(
+            signed - source < 16_000,
+            "grew by {} bytes",
+            signed - source
+        );
     }
 
     /// Sign `no_manifest.jpg` through the timestamp service `url` into the directory `name`.
