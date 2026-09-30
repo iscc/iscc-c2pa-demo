@@ -351,7 +351,7 @@ function linkText(url: string): string {
  * when there is neither: a text file has nothing to compare. */
 function thumbnailCard(m: ManifestSummary, inspection: Inspection): string {
   if (!m.thumbnail && !inspection.preview) return "";
-  const header = `<header><h2>Thumbnail</h2><span class="grow"></span><span class="hint mono">c2pa.thumbnail.claim</span></header>`;
+  const header = `<header><h2>Visual Thumbnail Verification</h2><span class="grow"></span><span class="hint mono">c2pa.thumbnail.claim</span></header>`;
   if (!m.thumbnail) {
     return `
       <section class="card">
