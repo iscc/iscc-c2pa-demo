@@ -79,9 +79,11 @@ function render() {
   });
 }
 
-/** Says which bytes the left-hand units were computed from: always the whole file, as any ISCC tool computes them. */
+/** Says which bytes the left-hand units were computed from: always the whole file, as any ISCC tool computes them.
+ * A sidecar manifest is not in the file. */
 function unitListHint(inspection: Inspection): string {
-  return inspection.manifest || inspection.manifest_error ? "computed now, credentials included" : "computed now, 256 bit";
+  const embedded = inspection.manifest ? !inspection.manifest.sidecar : Boolean(inspection.manifest_error);
+  return embedded ? "computed now, credentials included" : "computed now, 256 bit";
 }
 
 function workspace(inspection: Inspection): string {

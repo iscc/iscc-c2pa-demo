@@ -160,10 +160,17 @@ function statusCard(m: ManifestSummary): string {
           <dt>Signer</dt><dd>${esc(signer)}</dd>
           <dt>Signature</dt><dd>${esc(s?.alg?.toUpperCase() ?? "—")}</dd>
           ${timestampRow(s?.timestamp)}
+          ${sidecarRow(m.sidecar)}
           <dt>Manifest label</dt><dd class="mono">${esc(m.label)}</dd>
         </dl>
       </div>
     </section>`;
+}
+
+/** Where a manifest store read from a sidecar file comes from; nothing for an embedded one. */
+function sidecarRow(sidecar: string | null): string {
+  if (!sidecar) return "";
+  return `<dt>Stored in</dt><dd>Sidecar file <span class="mono">${esc(sidecar)}</span>, not in this file</dd>`;
 }
 
 /** Why the manifest is invalid: a plain sentence, the failure code under it, and how many more failures the Validation card lists. */
@@ -232,9 +239,15 @@ function preservationText(p: Preservation, inspection: Inspection): [string, str
   const before = "Data-Code and Instance-Code describe the file as it was before signing.";
   const e = embedding(inspection);
   const why = e.kind === "preserved" ? "" : e.why;
+  const sidecar = Boolean(inspection.manifest?.sidecar);
   switch (p) {
     case "preserved":
-      return ["Source preserved", "Without its Content Credentials, this file is byte for byte the file that was signed."];
+      return [
+        "Source preserved",
+        sidecar
+          ? "Its Content Credentials are in a separate file, and this file is byte for byte the file that was signed."
+          : "Without its Content Credentials, this file is byte for byte the file that was signed.",
+      ];
     case "changed":
       return ["Source not preserved", `${why ? `Signing ${why}.` : "Signing changed bytes outside the Content Credentials."} ${before}`];
     case "resigned":
@@ -257,7 +270,9 @@ function preservationText(p: Preservation, inspection: Inspection): [string, str
     case "file_changed":
       return [
         "Source preservation not verifiable",
-        "The file changed after signing. The comparison shows how far it moved from the file that was signed.",
+        sidecar
+          ? "The C2PA hash in the sidecar does not match this file; a sidecar extracted from a copy that embeds it never does. The comparison shows how far this file is from the file that was signed."
+          : "The file changed after signing. The comparison shows how far it moved from the file that was signed.",
       ];
   }
 }
@@ -293,13 +308,11 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
   const has = (unit: string) => sb.matches.some((mt) => mt.embedded.unit === unit);
   const parts: string[] = [];
   if (sb.preservation === "preserved") {
-    parts.push("Every unit is recomputed from this file without its Content Credentials, which is the file that was signed.");
+    const from = m.sidecar ? "this file" : "this file without its Content Credentials";
+    parts.push(`Every unit is recomputed from ${from}, which is the file that was signed.`);
   } else {
     if (has("content")) parts.push(`Content-Code is recomputed from this file's ${contentSource(inspection)}.`);
-    if (has("data") || has("instance")) {
-      const from = m.source_view ? "this file's bytes without its Content Credentials" : "the whole file, Content Credentials included";
-      parts.push(`Data-Code and Instance-Code are recomputed from ${from}.`);
-    }
+    if (has("data") || has("instance")) parts.push(`Data-Code and Instance-Code are recomputed from ${bitstreamSource(m)}.`);
   }
   if (has("data") || has("instance")) {
     parts.push("Data-Code tolerates small byte changes; Instance-Code is exact and either matches or not.");
@@ -310,6 +323,12 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
     );
   }
   return parts.join(" ");
+}
+
+/** What Data-Code and Instance-Code are recomputed from when the source is not shown as preserved. */
+function bitstreamSource(m: ManifestSummary): string {
+  if (m.sidecar) return "this file's bytes";
+  return m.source_view ? "this file's bytes without its Content Credentials" : "the whole file, Content Credentials included";
 }
 
 /** Call to action for a manifest without an ISCC soft binding, the gap this demo exists to close. */

@@ -1078,4 +1078,130 @@ mod tests {
             "{c2pa_uris:?}"
         );
     }
+
+    /// An empty directory for one test's files.
+    fn fresh_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write `bytes` as `name` next to `signed`, with the manifest store extracted from `signed`
+    /// as its sidecar, which c2pa-rs loads for a file that embeds none.
+    fn with_sidecar_of(signed: &Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let file = signed.with_file_name(name);
+        std::fs::write(&file, bytes).unwrap();
+        let store = c2pa::jumbf_io::load_jumbf_from_file(signed).unwrap();
+        std::fs::write(file.with_extension("c2pa"), store).unwrap();
+        file
+    }
+
+    #[test]
+    fn sidecar_made_for_an_embedded_copy_is_compared_with_the_file_itself() {
+        // Cutting the embedded copy's data hash exclusions from the source as well gave an
+        // Instance-Code of 53%, although the file is the source byte for byte.
+        let signed = sign_fixture("no_manifest.jpg", "iscc-c2pa-demo-test-sidecar");
+        let embedded = inspect::inspect(&signed).unwrap().manifest.unwrap();
+        assert_eq!(embedded.sidecar, None);
+        let source = std::fs::read(fixture("no_manifest.jpg")).unwrap();
+        let file = with_sidecar_of(&signed, "source.jpg", &source);
+
+        let manifest = inspect::inspect(&file).unwrap().manifest.unwrap();
+        assert_eq!(manifest.sidecar.as_deref(), Some("source.c2pa"));
+        // c2pa-rs rejects data hash exclusions that are no C2PA box in the file (its PR #2643).
+        assert_eq!(manifest.validation_state, "Invalid");
+        let reason = manifest.invalid_reason.as_ref().unwrap();
+        assert_eq!(
+            reason.text,
+            "The hash in the sidecar does not match this file."
+        );
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::FileChanged));
+        assert_eq!(unit_match(sb, "Instance-Code").similarity, Some(1.0));
+    }
+
+    #[test]
+    fn foreign_bytes_where_a_sidecar_excludes_are_never_source_preserved() {
+        // The source with a comment segment of the excluded length at the excluded position:
+        // cutting the exclusions gave back the source, and the card said "Source preserved".
+        let signed = sign_fixture("no_manifest.jpg", "iscc-c2pa-demo-test-sidecar-forged");
+        let (start, length) = inspect::data_hash_exclusions(&reader(&signed)).unwrap()[0];
+        let start = usize::try_from(start).unwrap();
+        let length = usize::try_from(length).unwrap();
+        let mut comment = vec![0xFF, 0xFE];
+        comment.extend_from_slice(&u16::try_from(length - 2).unwrap().to_be_bytes());
+        comment.resize(length, b'A');
+        let source = std::fs::read(fixture("no_manifest.jpg")).unwrap();
+        let forged = [&source[..start], &comment, &source[start..]].concat();
+        let file = with_sidecar_of(&signed, "forged.jpg", &forged);
+
+        let manifest = inspect::inspect(&file).unwrap().manifest.unwrap();
+        assert_eq!(manifest.validation_state, "Invalid");
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::FileChanged));
+        assert_ne!(unit_match(sb, "Instance-Code").similarity, Some(1.0));
+    }
+
+    /// Sign the fixture `file` into a sidecar next to an untouched copy in `dir`, as
+    /// `c2patool --sidecar` does, with a soft binding of the copy's Data- and Instance-Code.
+    fn sign_into_sidecar(file: &str, dir: &Path) -> std::path::PathBuf {
+        let copy = dir.join(file);
+        std::fs::copy(fixture(file), &copy).unwrap();
+        let bytes = std::fs::read(&copy).unwrap();
+        let units = [
+            iscc::data_unit(&bytes).unwrap().iscc,
+            iscc::instance_unit(&bytes).unwrap().iscc,
+        ];
+        let soft_binding: SoftBinding = serde_json::from_value(json!({
+            "alg": ISCC_SOFT_BINDING_ALG,
+            "blocks": [{ "scope": {}, "value": iscc::encode_seq(&units).unwrap() }],
+        }))
+        .unwrap();
+        let mime = inspect::asset_format(&copy).unwrap().mime;
+        let (signer, _) = claim_signer(&Credentials::Demo, None).unwrap();
+        let context = Context::new()
+            .with_settings(base_settings())
+            .unwrap()
+            .with_signer(signer);
+        let mut builder = Builder::from_context(context)
+            .with_definition(json!({ "title": file, "format": mime }))
+            .unwrap();
+        builder.set_intent(BuilderIntent::Edit);
+        let digital_capture = "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture";
+        add_parent(&mut builder, &copy, &bytes, mime, digital_capture).unwrap();
+        builder
+            .add_assertion(labels::SOFT_BINDING, &soft_binding)
+            .unwrap();
+        builder.set_no_embed(true);
+        // c2pa also writes the asset to an output file; the copy stays as it is.
+        let store = builder
+            .save_to_file(&copy, dir.join(format!("output-{file}")))
+            .unwrap();
+        std::fs::write(copy.with_extension("c2pa"), store).unwrap();
+        copy
+    }
+
+    #[test]
+    fn file_signed_into_a_sidecar_is_its_own_source_view() {
+        // A data hash (JPEG) and a BMFF hash (M4A), which defines no source view when embedded.
+        let dir = fresh_dir("iscc-c2pa-demo-test-signed-sidecar");
+        for file in ["no_manifest.jpg", "demo.m4a"] {
+            let copy = sign_into_sidecar(file, &dir);
+            let original = std::fs::read(fixture(file)).unwrap();
+            assert_eq!(std::fs::read(&copy).unwrap(), original, "{file}");
+
+            let manifest = inspect::inspect(&copy).unwrap().manifest.unwrap();
+            assert_eq!(manifest.validation_state, "Trusted", "{file}");
+            let sidecar = Path::new(file).with_extension("c2pa");
+            assert_eq!(manifest.sidecar.as_deref(), sidecar.to_str(), "{file}");
+            assert!(manifest.source_view, "{file}");
+            let sb = &manifest.soft_bindings[0];
+            assert_eq!(sb.preservation, Some(Preservation::Preserved), "{file}");
+            assert!(
+                sb.matches.iter().all(|m| m.similarity == Some(1.0)),
+                "{file}"
+            );
+        }
+    }
 }

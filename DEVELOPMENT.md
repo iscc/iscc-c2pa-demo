@@ -158,6 +158,17 @@ bytes need not decode (TIFF) or decodes wrongly (MP3). Data-Code and Instance-Co
 the source view where there is one, so the manifest store never counts as a change. When a file is
 not source-preserving but its hash still matches, Data-Code and Instance-Code describe the file as
 it was before signing; the card shows them in grey, with "Before signing" in place of "No match".
+A hash that does not match the file always means "not verifiable", even when the Instance-Codes
+agree.
+
+**Sidecar manifests.** c2pa-rs's `Reader::with_file` loads `<stem>.c2pa` next to a file that embeds
+no manifest store; the status card then says "Stored in: Sidecar file …" (`sidecar` in the
+inspection). A sidecar is not in the file, so the file itself is its source view, whatever the
+hard binding: a file signed into a sidecar (`c2patool --sidecar`) is source-preserving even as
+M4A. A sidecar extracted from a copy that embeds the manifest carries data hash exclusions made
+for that copy, which would cut real content from this file; the app ignores them, and c2pa-rs
+rejects such a hash with `assertion.dataHash.mismatch` (c2pa-rs PR #2643). The `sidecar` tests
+in `src-tauri/src/sign.rs` pin both cases.
 
 **Inception.** Signing records the source as the `parentOf` ingredient and a `c2pa.opened`
 action with `allActionsIncluded: true`, as the C2PA specification requires for a file that is opened

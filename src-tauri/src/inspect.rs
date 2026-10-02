@@ -77,9 +77,11 @@ pub struct ManifestSummary {
     /// URI of the trust list the active manifest's signer chains to; `None` when untrusted.
     pub trust_list: Option<String>,
     pub validation: Value,
-    /// True when the hard binding is a data hash, so the file has a source view: the file
-    /// without the byte ranges the data hash excludes (IEP-0020).
+    /// True when the file has a source view (IEP-0020): the file without the byte ranges the
+    /// data hash of an embedded manifest excludes, or the file itself for a sidecar manifest.
     pub source_view: bool,
+    /// File name of the sidecar the manifest store was read from; `None` when it is embedded.
+    pub sidecar: Option<String>,
     pub signature: Option<SignatureSummary>,
     pub assertions: Vec<AssertionSummary>,
     pub ingredients: Vec<IngredientSummary>,
@@ -265,8 +267,15 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     let units: Vec<IsccUnit> = meta.into_iter().chain(content).chain(bitstream).collect();
     let view_units = reader
         .as_ref()
-        .and_then(data_hash_exclusions)
-        .map(|ranges| source_view_units(path, format, &source_view(&bytes, &ranges), &units))
+        .and_then(source_view_ranges)
+        .map(|ranges| {
+            if ranges.is_empty() {
+                // Nothing to cut: the source view is the file itself.
+                Ok(units.clone())
+            } else {
+                source_view_units(path, format, &source_view(&bytes, &ranges), &units)
+            }
+        })
         .transpose()?;
     let compared = match &view_units {
         Some(view) => with_bitstream_of(&units, view),
@@ -275,7 +284,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     let manifest = reader
         .as_ref()
         .zip(json.as_ref())
-        .map(|(r, j)| summarize(r, j, &compared, view_units.as_deref()));
+        .map(|(r, j)| summarize(r, j, path, &compared, view_units.as_deref()));
     let (width, height) = match &asset.content {
         AssetContent::Image(rgb) => rgb.dimensions(),
         AssetContent::Text(_) | AssetContent::Audio(_) => (0, 0),
@@ -361,10 +370,35 @@ pub fn meta_input(fields: &MetaFields) -> MetaInput<'_> {
     }
 }
 
+/// Byte ranges `(start, length)` that separate the file from its Content Credentials, for the
+/// source view (IEP-0020): the data hash exclusions of an embedded manifest store. A store read
+/// from a sidecar is not in the file, so nothing is cut, whatever its hard binding: exclusions
+/// made for a copy with the store embedded would cut real content from this file. `None` when an
+/// embedded store's hard binding is not a data hash.
+fn source_view_ranges(reader: &Reader) -> Option<Vec<(u64, u64)>> {
+    if reader.is_embedded() {
+        data_hash_exclusions(reader)
+    } else {
+        Some(Vec::new())
+    }
+}
+
+/// File name of the sidecar the manifest store was read from: c2pa-rs loads `<stem>.c2pa` next
+/// to a file that embeds none. `None` for an embedded store.
+fn sidecar_name(reader: &Reader, path: &Path) -> Option<String> {
+    if reader.is_embedded() {
+        return None;
+    }
+    let sidecar = path.with_extension("c2pa");
+    sidecar
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
 /// Byte ranges `(start, length)` that the data hash of the active manifest excludes; `None`
 /// when its hard binding is not a data hash (collection, BMFF and box hashes define no source
 /// view).
-fn data_hash_exclusions(reader: &Reader) -> Option<Vec<(u64, u64)>> {
+pub(crate) fn data_hash_exclusions(reader: &Reader) -> Option<Vec<(u64, u64)>> {
     let json: Value = serde_json::from_str(&reader.detailed_json()).ok()?;
     let store = json
         .get("manifests")?
@@ -444,11 +478,13 @@ fn preview_data_url(rgb: &image::RgbImage) -> Result<String> {
     Ok(format!("data:image/jpeg;base64,{}", B64.encode(jpeg)))
 }
 
-/// Build the display summary of the active manifest. `view_units` are the units of the source
-/// view, when the hard binding is a data hash; see [`summarize_assertion`] for `compared`.
+/// Build the display summary of the active manifest of the file at `path`. `view_units` are the
+/// units of the source view, when there is one (see [`source_view_ranges`]); see
+/// [`summarize_assertion`] for `compared`.
 fn summarize(
     reader: &Reader,
     json: &Value,
+    path: &Path,
     compared: &[IsccUnit],
     view_units: Option<&[IsccUnit]>,
 ) -> ManifestSummary {
@@ -490,6 +526,7 @@ fn summarize(
         trust_list: signer_trust_list(reader),
         validation: serde_json::to_value(reader.validation_results()).unwrap_or(Value::Null),
         source_view: view_units.is_some(),
+        sidecar: sidecar_name(reader, path),
         signature: manifest
             .and_then(Manifest::signature_info)
             .map(|s| SignatureSummary {
@@ -587,7 +624,11 @@ fn invalid_reason(reader: &Reader) -> Option<InvalidReason> {
         .flat_map(|d| d.validation_deltas().failure())
         .map(|v| (v.code(), v.explanation(), true));
     let failures: Vec<Failure> = active.chain(ingredients).collect();
-    Some(reason_for(&failures))
+    let mut reason = reason_for(&failures);
+    if !reader.is_embedded() && reason.text == FILE_CHANGED {
+        reason.text = SIDECAR_MISMATCH.to_owned();
+    }
+    Some(reason)
 }
 
 /// Failures c2pa does not count against the manifest (`is_tolerated_manifest_failure_code`
@@ -630,12 +671,16 @@ fn reason_for(failures: &[Failure]) -> InvalidReason {
 const INGREDIENT_INVALID: &str =
     "A source this file was made from (an ingredient) does not validate.";
 
+const FILE_CHANGED: &str = "The file changed after signing: its hash no longer matches.";
+
+/// Hard-binding mismatch of a sidecar manifest, which also describes an unchanged file: a sidecar
+/// extracted from a copy that embeds it never matches the file without it.
+const SIDECAR_MISMATCH: &str = "The hash in the sidecar does not match this file.";
+
 /// Plain-language sentence for the failure codes of c2pa-rs 0.91 a reader can act on.
 fn plain_reason(code: &str) -> Option<&'static str> {
     Some(match code {
-        c if HARD_BINDING_MISMATCH.contains(&c) => {
-            "The file changed after signing: its hash no longer matches."
-        }
+        c if HARD_BINDING_MISMATCH.contains(&c) => FILE_CHANGED,
         "claim.hardBindings.missing"
         | "assertion.multipleHardBindings"
         | "assertion.dataHash.malformed"
@@ -871,7 +916,8 @@ fn summarize_assertion(
 /// What the preservation check needs to know about the active manifest besides the units.
 #[derive(Debug, Clone, Copy)]
 struct BindingFacts {
-    /// The hard binding is a data hash, so there is a source view.
+    /// There is a source view: an embedded store's hard binding is a data hash, or the store
+    /// comes from a sidecar.
     source_view: bool,
     /// The claim signature validates and covers every assertion as it is.
     signature_valid: bool,
@@ -921,25 +967,21 @@ fn binding_facts(reader: &Reader, manifest: &Manifest, source_view: bool) -> Bin
 
 /// The Source Preservation check of IEP-0020, with the reason for every result other than
 /// preserved. `instance_equal` tells whether the embedded Instance-Code equals the one of the
-/// source view, `None` without an embedded Instance-Code.
+/// source view, `None` without an embedded Instance-Code. A hard binding that does not match
+/// means the file is not the one the manifest was made for, whatever the Instance-Codes say.
 fn preservation(facts: &BindingFacts, instance_equal: Option<bool>) -> Preservation {
-    let unverifiable = |reason| {
-        if facts.hard_binding_matches {
-            reason
-        } else {
-            Preservation::FileChanged
-        }
-    };
     if !facts.signature_valid {
         return Preservation::SignatureInvalid;
     }
+    if !facts.hard_binding_matches {
+        return Preservation::FileChanged;
+    }
     if !facts.source_view {
-        return unverifiable(Preservation::NoSourceView);
+        return Preservation::NoSourceView;
     }
     match instance_equal {
-        None => unverifiable(Preservation::NoInstanceCode),
+        None => Preservation::NoInstanceCode,
         Some(true) => Preservation::Preserved,
-        Some(false) if !facts.hard_binding_matches => Preservation::FileChanged,
         Some(false) if facts.resigned => Preservation::Resigned,
         Some(false) => Preservation::Changed,
     }
@@ -1426,6 +1468,8 @@ mod tests {
         let changed = with(|f| f.hard_binding_matches = false);
         assert_eq!(preservation(&changed, Some(false)), FileChanged);
         assert_eq!(preservation(&changed, None), FileChanged);
+        // Equal Instance-Codes do not outweigh a hard binding that does not match the file.
+        assert_eq!(preservation(&changed, Some(true)), FileChanged);
         let changed_zip = with(|f| {
             f.source_view = false;
             f.hard_binding_matches = false;

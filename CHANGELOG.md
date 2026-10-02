@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- A manifest read from a sidecar file (`photo.c2pa` next to `photo.jpg`, which c2pa-rs loads when
+  the file embeds none) is marked as such in the status card, and its ISCC soft binding is
+  compared with the file itself. The app used to cut the sidecar's data hash exclusions out of
+  the file: an exact copy of the source showed an Instance-Code of about 50%, and a file with
+  other bytes in exactly those ranges showed as "Source preserved". A file signed into a sidecar
+  (`c2patool --sidecar`) now shows as source-preserving in any format, M4A included.
+- A hash binding that does not match the file rules out "Source preserved", even when the
+  Instance-Codes agree.
+
 ## 0.1.1 - 2026-09-30
 
 - Signing writes one thumbnail per manifest, made by the app: a JPEG of at most 256 px on its

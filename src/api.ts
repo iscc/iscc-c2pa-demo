@@ -119,8 +119,10 @@ export interface ManifestSummary {
   /** URI of the trust list the active manifest's signer chains to; null when untrusted. */
   trust_list: string | null;
   validation: ValidationResults | null;
-  /** True when the hard binding is a data hash, so the file has a source view (the file without the byte ranges it excludes). */
+  /** True when the file has a source view: the file without the byte ranges the data hash of an embedded manifest excludes, or the file itself for a sidecar manifest. */
   source_view: boolean;
+  /** File name of the sidecar the manifest store was read from; null when it is embedded. */
+  sidecar: string | null;
   signature: SignatureSummary | null;
   assertions: AssertionSummary[];
   ingredients: IngredientSummary[];
