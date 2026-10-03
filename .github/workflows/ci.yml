@@ -47,6 +47,8 @@ jobs:
       - run: pnpm build
       - name: Pre-commit hooks (formatting, file hygiene)
         run: uv run prek run --all-files --stage pre-commit --show-diff-on-failure
+      # tauri.conf.json bundles src-tauri/pdfium/*, and the build script fails when it is empty.
+      - run: uv run scripts/fetch_pdfium.py
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 
   test:
@@ -72,6 +74,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - run: uv run scripts/fetch_pdfium.py
       - run: cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features

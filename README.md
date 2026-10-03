@@ -78,8 +78,8 @@ body, concatenated. CBOR stores the value as a byte string; the JSON view shows 
 
 Next to it, the app writes a `cawg.metadata` assertion with the title and description behind the
 Meta-Code, an optional `cawg.training-mining` assertion, and an RFC 3161 timestamp. When the file
-has a picture (the image itself, a book cover, the thumbnail a document was saved with, or cover
-art), signing also stores a 256 px JPEG thumbnail of it. When you open a signed file, the
+has a picture (the image itself, the first page of a PDF, a book cover, the thumbnail a document
+was saved with, or cover art), signing also stores a 256 px JPEG thumbnail of it. When you open a signed file, the
 Content Credentials tab shows the thumbnail from its manifest next to the file, so you can check
 by eye that the two belong together.
 [DEVELOPMENT.md](DEVELOPMENT.md#notes-on-the-soft-binding) explains how each unit is calculated
@@ -95,7 +95,7 @@ so the download page shows you how to open them the first time.
 | Kind | Formats |
 |---|---|
 | Images | JPEG, PNG, WebP, GIF, TIFF, SVG |
-| Documents | EPUB, DOCX, PPTX, XLSX, ODT, ODS, ODP, TXT, Markdown |
+| Documents | PDF, EPUB, DOCX, PPTX, XLSX, ODT, ODS, ODP, TXT, Markdown |
 | Audio | MP3, FLAC, WAV, M4A |
 
 ## Good to know
@@ -118,14 +118,16 @@ so the download page shows you how to open them the first time.
 
 The core is Rust, and the app runs on [Tauri 2](https://tauri.app). It uses
 [c2pa-rs](https://crates.io/crates/c2pa) 0.91 with Rust native crypto (no OpenSSL),
-[iscc-lib](https://crates.io/crates/iscc-lib) for the ISCC units, and pure Rust readers for every
-format, so you need no external tools and no Python. The tests check every ISCC unit against
+[iscc-lib](https://crates.io/crates/iscc-lib) for the ISCC units, pure Rust readers for every
+other format, and the [pdfium](https://pdfium.googlesource.com/pdfium/) library bundled with the
+app for PDF, so you need no external tools and no Python. The tests check every ISCC unit against
 iscc-core, the ISCC reference implementation, and iscc-sdk.
 
 The same core builds as `c2pa-iscc`, a command-line tool that prints JSON.
 
 ```sh
 pnpm install
+uv run scripts/fetch_pdfium.py                                               # the pinned pdfium, once
 pnpm tauri dev                                                               # the app
 cd src-tauri && cargo run --features cli --bin c2pa-iscc -- sign photo.jpg   # the CLI
 ```

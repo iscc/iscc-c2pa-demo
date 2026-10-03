@@ -53,10 +53,13 @@ jobs:
         include:
           - os: windows-latest
             args: ""
+            pdfium: win-x64
           - os: macos-latest
             args: --target universal-apple-darwin
+            pdfium: mac-univ
           - os: ubuntu-22.04
             args: ""
+            pdfium: linux-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -77,7 +80,10 @@ jobs:
         with:
           workspaces: src-tauri
           key: ${{ matrix.args }}
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: pnpm install --frozen-lockfile
+      # The pdfium library the installers bundle (tauri.conf.json bundle.resources).
+      - run: uv run scripts/fetch_pdfium.py --target ${{ matrix.pdfium }}
       - run: pnpm tauri build ${{ matrix.args }}
       - name: Attach the installers to the release
         shell: bash

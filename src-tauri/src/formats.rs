@@ -74,6 +74,7 @@ pub const WEBP: &str = "image/webp";
 pub const GIF: &str = "image/gif";
 pub const TIFF: &str = "image/tiff";
 pub const SVG: &str = "image/svg+xml";
+pub const PDF: &str = "application/pdf";
 pub const EPUB: &str = "application/epub+zip";
 pub const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 pub const PPTX: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -88,8 +89,8 @@ pub const FLAC: &str = "audio/flac";
 pub const WAV: &str = "audio/wav";
 pub const M4A: &str = "audio/mp4";
 
-/// Every supported format. c2pa-rs 0.91 embeds manifests into all of them; TXT and Markdown need
-/// its `unstable_plain_text` and `unstable_structured_text` features.
+/// Every supported format. c2pa-rs 0.91 embeds manifests into all of them; PDF needs its `pdf`
+/// feature, TXT and Markdown its `unstable_plain_text` and `unstable_structured_text` features.
 pub const FORMATS: &[Format] = &[
     signable(&["jpg", "jpeg"], JPEG, Kind::Image, "JPEG", "JPEG"),
     signable(&["png"], PNG, Kind::Image, "PNG", "PNG"),
@@ -97,6 +98,7 @@ pub const FORMATS: &[Format] = &[
     signable(&["gif"], GIF, Kind::Image, "GIF", "GIF"),
     signable(&["tif", "tiff"], TIFF, Kind::Image, "TIFF", "TIFF"),
     signable(&["svg"], SVG, Kind::Image, "SVG", "SVG"),
+    signable(&["pdf"], PDF, Kind::Text, "PDF", "PDF"),
     signable(&["epub"], EPUB, Kind::Text, "EPUB", "EPUB"),
     signable(&["docx"], DOCX, Kind::Text, "Word (DOCX)", "DOCX"),
     signable(&["pptx"], PPTX, Kind::Text, "PowerPoint (PPTX)", "PPTX"),

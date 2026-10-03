@@ -2,8 +2,9 @@
 //! (`extract_metadata`, `code_meta`), and the Meta-Code inputs derived from them.
 //!
 //! Images follow iscc-sdk's `IMAGE_META_MAP`: XMP, IPTC and EXIF keys in a fixed order, the first
-//! filled key per field wins, values are sanitised. Documents (EPUB, office, SVG) supply a title
-//! and a description, sanitised the same way.
+//! filled key per field wins, values are sanitised; XMP values are formatted like exiv2. Documents
+//! (PDF, EPUB, office, SVG) supply a title, a description and a creator, sanitised the same way; a
+//! PDF's XMP is read as Tika reads it (`document_xmp`).
 //! When nothing names the asset, the title and description this app stored in the manifest's
 //! `cawg.metadata` assertion stand in, then the manifest title, then the file name, so a file
 //! signed here recomputes the Meta-Code it was signed with.
@@ -126,14 +127,19 @@ pub fn image(bytes: &[u8]) -> Embedded {
     }
 }
 
-/// Embedded metadata of a document from its title, description and creator, sanitised like
-/// iscc-sdk sanitises Tika's values.
-pub fn document(title: Option<&str>, description: Option<&str>, creator: Option<&str>) -> Embedded {
+/// Embedded metadata of a document from its title, description, ISCC metadata and creator,
+/// sanitised like iscc-sdk sanitises Tika's values.
+pub fn document(
+    title: Option<&str>,
+    description: Option<&str>,
+    meta: Option<&str>,
+    creator: Option<&str>,
+) -> Embedded {
     let clean = |s: Option<&str>| s.map(sanitize).filter(|s| !s.is_empty());
     Embedded {
         name: clean(title),
         description: clean(description),
-        meta: None,
+        meta: clean(meta),
         creator: clean(creator),
     }
 }
@@ -245,7 +251,7 @@ fn image_tags(bytes: &[u8]) -> ImageTags {
         None => tiff_tag(TIFF_IPTC).map(|iim| iim_datasets(&iim)),
     };
     ImageTags {
-        xmp: xmp.map(|x| xmp_properties(&x)).unwrap_or_default(),
+        xmp: xmp.map(|x| exiv2_properties(&x)).unwrap_or_default(),
         iptc: iptc.unwrap_or_default(),
         xp_title: exif.as_ref().and_then(xp_title),
         artist: exif.as_ref().and_then(artist),
@@ -274,6 +280,29 @@ fn tiff_bytes(exif: &exif::Exif, tag: u16) -> Option<Vec<u8>> {
     }
 }
 
+/// A top-level XMP property in the form it was written: simple text, or the items of an rdf
+/// container.
+#[derive(Debug, Default)]
+struct XmpProperty {
+    ns: String,
+    local: String,
+    /// Written as a language alternative (`rdf:Alt`).
+    alt: bool,
+    /// Written as an ordered or unordered array (`rdf:Seq`, `rdf:Bag`).
+    array: bool,
+    /// Language and text of each `rdf:li`, in document order.
+    items: Vec<(Option<String>, String)>,
+    text: String,
+}
+
+/// Title, description and creator of a document's XMP packet, selected as Tika does for PDFs.
+#[derive(Debug, Default, PartialEq)]
+pub struct DocumentXmp {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub creator: Option<String>,
+}
+
 /// A top-level XMP property while its element is open.
 #[derive(Default)]
 struct Property {
@@ -281,6 +310,7 @@ struct Property {
     local: String,
     depth: usize,
     alt: bool,
+    array: bool,
     text: String,
     /// Language and text of each `rdf:li`.
     items: Vec<(Option<String>, String)>,
@@ -309,9 +339,48 @@ impl Property {
 }
 
 /// Top-level properties of an XMP packet as (namespace, local name, value), with values
-/// formatted like exiv2's `toString` and cleaned like iscc-sdk's `_clean_xmp_value`. Simple
-/// properties may be attributes of `rdf:Description` or child elements.
-fn xmp_properties(xmp: &[u8]) -> Vec<(String, String, String)> {
+/// formatted like exiv2's `toString` and cleaned like iscc-sdk's `_clean_xmp_value`.
+fn exiv2_properties(xmp: &[u8]) -> Vec<(String, String, String)> {
+    xmp_properties(xmp)
+        .iter()
+        .map(|p| (p.ns.clone(), p.local.clone(), property_value(p)))
+        .collect()
+}
+
+/// Title, description and creator of an XMP packet as Tika reports them for a PDF: the first
+/// `rdf:li` of a language alternative in document order, whatever its language, for title and
+/// description; the items of an `rdf:Seq` or `rdf:Bag` joined with ", " for the creator. Other
+/// forms (plain text, attributes, a title in an array) yield nothing. Values that sanitise to
+/// nothing are dropped, as iscc-sdk drops them.
+pub fn document_xmp(xmp: &[u8]) -> DocumentXmp {
+    let props = xmp_properties(xmp);
+    let find = |local: &str| props.iter().find(|p| p.ns == NS_DC && p.local == local);
+    let first_alt = |local: &str| {
+        find(local)
+            .filter(|p| p.alt)
+            .and_then(|p| p.items.first())
+            .map(|(_, v)| v.clone())
+    };
+    let creator = find("creator")
+        .filter(|p| p.array && !p.alt && !p.items.is_empty())
+        .map(|p| {
+            p.items
+                .iter()
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+    let filled = |v: Option<String>| v.filter(|v| !sanitize(v).is_empty());
+    DocumentXmp {
+        title: filled(first_alt("title")),
+        description: filled(first_alt("description")),
+        creator: filled(creator),
+    }
+}
+
+/// Top-level properties of an XMP packet. Simple properties may be attributes of
+/// `rdf:Description` or child elements.
+fn xmp_properties(xmp: &[u8]) -> Vec<XmpProperty> {
     let Ok(text) = std::str::from_utf8(xmp) else {
         return Vec::new();
     };
@@ -412,7 +481,7 @@ fn open_in_property(
     }
     match (ns == Some(NS_RDF), local) {
         (true, "Alt") => p.alt = true,
-        (true, "Bag" | "Seq") => {}
+        (true, "Bag" | "Seq") => p.array = true,
         // A qualified value written as a nested resource.
         (true, "Description") => p.set_value(value),
         (true, "li") => {
@@ -461,7 +530,7 @@ fn end_element(
     description: &mut Option<usize>,
     depth: usize,
     local: &str,
-    out: &mut Vec<(String, String, String)>,
+    out: &mut Vec<XmpProperty>,
 ) {
     match prop.as_mut() {
         Some(p) if p.depth == depth => {
@@ -470,7 +539,14 @@ fn end_element(
                 p.text = value;
             }
             if !p.nested || p.qualified {
-                out.push((p.ns.clone(), p.local.clone(), property_value(&p)));
+                out.push(XmpProperty {
+                    ns: p.ns,
+                    local: p.local,
+                    alt: p.alt,
+                    array: p.array,
+                    items: p.items,
+                    text: p.text,
+                });
             }
         }
         Some(p) if p.skip_depth == Some(depth) => p.skip_depth = None,
@@ -506,10 +582,7 @@ fn push_text(prop: &mut Option<Property>, text: &str) {
 }
 
 /// Simple properties written as attributes of `rdf:Description`.
-fn attribute_properties(
-    reader: &NsReader<&[u8]>,
-    e: &BytesStart<'_>,
-) -> Vec<(String, String, String)> {
+fn attribute_properties(reader: &NsReader<&[u8]>, e: &BytesStart<'_>) -> Vec<XmpProperty> {
     e.attributes()
         .flatten()
         .filter(|a| !a.key.as_ref().starts_with("xmlns") && !a.key.as_ref().starts_with("xml:"))
@@ -517,14 +590,19 @@ fn attribute_properties(
             let (ns, local) = reader.resolver().resolve_attribute(a.key);
             let ns = bound(&ns).filter(|n| n != NS_RDF)?;
             let value = a.normalized_value(XmlVersion::Implicit1_0).ok()?;
-            Some((ns, local.as_ref().to_owned(), value.trim().to_owned()))
+            Some(XmpProperty {
+                ns,
+                local: local.as_ref().to_owned(),
+                text: value.trim().to_owned(),
+                ..Default::default()
+            })
         })
         .collect()
 }
 
 /// exiv2 `toString` of a property (`lang="x-default" text, lang="de" text` for language
 /// alternatives, items joined with ", " for arrays), stripped and cleaned like iscc-sdk.
-fn property_value(p: &Property) -> String {
+fn property_value(p: &XmpProperty) -> String {
     let raw = if p.alt {
         let lang = |l: &Option<String>| l.clone().unwrap_or_else(|| "x-default".to_owned());
         let default = p.items.iter().filter(|(l, _)| lang(l) == "x-default");
@@ -892,10 +970,46 @@ pub mod tests {
             {body}</rdf:Description></rdf:RDF></x:xmpmeta>"#
         );
         let tags = ImageTags {
-            xmp: xmp_properties(packet.as_bytes()),
+            xmp: exiv2_properties(packet.as_bytes()),
             ..Default::default()
         };
         lookup(&tags, Key::Xmp(ns, local))
+    }
+
+    #[test]
+    fn document_xmp_selects_like_tika() {
+        let packet = |body: &str| {
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="{NS_RDF}"><rdf:Description
+                rdf:about="" xmlns:dc="{NS_DC}">{body}</rdf:Description></rdf:RDF></x:xmpmeta>"#
+            )
+        };
+        let all = packet(
+            r#"<dc:title><rdf:Alt><rdf:li xml:lang="de">Deutscher Titel</rdf:li>
+            <rdf:li xml:lang="x-default">English title</rdf:li></rdf:Alt></dc:title>
+            <dc:description><rdf:Alt><rdf:li xml:lang="x-default">Text</rdf:li></rdf:Alt></dc:description>
+            <dc:creator><rdf:Bag><rdf:li>One</rdf:li><rdf:li>Two</rdf:li></rdf:Bag></dc:creator>"#,
+        );
+        assert_eq!(
+            document_xmp(all.as_bytes()),
+            DocumentXmp {
+                title: Some("Deutscher Titel".into()),
+                description: Some("Text".into()),
+                creator: Some("One, Two".into()),
+            }
+        );
+        // Plain text, attributes, a title in an array and blank values yield nothing.
+        let other = packet(
+            r#"<dc:title><rdf:Seq><rdf:li>Seq title</rdf:li></rdf:Seq></dc:title>
+            <dc:creator>Plain creator</dc:creator>
+            <dc:description><rdf:Alt><rdf:li xml:lang="x-default"> </rdf:li></rdf:Alt></dc:description>"#,
+        );
+        assert_eq!(document_xmp(other.as_bytes()), DocumentXmp::default());
+        let attributes = packet("").replace(
+            r#"rdf:about="""#,
+            r#"rdf:about="" dc:title="Attribute title""#,
+        );
+        assert_eq!(document_xmp(attributes.as_bytes()), DocumentXmp::default());
     }
 
     #[test]

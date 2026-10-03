@@ -17,6 +17,7 @@ const CHANGED: Record<string, string> = {
   "audio/mpeg": "an MP3 rewrites its ID3 tag",
   "audio/flac": "a FLAC file puts an ID3 tag in front of the audio",
   "audio/wav": "a WAV file rewrites its RIFF size field",
+  "application/pdf": "a PDF rewrites the whole file",
 };
 
 /** Zip containers: C2PA hashes them entry by entry. */

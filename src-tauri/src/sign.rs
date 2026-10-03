@@ -109,6 +109,9 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
     // Credentials it already carries.
     let selection = UnitSelection::from_slugs(&request.units);
     let asset = asset::read(source, &bytes, format)?;
+    if let Some(block) = asset.sign_block {
+        bail!("{block}");
+    }
     let meta = MetaInput {
         name: Some(&request.title),
         description: request.description.as_deref(),
@@ -804,8 +807,9 @@ mod tests {
     fn source_preservation_per_format() {
         // Measured with c2pa-rs 0.91. Preserved: embedding only inserts the manifest store.
         // Changed: SVG gains a namespace declaration (and a metadata wrapper), MP3 gets its ID3
-        // tag rewritten as v2.4, FLAC an ID3 tag in front, WAV a new RIFF size, TIFF a new IFD.
-        // No source view: zip containers (collection hash) and M4A (BMFF hash).
+        // tag rewritten as v2.4, FLAC an ID3 tag in front, WAV a new RIFF size, TIFF a new IFD,
+        // PDF a full rewrite by lopdf. No source view: zip containers (collection hash) and M4A
+        // (BMFF hash).
         use Preservation::*;
         let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-formats-all");
         std::fs::create_dir_all(&dir).unwrap();
@@ -820,6 +824,7 @@ mod tests {
             ("demo.wav", Changed),
             ("demo.svg", Changed),
             ("demo.tif", Changed),
+            ("demo.pdf", Changed),
             ("demo.docx", NoSourceView),
             ("demo.pptx", NoSourceView),
             ("demo.xlsx", NoSourceView),
@@ -861,6 +866,132 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// Sign the fixture `file` with its own title, description and ISCC metadata and all four
+    /// units into the directory `dir`, as the Sign tab does by default.
+    fn sign_prefilled(source: &str, file: &str, dir: &str) -> Result<SignResult> {
+        let dir = std::env::temp_dir().join(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let inspection = inspect::inspect(Path::new(source)).unwrap();
+        let mut req = request(file, &dir.join(file));
+        req.source = source.to_owned();
+        req.title = inspection.meta_fields.name.clone();
+        req.description = inspection.meta_fields.description.clone();
+        req.meta = inspection.meta_fields.meta.clone();
+        req.units = ["meta", "text", "data", "instance"]
+            .map(String::from)
+            .to_vec();
+        sign(&req)
+    }
+
+    #[test]
+    fn resigned_pdf_validates_and_keeps_its_units() {
+        let dir = "iscc-c2pa-demo-test-pdf-resign";
+        let first = sign_prefilled(&fixture("demo.pdf"), "demo.pdf", dir).unwrap();
+        let second = sign_prefilled(&first.output, "demo-resigned.pdf", dir).unwrap();
+        assert_eq!(
+            second.units[..2],
+            first.units[..2],
+            "Meta- and Content-Code"
+        );
+        let manifest = second.inspection.manifest.as_ref().unwrap();
+        assert_eq!(manifest.validation_state, "Trusted");
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::Resigned));
+        assert_eq!(unit_match(sb, "Content-Code Text").similarity, Some(1.0));
+        assert_eq!(unit_match(sb, "Meta-Code").similarity, Some(1.0));
+    }
+
+    #[test]
+    fn pdf_iscc_metadata_is_embedded_and_kept() {
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/expected_pdf.json")).unwrap();
+        let want = &expected["meta-iscc.pdf"];
+        let source = inspect::inspect(Path::new(&fixture("meta-iscc.pdf"))).unwrap();
+        assert_eq!(
+            source.meta_fields.meta.as_deref(),
+            want["iscc_meta"].as_str()
+        );
+        assert_eq!(source.iscc[0].iscc, want["meta"].as_str().unwrap());
+        let result = sign_prefilled(
+            &fixture("meta-iscc.pdf"),
+            "meta-iscc.pdf",
+            "iscc-c2pa-demo-test-pdf-meta",
+        )
+        .unwrap();
+        assert_eq!(result.units[0].iscc, want["meta"].as_str().unwrap());
+        assert_eq!(result.inspection.meta_fields.meta, source.meta_fields.meta);
+        let manifest = result.inspection.manifest.as_ref().unwrap();
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(unit_match(sb, "Meta-Code").similarity, Some(1.0));
+    }
+
+    #[test]
+    fn digitally_signed_pdf_warns_and_signs() {
+        let source = inspect::inspect(Path::new(&fixture("basic-retest.pdf"))).unwrap();
+        assert!(source.sign_block.is_none());
+        assert!(source.sign_warning.unwrap().contains("digital signature"));
+        let result = sign_prefilled(
+            &fixture("basic-retest.pdf"),
+            "basic-retest.pdf",
+            "iscc-c2pa-demo-test-pdf-digital-signature",
+        )
+        .unwrap();
+        let manifest = result.inspection.manifest.as_ref().unwrap();
+        assert_eq!(manifest.validation_state, "Trusted");
+        // pdfium still counts the signature that signing broke, so the copy warns again.
+        assert!(result.inspection.sign_warning.is_some());
+    }
+
+    #[test]
+    fn encrypted_pdfs_inspect_but_cannot_be_signed() {
+        // An empty user password: readable, with text, but c2pa-rs would drop the encryption.
+        let open = inspect::inspect(Path::new(&fixture("basic-signed.pdf"))).unwrap();
+        assert!(open.content_error.is_none());
+        assert!(open.characters.unwrap() > 0);
+        // A user password: nothing to read.
+        let locked = inspect::inspect(Path::new(&fixture("basic-password.pdf"))).unwrap();
+        assert_eq!(
+            locked.content_error.as_deref(),
+            Some("the PDF is password-protected")
+        );
+        assert_eq!(locked.meta_fields.name_source, "filename");
+        for (file, inspection) in [("basic-signed.pdf", open), ("basic-password.pdf", locked)] {
+            assert!(inspection.sign_block.unwrap().starts_with("Encrypted PDFs"));
+            assert!(inspection.sign_warning.is_none(), "{file}");
+            let dir = "iscc-c2pa-demo-test-pdf-encrypted";
+            let error = sign_prefilled(&fixture(file), file, dir).unwrap_err();
+            assert!(
+                error.to_string().starts_with("Encrypted PDFs"),
+                "{file}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn documents_without_text_have_no_content_code() {
+        let scan = inspect::inspect(Path::new(&fixture("scan.pdf"))).unwrap();
+        assert_eq!(
+            scan.content_error.as_deref(),
+            Some("no text layer found; a scanned PDF has only pictures of text")
+        );
+        assert!(scan.iscc.iter().all(|u| u.unit != "content"));
+        assert!(scan.preview.starts_with("data:image/jpeg;base64,"));
+        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-empty-text");
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = dir.join("empty.txt");
+        std::fs::write(
+            &empty, "
+- ...
+",
+        )
+        .unwrap();
+        let inspection = inspect::inspect(&empty).unwrap();
+        assert_eq!(
+            inspection.content_error.as_deref(),
+            Some("no text found in this document")
+        );
+    }
+
     /// Open the manifest store of `path` with the app's settings.
     fn reader(path: &Path) -> c2pa::Reader {
         let context = Context::new().with_settings(base_settings()).unwrap();
@@ -888,6 +1019,7 @@ mod tests {
             "demo.tif",
             "demo.svg",
             "demo.epub",
+            "demo.pdf",
             "demo.odt",
             "demo.pptx",
             "withcover.mp3",

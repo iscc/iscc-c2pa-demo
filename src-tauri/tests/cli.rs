@@ -218,3 +218,42 @@ fn errors_exit_with_one_line_and_usage_errors_with_two() {
     assert_eq!(cli(&["sign"]).status.code(), Some(2));
     assert_eq!(cli(&["nonsense"]).status.code(), Some(2));
 }
+
+#[test]
+fn sign_pdf_refuses_encryption_and_notes_a_digital_signature() {
+    let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli-pdf");
+    std::fs::create_dir_all(&dir).unwrap();
+    let encrypted = cli(&[
+        "sign",
+        fixture("basic-password.pdf").to_str().unwrap(),
+        "--output",
+        dir.join("locked.pdf").to_str().unwrap(),
+        "--no-timestamp",
+    ]);
+    assert_eq!(encrypted.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&encrypted.stderr);
+    assert_eq!(stderr.trim_end().lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("error: Encrypted PDFs"), "{stderr}");
+
+    let output = dir.join("retest-signed.pdf");
+    let _ = std::fs::remove_file(&output);
+    let signed = cli(&[
+        "sign",
+        fixture("basic-retest.pdf").to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--no-timestamp",
+        "--no-preview",
+    ]);
+    let stderr = String::from_utf8_lossy(&signed.stderr);
+    assert!(
+        stderr.contains("note: Signing rewrites the PDF and breaks its existing digital signature"),
+        "{stderr}"
+    );
+    let result = json(&signed);
+    assert_eq!(result["units"][1]["name"], "Content-Code Text");
+    assert_eq!(
+        result["inspection"]["manifest"]["validation_state"],
+        "Trusted"
+    );
+}

@@ -47,6 +47,7 @@
 *.flac binary
 *.wav binary
 *.m4a binary
+*.pdf binary
 *.woff binary
 *.woff2 binary
 *.ttf binary

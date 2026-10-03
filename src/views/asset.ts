@@ -13,10 +13,13 @@ function placeholder(inspection: Inspection): string {
   return `<div class="nopreview">${esc(text)}</div>`;
 }
 
-/** Pixel size of an image (the rendered size of an SVG), the extracted text length or the
- * audio duration. */
+/** Pixel size of an image (the rendered size of an SVG), the extracted text length ("none"
+ * when there is no text to count: the unit list says why) or the audio duration. */
 function extent(inspection: Inspection): string {
-  if (inspection.kind === "text") return `<dt>Text</dt><dd>${(inspection.characters ?? 0).toLocaleString()} characters</dd>`;
+  if (inspection.kind === "text") {
+    const text = inspection.characters === null ? "none" : `${inspection.characters.toLocaleString()} characters`;
+    return `<dt>Text</dt><dd>${text}</dd>`;
+  }
   if (inspection.kind === "audio") return `<dt>Duration</dt><dd>${formatDuration(inspection.duration_secs ?? 0)}</dd>`;
   const label = inspection.mime === "image/svg+xml" ? "Rendered" : "Pixels";
   return `<dt>${label}</dt><dd>${inspection.width} × ${inspection.height}</dd>`;

@@ -1,0 +1,157 @@
+{
+  "basic-no-xmp.pdf": {
+    "title": null,
+    "description": null,
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AAD7Q3552V7X63XJRPNP7X3XLLLH2ZP777JGF5WNX6233AUHOL5T37Y",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GADVHL6QVA5DXFTX45IQXX7NSVPIRRJKPXOIBVOYYHQK6H5NEXM4YXA",
+    "instance": "ISCC:IAD3PZRXO3IYJVM2JVGHF4P5CBGEMWXGZ2ALCTYC3YC76R5TJQCPPRA"
+  },
+  "basic-password.pdf": {
+    "title": null,
+    "description": null,
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AADSQX4G6I3P4D7RVAAERHHCBQPMNJNWI2LFFEEPGOYXLIBS6GQ2M7I",
+    "text": null,
+    "collapsed": null,
+    "text_error": "PdfiumError: Failed to load document (PDFium: Incorrect password error).",
+    "data": "ISCC:GADV5XA3OXAYFMU4CP4I4UMC34QTIJLSP6EBFBBL5NN6ZCH3U6AJBWY",
+    "instance": "ISCC:IADYHOBKD47RLMN2IHFNW5ERRA4LG2BAV2VMOAVXURWSEVYISQMPOXA"
+  },
+  "basic-retest.pdf": {
+    "title": null,
+    "description": null,
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AADWQHH7K22H7ZHSRMBETP6GDTZEAUY4M4GENECIENDWZEVTXN4QCGI",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GADQZ4PL2BB42CG2M4QSBTIKEH6PHIC6YABATINIL6DLBLAQJCC3BGI",
+    "instance": "ISCC:IAD3QAIGXGPVYTTQUDUBHIBQCEV46F5SDUEQF53GU6XBGQQUWBJOOWY"
+  },
+  "basic-signed.pdf": {
+    "title": null,
+    "description": null,
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AAD3Q3TUTISKGLXRVIF4HV3XLWJE2NZZO4EEEVO4FKWV3MFGNOES67I",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GAD7JASX3645QOKW2DZWZD43TECVQEQF7JY3DCC4FZR47WGUWHKMYNY",
+    "instance": "ISCC:IADT7BZB5LDUWURLSOOBFH37F3CDX5V63YENF5VAIU2IGIBHF3JMJEY"
+  },
+  "basic.pdf": {
+    "title": null,
+    "description": null,
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AADSQXV72Y2D6ZXQVKBHZX7HDSJEYINYN5BEFAWIHMAR3MRS6HVSOGI",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GAD2OYBSBVXRQHWV7OXTAFPTRZAL6SEEWUSY6CIRHD25MN72XPETANI",
+    "instance": "ISCC:IADVCNVQ5GL2R6Z5XT6SBV4OJ23TOIMGS4O45E23EJ5TKDTE6IUA2MA"
+  },
+  "demo.pdf": {
+    "title": "title from metadata",
+    "description": null,
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AADV5NAQXBCHCWFWDAKH73TRQFFMMEC426IIPINQ3TY5ZKQRAJF7CDY",
+    "text": "ISCC:EADWGQF2UTQVQ7374XHVKXHBAIV4EIXAZJID4LABRSSQPUPLZIZ5V2I",
+    "collapsed": 16995,
+    "data": "ISCC:GAD2BNHB6SKFNEVRSJWIEF2WYV7RFUXUJQFVALZDWVF7OXQLMTS5XKA",
+    "instance": "ISCC:IADXVVOH3P3KMU4PCX6QIOPA3RN2AOQEH2RD6BZKUTRLVAYICG63L4A"
+  },
+  "meta-blank-title.pdf": {
+    "title": "Deutscher Titel",
+    "description": "Deutsche Beschreibung",
+    "creator": "First Creator, Second Creator",
+    "iscc_meta": null,
+    "meta": "ISCC:AAD3RCMKXDCAXB7FZ63TJO7KWFNDF3PZWX3OGLJNV3XGT3HN2L76JVI",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GADRFNPFHL5SDX6R5G6HNZL7I3MPEM2I6EWBXSEJTEUQYZKH2WXDRPQ",
+    "instance": "ISCC:IADRBV6GTAGABRT5OD2PNOSH6J5YZPZZM6RXUCBG3OIMW4AUWS3ICGY"
+  },
+  "meta-conflict.pdf": {
+    "title": "Docinfo title",
+    "description": "Docinfo subject",
+    "creator": "Docinfo author",
+    "iscc_meta": null,
+    "meta": "ISCC:AADQM5LK7OFVPY3XHXYK75SZ7ZXOPF6775TY27PXE3B5Q277YNX6S7I",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GAD5FP7VDK7WCXOQ5G2HNRL2IZMHH62I7EWBNSADTDQQ43KH2SXLAPY",
+    "instance": "ISCC:IAD5LUHSBWYCI4DTL6BSEVCDAZARG3QTOZ2HJNGY2TBWHAHBOCJCKEA"
+  },
+  "meta-encodings.pdf": {
+    "title": "Café • bullet “ quoted” — dash",
+    "description": "Größe 日本語 UTF-16BE",
+    "creator": "Jürgen Müller",
+    "iscc_meta": null,
+    "meta": "ISCC:AADZ77PPL5PFDKU534J7JXQWCJA4CRLMLZLVFHWILAPTTWGTSQ4M26A",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GADVFNNFDI5XCWOSPG7CJQL3KZYHHI2KXEGNXSELTK4QMP3HKWXJZPA",
+    "instance": "ISCC:IAD7LREN27TZHN4ZIU5BGMEREQQZWA7OWJBMB73TKVJWBQ3FZ3CNKQI"
+  },
+  "meta-iscc.pdf": {
+    "title": "ISCC name",
+    "description": "ISCC description",
+    "creator": null,
+    "iscc_meta": "data:application/json;base64,eyJhIjoxfQ==",
+    "meta": "ISCC:AADX7MXX3VKPPXLPXGWP43VFXPSHLO5QD7T72MHH36Y25B2ZKHRMORQ",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GADVBFNFDJ56C76SNO6DNR332ZMHHM3IXEXJWWBDTKUQIPKHKWPJFPA",
+    "instance": "ISCC:IAD3ZY7SWALDKCSVGLY44HCOCQSFUX2BASMSW34XXYEEBEUCOFOXYOA"
+  },
+  "meta-utf8.pdf": {
+    "title": "ï»¿GrÃ¶Ã�e æŠ¥æœ¬èªž UTF-8",
+    "description": "ï»¿Beschreibung â•ﬁ UTF-8",
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AADX2HT3RVSS7JLFVRZZFNPOM4NTAKOMB774W3DP3LSOR3WP327NL5Q",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GADVFNNBXJ5XCX6SNC6CE3D3KZNGHM2IXWW5XSBBRKUQIOLGCWXJFLA",
+    "instance": "ISCC:IADXEZHVYNUM4CWWGTAPH77PTS56Y76VDDHXIZGV52XF7BYCH7THG2Q"
+  },
+  "meta-xmp-only.pdf": {
+    "title": "Deutscher Titel",
+    "description": "Deutsche Beschreibung",
+    "creator": "First Creator, Second Creator",
+    "iscc_meta": null,
+    "meta": "ISCC:AAD3RCMKXDCAXB7FZ63TJO7KWFNDF3PZWX3OGLJNV3XGT3HN2L76JVI",
+    "text": "ISCC:EAD5OEQYC2I4Q27HH43FFFEWRWQN3FD6YTG6W2EZIOHARXP6KM4BEUA",
+    "collapsed": 6,
+    "data": "ISCC:GADZFNOFCS5WDX6Q5C6M5S37I3IOHMCIKEGB7SALTCUQY7KPSGXDAPQ",
+    "instance": "ISCC:IAD767T7V5FTY4AEHAGZPIMUKI62P4Q33YYQYGUX6EC46Q3WDHHQ7LY"
+  },
+  "rtl.pdf": {
+    "title": "نص عربي للاختبار",
+    "description": null,
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AAD7E757UXUO6HEPMJX4PX7ZBZO44P6UGXXRVGG6PI7DE3XVCQRL2PY",
+    "text": "ISCC:EADQT4NUSW3NGAGJSXX6N7AVSKD26SDR4L6ZPMFPXS3WFQJPGB2SKUY",
+    "collapsed": 212,
+    "data": "ISCC:GADZOQLWT4GOJESPX2TMD3CGN6RJDLV6GI37BQWJ42CSQT5UUZEV2ZI",
+    "instance": "ISCC:IADY26URR62PGVYRI42DACDX54O3WF2LDDIHH2BE6Y7ABRWD5IWQM5I"
+  },
+  "scan.pdf": {
+    "title": "Scanned page",
+    "description": null,
+    "creator": null,
+    "iscc_meta": null,
+    "meta": "ISCC:AADYRTLEG35MKBCEASIYDUTSMLE4KFIXUQMFRVLN2MQP37F7FWM5PMI",
+    "text": "ISCC:EADSL4F2WZY7KBXBYUZPREWZ26IXUJJOPJJAQMXVSY5IZVHJU7RRFNI",
+    "collapsed": 0,
+    "data": "ISCC:GADZ5DL4Q5PNLTV3MPNQWPKXBLXEENEIX4A62H3Z6Q3RJ6DAIEBK5NI",
+    "instance": "ISCC:IADSDPM6YEQG2W3ZC3IYZRGMCZZQV7F5AWS5YG7YTDRA73KHRFA7BEA"
+  }
+}

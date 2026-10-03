@@ -46,6 +46,8 @@ pub fn read(bytes: &[u8], format: &Format) -> Result<Asset> {
         content: AssetContent::Audio(audio),
         preview: cover.and_then(|c| iscc::decode_rgb(&c).ok()),
         metadata,
+        sign_block: None,
+        sign_warning: None,
     })
 }
 

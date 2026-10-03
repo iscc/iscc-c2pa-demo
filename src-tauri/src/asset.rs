@@ -9,7 +9,10 @@ use image::RgbImage;
 use crate::formats::{self, Format, Kind};
 use crate::iscc::{self, Content};
 use crate::metadata::{self, Embedded};
-use crate::{audio, epub, office, plain, svg};
+use crate::{audio, epub, office, pdf, plain, svg};
+
+/// Why a text document without text has no Content-Code.
+const NO_TEXT: &str = "no text found in this document";
 
 /// The input of the Content-Code.
 #[derive(Debug)]
@@ -20,6 +23,8 @@ pub enum AssetContent {
     Text(String),
     /// Chromaprint fingerprint and duration of the decoded audio.
     Audio(audio::Audio),
+    /// Nothing to compute a Content-Code from, with the reason (a document without text).
+    Unavailable(&'static str),
 }
 
 /// What an asset contributes to inspection and signing.
@@ -30,6 +35,11 @@ pub struct Asset {
     pub preview: Option<RgbImage>,
     /// The asset's own title, description, ISCC metadata and creator.
     pub metadata: Embedded,
+    /// Why this asset cannot be signed (an encrypted PDF); `None` when it can.
+    pub sign_block: Option<&'static str>,
+    /// What signing does to this asset that its owner may not want (breaking a PDF's digital
+    /// signature); `None` when there is nothing to warn about.
+    pub sign_warning: Option<&'static str>,
 }
 
 /// Parts of a text document as its format reader finds them.
@@ -38,10 +48,16 @@ pub struct Document {
     pub title: Option<String>,
     pub description: Option<String>,
     pub creator: Option<String>,
+    /// ISCC metadata (a data URL) stored in the document.
+    pub meta: Option<String>,
     /// Encoded cover or thumbnail image, in whatever format the document ships.
     pub cover: Option<Vec<u8>>,
+    /// Rendered picture of the document (a PDF's first page); preferred over `cover`.
+    pub picture: Option<RgbImage>,
     /// Plain text in reading order, not yet cleaned.
     pub text: String,
+    /// Why there is no Content-Code when the text is empty; a generic reason when `None`.
+    pub no_text_reason: Option<&'static str>,
 }
 
 impl Asset {
@@ -51,6 +67,7 @@ impl Asset {
             AssetContent::Image(rgb) => Content::Image(rgb),
             AssetContent::Text(text) => Content::Text(text),
             AssetContent::Audio(audio) => Content::Audio(&audio.fingerprint),
+            AssetContent::Unavailable(reason) => Content::Unavailable(reason),
         }
     }
 
@@ -58,7 +75,7 @@ impl Asset {
     pub fn picture(&self) -> Option<&RgbImage> {
         match &self.content {
             AssetContent::Image(rgb) => Some(rgb),
-            AssetContent::Text(_) | AssetContent::Audio(_) => self.preview.as_ref(),
+            _ => self.preview.as_ref(),
         }
     }
 }
@@ -72,6 +89,7 @@ pub fn read(path: &Path, bytes: &[u8], format: &Format) -> Result<Asset> {
         _ if format.kind == Kind::Audio => audio::read(bytes, format),
         formats::EPUB => Ok(from_document(epub::read(bytes)?)),
         formats::TXT | formats::MARKDOWN => Ok(from_document(plain::read(bytes))),
+        formats::PDF => read_pdf(bytes),
         mime if office::handles(mime) => Ok(from_document(office::read(bytes, mime)?)),
         mime => bail!("no reader for {mime}"),
     }
@@ -83,19 +101,43 @@ fn read_raster(bytes: &[u8]) -> Result<Asset> {
         content: AssetContent::Image(iscc::decode_rgb(bytes)?),
         preview: None,
         metadata: metadata::image(bytes),
+        sign_block: None,
+        sign_warning: None,
     })
 }
 
-/// A text document with its cleaned text and, when the image crate can decode it, its cover.
+/// A PDF, with the reason it cannot be signed or the warning that signing it deserves.
+fn read_pdf(bytes: &[u8]) -> Result<Asset> {
+    let (doc, flags) = pdf::read(bytes)?;
+    Ok(Asset {
+        sign_block: flags.sign_block(),
+        sign_warning: flags.sign_warning(),
+        ..from_document(doc)
+    })
+}
+
+/// A text document with its cleaned text, or the reason it has none, and its rendered picture or,
+/// when the image crate can decode it, its cover.
 fn from_document(doc: Document) -> Asset {
+    let text = iscc_lib::text_clean(&doc.text);
+    let content = if iscc_lib::text_collapse(&text).is_empty() {
+        AssetContent::Unavailable(doc.no_text_reason.unwrap_or(NO_TEXT))
+    } else {
+        AssetContent::Text(text)
+    };
     Asset {
-        content: AssetContent::Text(iscc_lib::text_clean(&doc.text)),
-        preview: doc.cover.and_then(|c| iscc::decode_rgb(&c).ok()),
+        content,
+        preview: doc
+            .picture
+            .or_else(|| doc.cover.and_then(|c| iscc::decode_rgb(&c).ok())),
         metadata: metadata::document(
             doc.title.as_deref(),
             doc.description.as_deref(),
+            doc.meta.as_deref(),
             doc.creator.as_deref(),
         ),
+        sign_block: None,
+        sign_warning: None,
     }
 }
 

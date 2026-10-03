@@ -59,6 +59,8 @@ pub enum Content<'a> {
     Text(&'a str),
     /// Chromaprint fingerprint of the decoded audio, as fpcalc prints it with `-signed`.
     Audio(&'a [i32]),
+    /// No input for a Content-Code, with the reason.
+    Unavailable(&'a str),
 }
 
 /// Classify a unit string and normalize it.
@@ -162,6 +164,7 @@ pub fn content_unit(content: Content<'_>) -> Result<IsccUnit> {
             bail!("audio too short for a Content-Code Audio (Chromaprint needs about 3 seconds)")
         }
         Content::Audio(fingerprint) => iscc_lib::gen_audio_code_v0(fingerprint, UNIT_BITS)?.iscc,
+        Content::Unavailable(reason) => bail!("{reason}"),
     };
     describe_unit(&code)
 }

@@ -44,6 +44,14 @@ repos:
         stages: [pre-commit]
 
       # Pre-push hooks (thorough quality gates)
+      # tauri.conf.json bundles src-tauri/pdfium/*, so every cargo run needs the library there.
+      - id: fetch-pdfium
+        name: Fetch the pinned pdfium library
+        entry: uv run scripts/fetch_pdfium.py
+        language: system
+        always_run: true
+        stages: [pre-push]
+        pass_filenames: false
       - id: cargo-clippy
         name: Rust linting
         entry: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings

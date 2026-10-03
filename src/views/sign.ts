@@ -151,6 +151,7 @@ export function newSignForm(inspection: Inspection, presets: TsaPreset[]): SignF
 /** Problems that keep the form from being signed; empty when it is complete. */
 export function signProblems(form: SignForm, inspection: Inspection): string[] {
   const problems: string[] = [];
+  if (inspection.sign_block) problems.push(inspection.sign_block);
   if (!form.title.trim()) problems.push("A title is required.");
   if (form.units.size === 0) problems.push("Select at least one ISCC unit.");
   if (form.units.has("meta") && !form.title.trim()) problems.push("The Meta-Code needs a title.");
@@ -366,9 +367,21 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
         </div>
       </div>
 
+      ${signActions(inspection)}
+    </form>`;
+}
+
+/** The submit area: the reason a file cannot be signed in place of the button, or the button
+ * with a warning above it when signing does something to the file its owner may not want. */
+function signActions(inspection: Inspection): string {
+  if (inspection.sign_block) {
+    return `<div class="actions"><p class="banner error grow">${esc(inspection.sign_block)}</p></div>`;
+  }
+  const warning = inspection.sign_warning ? `<p class="banner warn">${esc(inspection.sign_warning)}</p>` : "";
+  return `
+      ${warning}
       <div class="actions">
         <span class="msg" id="sign-msg"></span>
         <button type="submit" class="btn primary" id="sign-submit">Sign and embed</button>
-      </div>
-    </form>`;
+      </div>`;
 }

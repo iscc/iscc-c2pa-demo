@@ -75,6 +75,7 @@ pub fn read(bytes: &[u8]) -> Result<Document> {
         creator: (!creators.is_empty()).then(|| creators.join(", ")),
         cover,
         text,
+        ..Default::default()
     })
 }
 

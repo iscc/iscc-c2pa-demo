@@ -15,6 +15,7 @@ run = "uv run prek run --all-files --stage pre-commit"
 [tasks.lint]
 description = "Check formatting, clippy, Biome and the TypeScript types"
 run = [
+  "uv run scripts/fetch_pdfium.py",
   "cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
   "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
   "pnpm exec biome ci",
@@ -23,4 +24,7 @@ run = [
 
 [tasks.test]
 description = "Run the Rust unit and integration tests"
-run = "cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features"
+run = [
+  "uv run scripts/fetch_pdfium.py",
+  "cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features",
+]

@@ -10,6 +10,8 @@ use image::RgbImage;
 
 /// Long edge of the claim thumbnail in pixels.
 pub const THUMBNAIL_EDGE: u32 = 256;
+/// Long edge of the preview picture the UI shows, and of a rendered document page.
+pub const PREVIEW_EDGE: u32 = 640;
 /// JPEG quality of the claim thumbnail.
 pub const THUMBNAIL_QUALITY: u8 = 75;
 /// Media type of the claim thumbnail.

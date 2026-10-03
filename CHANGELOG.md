@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- PDF: inspect and sign PDF files. The text comes from pdfium, the library iscc-sdk uses, bundled
+  with the app (build chromium/8076), and matches iscc-sdk bit for bit; title, description,
+  creator and ISCC metadata follow iscc-sdk's rules for docinfo and XMP. The first page is the
+  preview and the claim thumbnail. Signing rewrites the whole PDF, so a signed PDF is not
+  source-preserving. Encrypted PDFs inspect but cannot be signed (c2pa-rs would remove the
+  encryption or fail); for a digitally signed PDF the Sign tab warns that signing breaks that
+  signature.
+- A document without text (a scanned PDF without a text layer, an empty DOCX) gets no
+  Content-Code Text, with the reason in its place: the code of empty text would match every other
+  empty document.
+- macOS 13 or later is required (the bundled pdfium library needs it).
 - A manifest read from a sidecar file (`photo.c2pa` next to `photo.jpg`, which c2pa-rs loads when
   the file embeds none) is marked as such in the status card, and its ISCC soft binding is
   compared with the file itself. The app used to cut the sidecar's data hash exclusions out of

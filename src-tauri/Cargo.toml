@@ -25,11 +25,12 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # Pinned: the unstable_* text handlers may change between c2pa releases.
-c2pa = { version = "=0.91.0", default-features = false, features = [
+c2pa = { version = "=0.91.1", default-features = false, features = [
   "rust_native_crypto",
   "file_io",
   "unstable_plain_text",
   "unstable_structured_text",
+  "pdf",
 ] }
 iscc-lib = "0.6"
 image = "0.25"
@@ -67,6 +68,15 @@ symphonia = { version = "0.6.1", default-features = false, features = [
 ] }
 rusty-chromaprint = "0.3.0"
 lofty = "0.25.4"
+# PDF text and rendering through the pdfium library bundled with the app (scripts/fetch_pdfium.py
+# pins the build), bound at run time, so a missing library is an inspection error. Only the raw C
+# API is used. `pdfium_7881` is the newest API set that binds bblanchon's build (`pdfium_future`
+# expects XFA, V8 and Skia symbols); pdf.rs serialises all calls itself.
+pdfium-render = { version = "0.9.4", default-features = false, features = [
+  "pdfium_7881",
+] }
+# PDF metadata (docinfo and XMP); the version and features c2pa's `pdf` feature pulls in.
+lopdf = "0.45.0"
 
 [features]
 # The c2pa-iscc command-line tool. Off by default, because `tauri build` puts every binary whose

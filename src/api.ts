@@ -176,8 +176,12 @@ export interface Inspection {
   meta_fields: MetaFields;
   /** Why the Meta-Code could not be computed; `iscc` then lacks it. */
   meta_error: string | null;
-  /** Why the Content-Code could not be computed (audio too short); `iscc` then lacks it. */
+  /** Why the Content-Code could not be computed (audio too short, a document without text); `iscc` then lacks it. */
   content_error: string | null;
+  /** Why this file cannot be signed (an encrypted PDF); null when it can. */
+  sign_block: string | null;
+  /** What signing does to this file that its owner may not want (breaking a PDF's digital signature). */
+  sign_warning: string | null;
   manifest: ManifestSummary | null;
   manifest_json: unknown;
   manifest_error: string | null;

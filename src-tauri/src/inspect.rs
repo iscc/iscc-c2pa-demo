@@ -1,5 +1,7 @@
 //! Read an asset: file facts, preview, ISCC units and the C2PA manifest store with validation.
 
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context as _, Result};
@@ -16,8 +18,6 @@ use crate::iscc::{self, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
 use crate::thumbnail;
 
-/// Longest edge of the preview image sent to the UI.
-const PREVIEW_EDGE: u32 = 640;
 /// JPEG quality of the preview image.
 const PREVIEW_QUALITY: u8 = 82;
 /// Label of the CAWG training and data mining assertion.
@@ -55,8 +55,14 @@ pub struct Inspection {
     pub meta_fields: MetaFields,
     /// Why the Meta-Code could not be computed from `meta_fields`; `iscc` then lacks it.
     pub meta_error: Option<String>,
-    /// Why the Content-Code could not be computed (audio too short); `iscc` then lacks it.
+    /// Why the Content-Code could not be computed (audio too short, a document without text);
+    /// `iscc` then lacks it.
     pub content_error: Option<String>,
+    /// Why this file cannot be signed (an encrypted PDF); `None` when it can.
+    pub sign_block: Option<&'static str>,
+    /// What signing does to this file that its owner may not want (breaking a PDF's digital
+    /// signature).
+    pub sign_warning: Option<&'static str>,
     pub manifest: Option<ManifestSummary>,
     /// Full manifest store as produced by `Reader::json`, for the raw view.
     pub manifest_json: Option<Value>,
@@ -265,29 +271,29 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     let (content, content_error) = unit_or_error(iscc::content_unit(asset.content()));
     let bitstream = [iscc::data_unit(&bytes)?, iscc::instance_unit(&bytes)?];
     let units: Vec<IsccUnit> = meta.into_iter().chain(content).chain(bitstream).collect();
-    let view_units = reader
+    let view = reader
         .as_ref()
         .and_then(source_view_ranges)
         .map(|ranges| {
             if ranges.is_empty() {
                 // Nothing to cut: the source view is the file itself.
-                Ok(units.clone())
+                Ok(SourceView::of_file(path, format, &bytes, &units))
             } else {
-                source_view_units(path, format, &source_view(&bytes, &ranges), &units)
+                SourceView::new(path, format, source_view(&bytes, &ranges), &units)
             }
         })
         .transpose()?;
-    let compared = match &view_units {
-        Some(view) => with_bitstream_of(&units, view),
+    let compared = match &view {
+        Some(view) => with_bitstream_of(&units, view.units()),
         None => units.clone(),
     };
     let manifest = reader
         .as_ref()
         .zip(json.as_ref())
-        .map(|(r, j)| summarize(r, j, path, &compared, view_units.as_deref()));
+        .map(|(r, j)| summarize(r, j, path, &compared, view.as_ref()));
     let (width, height) = match &asset.content {
         AssetContent::Image(rgb) => rgb.dimensions(),
-        AssetContent::Text(_) | AssetContent::Audio(_) => (0, 0),
+        _ => (0, 0),
     };
 
     Ok(Inspection {
@@ -321,6 +327,8 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         meta_fields,
         meta_error,
         content_error,
+        sign_block: asset.sign_block,
+        sign_warning: asset.sign_warning,
         manifest,
         manifest_json: json,
         manifest_error,
@@ -449,21 +457,74 @@ fn with_bitstream_of(units: &[IsccUnit], view: &[IsccUnit]) -> Vec<IsccUnit> {
         .collect()
 }
 
-/// Units of the source view. The Meta-Code is the file's, since its inputs never lie inside the
-/// manifest store. The view of a file that is not source-preserving need not decode, so a
-/// Content-Code that cannot be computed from it is left out.
-fn source_view_units(
-    path: &Path,
+/// The source view (IEP-0020) with its units. The Meta-Code is the file's, since its inputs
+/// never lie inside the manifest store. The Content-Code is computed on first use, because it
+/// only matters once the view is proven to be the source: the view of a file that is not
+/// source-preserving need not decode (then it is left out), and decoding it costs as much as
+/// the file did (a signed PDF would run pdfium a second time).
+struct SourceView<'a> {
+    path: &'a Path,
     format: &'static Format,
-    view: &[u8],
-    file_units: &[IsccUnit],
-) -> Result<Vec<IsccUnit>> {
-    let meta = file_units.iter().find(|u| u.unit == "meta").cloned();
-    let content = asset::read(path, view, format)
-        .ok()
-        .and_then(|a| iscc::content_unit(a.content()).ok());
-    let bitstream = [iscc::data_unit(view)?, iscc::instance_unit(view)?];
-    Ok(meta.into_iter().chain(content).chain(bitstream).collect())
+    bytes: Cow<'a, [u8]>,
+    /// Meta-Code of the file, Data-Code and Instance-Code of the view.
+    units: Vec<IsccUnit>,
+    content: OnceCell<Option<IsccUnit>>,
+}
+
+impl<'a> SourceView<'a> {
+    /// The view `bytes` of the file at `path`, whose units are `file_units`.
+    fn new(
+        path: &'a Path,
+        format: &'static Format,
+        bytes: Vec<u8>,
+        file_units: &[IsccUnit],
+    ) -> Result<Self> {
+        let meta = file_units.iter().find(|u| u.unit == "meta").cloned();
+        let bitstream = [iscc::data_unit(&bytes)?, iscc::instance_unit(&bytes)?];
+        Ok(SourceView {
+            path,
+            format,
+            bytes: Cow::Owned(bytes),
+            units: meta.into_iter().chain(bitstream).collect(),
+            content: OnceCell::new(),
+        })
+    }
+
+    /// The file itself as its source view (a sidecar manifest, or a data hash that excludes
+    /// nothing): every unit is known already.
+    fn of_file(
+        path: &'a Path,
+        format: &'static Format,
+        bytes: &'a [u8],
+        file_units: &[IsccUnit],
+    ) -> Self {
+        let (content, units): (Vec<IsccUnit>, Vec<IsccUnit>) = file_units
+            .iter()
+            .cloned()
+            .partition(|u| u.unit == "content");
+        SourceView {
+            path,
+            format,
+            bytes: Cow::Borrowed(bytes),
+            units,
+            content: OnceCell::from(content.into_iter().next()),
+        }
+    }
+
+    /// Meta-Code of the file, Data-Code and Instance-Code of the view.
+    fn units(&self) -> &[IsccUnit] {
+        &self.units
+    }
+
+    /// Every unit, the view's Content-Code included where the view decodes.
+    fn all_units(&self) -> Vec<IsccUnit> {
+        let content = self.content.get_or_init(|| {
+            asset::read(self.path, &self.bytes, self.format)
+                .ok()
+                .and_then(|a| iscc::content_unit(a.content()).ok())
+        });
+        self.units.iter().chain(content).cloned().collect()
+    }
 }
 
 /// Open the manifest store with the shared trust settings.
@@ -474,19 +535,19 @@ fn read_manifest(path: &Path) -> c2pa::Result<Reader> {
 
 /// Down-scale the flattened image and encode it as a JPEG data URL.
 fn preview_data_url(rgb: &image::RgbImage) -> Result<String> {
-    let jpeg = thumbnail::scaled_jpeg(rgb, PREVIEW_EDGE, PREVIEW_QUALITY)?;
+    let jpeg = thumbnail::scaled_jpeg(rgb, thumbnail::PREVIEW_EDGE, PREVIEW_QUALITY)?;
     Ok(format!("data:image/jpeg;base64,{}", B64.encode(jpeg)))
 }
 
-/// Build the display summary of the active manifest of the file at `path`. `view_units` are the
-/// units of the source view, when there is one (see [`source_view_ranges`]); see
-/// [`summarize_assertion`] for `compared`.
+/// Build the display summary of the active manifest of the file at `path`. `view` is the
+/// source view, when there is one (see [`source_view_ranges`]); see [`summarize_assertion`] for
+/// `compared`.
 fn summarize(
     reader: &Reader,
     json: &Value,
     path: &Path,
     compared: &[IsccUnit],
-    view_units: Option<&[IsccUnit]>,
+    view: Option<&SourceView>,
 ) -> ManifestSummary {
     let label = reader.active_label().unwrap_or_default().to_owned();
     let manifest = reader.active_manifest();
@@ -525,7 +586,7 @@ fn summarize(
         invalid_reason: invalid_reason(reader),
         trust_list: signer_trust_list(reader),
         validation: serde_json::to_value(reader.validation_results()).unwrap_or(Value::Null),
-        source_view: view_units.is_some(),
+        source_view: view.is_some(),
         sidecar: sidecar_name(reader, path),
         signature: manifest
             .and_then(Manifest::signature_info)
@@ -558,8 +619,8 @@ fn summarize(
             .unwrap_or_default(),
         soft_bindings: manifest
             .map(|m| {
-                let facts = binding_facts(reader, m, view_units.is_some());
-                soft_bindings(m, compared, view_units, &facts)
+                let facts = binding_facts(reader, m, view.is_some());
+                soft_bindings(m, compared, view, &facts)
             })
             .unwrap_or_default(),
         training_mining,
@@ -864,7 +925,7 @@ fn claim_generator_from_json(json: &Value, label: &str) -> Option<String> {
 fn soft_bindings(
     manifest: &Manifest,
     compared: &[IsccUnit],
-    view_units: Option<&[IsccUnit]>,
+    view: Option<&SourceView>,
     facts: &BindingFacts,
 ) -> Vec<SoftBindingSummary> {
     manifest
@@ -872,20 +933,20 @@ fn soft_bindings(
         .iter()
         .filter(|a| is_label(a.label(), labels::SOFT_BINDING))
         .filter_map(|a| a.to_assertion::<SoftBinding>().ok())
-        .flat_map(|sb| summarize_assertion(&sb, compared, view_units, facts))
+        .flat_map(|sb| summarize_assertion(&sb, compared, view, facts))
         .collect()
 }
 
 /// One summary per block of a soft-binding assertion; the metadata belongs to the assertion and
 /// is repeated on each block. IEP-0020, Soft Binding Verification: when the file is
-/// source-preserving, the embedded units are compared with `view_units`, because the source view
-/// then is the source. Otherwise they are compared with `compared`: Meta-Code and Content-Code
+/// source-preserving, the embedded units are compared with those of `view`, because the source
+/// view then is the source. Otherwise they are compared with `compared`: Meta-Code and Content-Code
 /// of the file, which always decodes, with Data-Code and Instance-Code of the source view where
 /// there is one, so that the manifest store does not count as a change.
 fn summarize_assertion(
     sb: &SoftBinding,
     compared: &[IsccUnit],
-    view_units: Option<&[IsccUnit]>,
+    view: Option<&SourceView>,
     facts: &BindingFacts,
 ) -> Vec<SoftBindingSummary> {
     let metadata = binding_metadata(sb);
@@ -895,14 +956,17 @@ fn summarize_assertion(
     sb.blocks
         .iter()
         .map(|block| {
-            let on_view = view_units.map(|units| summarize(&block.value, units));
-            let instance_equal = on_view.as_ref().and_then(|s| {
-                let instance = s.matches.iter().find(|m| m.embedded.unit == "instance")?;
+            let instance_equal = view.and_then(|v| {
+                let on_view = summarize(&block.value, v.units());
+                let instance = on_view
+                    .matches
+                    .iter()
+                    .find(|m| m.embedded.unit == "instance")?;
                 Some(instance.similarity == Some(1.0))
             });
             let verdict = preservation(facts, instance_equal);
-            let mut summary = match on_view {
-                Some(s) if verdict == Preservation::Preserved => s,
+            let mut summary = match (view, verdict) {
+                (Some(v), Preservation::Preserved) => summarize(&block.value, &v.all_units()),
                 _ => summarize(&block.value, compared),
             };
             if summary.supported && summary.error.is_none() {

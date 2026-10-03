@@ -83,14 +83,14 @@ pub fn read(path: &Path, bytes: &[u8]) -> Result<Asset> {
     Ok(Asset {
         content: AssetContent::Image(image),
         preview: None,
-        metadata: metadata::Embedded {
-            meta: meta.map(|m| metadata::sanitize(&m)),
-            ..metadata::document(
-                name.as_deref(),
-                description.as_deref(),
-                creator(&rdf).as_deref(),
-            )
-        },
+        metadata: metadata::document(
+            name.as_deref(),
+            description.as_deref(),
+            meta.as_deref(),
+            creator(&rdf).as_deref(),
+        ),
+        sign_block: None,
+        sign_warning: None,
     })
 }
 

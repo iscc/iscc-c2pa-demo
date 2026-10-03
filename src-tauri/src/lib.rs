@@ -11,6 +11,7 @@ pub mod iscc;
 pub mod metadata;
 pub mod numfmt;
 pub mod office;
+pub mod pdf;
 pub mod plain;
 pub mod resample;
 pub mod sign;
@@ -151,8 +152,12 @@ fn fit_to_screen(window: &WebviewWindow, min: Option<LogicalSize<f64>>) -> tauri
     window.center()
 }
 
-/// Fit the main window (created hidden) to the screen, then show it.
+/// Point the PDF reader at the bundled pdfium, fit the main window (created hidden) to the
+/// screen, then show it.
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(resources) = app.path().resource_dir() {
+        pdf::set_library_dir(resources.join("pdfium"));
+    }
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };

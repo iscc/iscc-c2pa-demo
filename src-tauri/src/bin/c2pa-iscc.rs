@@ -164,9 +164,16 @@ fn strip_preview(inspection: &mut Inspection, strip: bool) {
 }
 
 /// The signing request, with every option the user left out filled in the way the Sign tab
-/// prefills its form.
+/// prefills its form. A file that cannot be signed is an error; what signing does to it that
+/// its owner may not want is a note.
 fn sign_request(args: &SignArgs) -> Result<SignRequest> {
     let source = inspect::inspect(&args.file)?;
+    if let Some(block) = source.sign_block {
+        bail!("{block}");
+    }
+    if let Some(warning) = source.sign_warning {
+        eprintln!("note: {warning}");
+    }
     let fields = &source.meta_fields;
     let title = args.title.clone().unwrap_or_else(|| fields.name.clone());
     let description = args
