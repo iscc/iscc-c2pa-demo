@@ -28,8 +28,9 @@ The Sign tab writes a signed copy with:
 - a `cawg.metadata` assertion with the title and description behind the Meta-Code, so a signed
   copy recomputes the Meta-Code it was signed with;
 - an optional `cawg.training-mining` assertion (CAWG Training and Data Mining Assertion 1.1);
-- a `c2pa.opened` action with the source as parent ingredient, which carries the chosen digital
-  source type or, when the source already has Content Credentials, the existing manifest;
+- a `c2pa.opened` action with the source as parent ingredient, which carries the digital source
+  type if one was chosen or, when the source already has Content Credentials, the existing
+  manifest;
 - a claim thumbnail when the file has a picture (see [Thumbnail](#thumbnail));
 - an RFC 3161 timestamp from a time stamping authority, so the manifest proves when it was
   signed (see below).
@@ -190,7 +191,10 @@ in `src-tauri/src/sign.rs` pin both cases.
 **Inception.** Signing records the source as the `parentOf` ingredient and a `c2pa.opened`
 action with `allActionsIncluded: true`, as the C2PA specification requires for a file that is opened
 and saved with Content Credentials but otherwise unchanged. The digital source type chosen in the
-Sign tab goes on that ingredient when the source has no Content Credentials of its own.
+Sign tab goes on that ingredient when the source has no Content Credentials of its own. The form
+starts at "Not specified", which records none (the specification allows an ingredient without
+one): a preselected type would make the signer assert how a file was made that the app cannot
+know. The same holds for the CLI without `--source-type`.
 
 The assertion also carries the optional `bindingMetadata` map of the C2PA specification (2.3
 and later) with a description of the ISCC, the contact `info@iscc.io` and a link to IEP-0020, so

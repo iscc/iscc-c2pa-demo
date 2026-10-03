@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- "How was this file made?" in the Sign tab starts at "Not specified" and records no digital
+  source type, instead of claiming "Digital capture (camera)" for every file. The CLI's
+  `--source-type` has no default either. The list drops the terms IPTC retired (Digital art,
+  Software rendered image) and adds Composite of captures and Composite with AI generated
+  elements.
 - PDF: inspect and sign PDF files. The text comes from pdfium, the library iscc-sdk uses, bundled
   with the app (build chromium/8076), and matches iscc-sdk bit for bit; title, description,
   creator and ISCC metadata follow iscc-sdk's rules for docinfo and XMP. The first page is the

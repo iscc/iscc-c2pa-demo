@@ -15,9 +15,6 @@ use iscc_c2pa_demo_lib::sign::{self, Credentials, SignRequest, TimestampOutcome,
 use iscc_c2pa_demo_lib::timestamp;
 use serde::Serialize;
 
-/// Digital source type the sign form preselects.
-const DEFAULT_SOURCE_TYPE: &str = "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture";
-
 #[derive(Parser)]
 #[command(
     name = "c2pa-iscc",
@@ -77,9 +74,9 @@ struct SignArgs {
     #[arg(long, value_delimiter = ',', value_parser = ["meta", "image", "text", "audio", "data", "instance"])]
     units: Option<Vec<String>>,
     /// Digital source type URI, recorded on the parent ingredient when the file has no Content
-    /// Credentials yet.
-    #[arg(long, default_value = DEFAULT_SOURCE_TYPE)]
-    source_type: String,
+    /// Credentials yet [default: none recorded].
+    #[arg(long)]
+    source_type: Option<String>,
     /// CAWG training and data mining entry, repeatable, e.g. `cawg.ai_training=notAllowed` or
     /// `cawg.data_mining=constrained:research only`.
     #[arg(long, value_name = "KEY=USE[:CONSTRAINT]")]

@@ -227,8 +227,8 @@ export interface SignRequest {
   description?: string;
   /** The source's embedded ISCC metadata, passed through so the Meta-Code stays reproducible. */
   meta?: string;
-  /** Digital source type URI, recorded on the parent ingredient when the source has no Content Credentials. */
-  source_type: string;
+  /** Digital source type URI, recorded on the parent ingredient when the source has no Content Credentials; none when absent. */
+  source_type?: string;
   units: string[];
   training: Record<string, TrainingEntry>;
   credentials: Credentials;

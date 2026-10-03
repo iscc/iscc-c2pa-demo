@@ -35,7 +35,9 @@ pub struct SignRequest {
     pub meta: Option<String>,
     /// Digital source type URI recorded on the parent ingredient when the source carries no
     /// Content Credentials; a source with Content Credentials keeps its own history instead.
-    pub source_type: String,
+    /// None records no source type, which the C2PA specification allows for an ingredient.
+    #[serde(default)]
+    pub source_type: Option<String>,
     /// ISCC unit slugs to embed: meta, the Content-Code (image, text or audio), data, instance.
     pub units: Vec<String>,
     /// CAWG training-mining entries keyed by use case label (e.g. `cawg.ai_training`).
@@ -134,7 +136,13 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
         "format": mime,
     }))?;
     builder.set_intent(BuilderIntent::Edit);
-    add_parent(&mut builder, source, &bytes, mime, &request.source_type)?;
+    add_parent(
+        &mut builder,
+        source,
+        &bytes,
+        mime,
+        request.source_type.as_deref(),
+    )?;
     add_thumbnail(&mut builder, &asset)?;
 
     let soft_binding: SoftBinding = serde_json::from_value(json!({
@@ -260,13 +268,13 @@ fn temp_sibling(output: &Path) -> Result<std::path::PathBuf> {
 
 /// Record the source as the parent ingredient; with the edit intent c2pa then adds the
 /// `c2pa.opened` action that references it. A source without Content Credentials gets the
-/// digital source type chosen by the user.
+/// digital source type chosen by the user, if any.
 fn add_parent(
     builder: &mut Builder,
     source: &Path,
     bytes: &[u8],
     mime: &str,
-    source_type: &str,
+    source_type: Option<&str>,
 ) -> Result<()> {
     let title = source.file_name().map(|n| n.to_string_lossy().into_owned());
     let parent = builder.add_ingredient_from_stream(
@@ -274,7 +282,7 @@ fn add_parent(
         mime,
         &mut Cursor::new(bytes),
     )?;
-    if parent.active_manifest().is_none() {
+    if let (None, Some(source_type)) = (parent.active_manifest(), source_type) {
         let dst: DigitalSourceType = serde_json::from_value(json!(source_type))
             .with_context(|| format!("unknown digital source type {source_type}"))?;
         parent.set_digital_source_type(dst);
@@ -354,7 +362,9 @@ mod tests {
             title: "Demo asset".into(),
             description: Some("Signed in a unit test".into()),
             meta: None,
-            source_type: "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture".into(),
+            source_type: Some(
+                "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture".into(),
+            ),
             units: ["meta", "image", "data", "instance"]
                 .map(String::from)
                 .to_vec(),
@@ -549,6 +559,18 @@ mod tests {
         assert_eq!(list[0]["action"], "c2pa.opened");
         assert!(list[0].get("digitalSourceType").is_none());
         assert_eq!(actions["allActionsIncluded"], true, "{actions}");
+    }
+
+    #[test]
+    fn unspecified_source_type_is_not_recorded() {
+        let dir = fresh_dir("iscc-c2pa-demo-test-no-source-type");
+        let mut req = request("no_manifest.jpg", &dir.join("no_manifest-signed.jpg"));
+        req.source_type = None;
+        let result = sign(&req).unwrap();
+        let manifest = result.inspection.manifest.expect("manifest present");
+        assert_eq!(manifest.validation_state, "Trusted");
+        assert_eq!(manifest.ingredients[0].relationship, "ParentOf");
+        assert_eq!(manifest.ingredients[0].digital_source_type, None);
     }
 
     // Windows and macOS file systems are case-insensitive by default.
@@ -1301,7 +1323,7 @@ mod tests {
             .unwrap();
         builder.set_intent(BuilderIntent::Edit);
         let digital_capture = "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture";
-        add_parent(&mut builder, &copy, &bytes, mime, digital_capture).unwrap();
+        add_parent(&mut builder, &copy, &bytes, mime, Some(digital_capture)).unwrap();
         builder
             .add_assertion(labels::SOFT_BINDING, &soft_binding)
             .unwrap();
