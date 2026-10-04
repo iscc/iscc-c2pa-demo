@@ -1,50 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-10-04
 
-- Video: inspect and sign MP4, MOV, M4V and AVI files. The Content-Code Video comes from MPEG-7
-  frame signatures computed by ffmpeg, as in iscc-sdk, and matches iscc-sdk bit for bit; title,
-  description, creator and ISCC metadata follow iscc-sdk's tag rules. ffmpeg is not bundled: the
-  first time a video is opened, the app offers to download the build iscc-sdk uses (about 70 MB
-  on Windows and Linux, 25 MB on macOS) from iscc-binaries, checks its BLAKE3 hash and keeps it
-  for later. Without ffmpeg, a video opens and signs with its Content Credentials, Data-Code and
-  Instance-Code, and says why it has no Meta-Code and no Content-Code Video. A progress bar with
-  Cancel follows long videos. A frame of the video is the preview
-  and the claim thumbnail. Signing an AVI rewrites its RIFF size field, so it is not
-  source-preserving; MP4, MOV and M4V are hashed box by box and have no source view, like M4A.
-  On Macs with Apple chips ffmpeg runs under Rosetta 2. An MP4, MOV or M4V file with sound but
-  no video is read like an M4A: it gets a Content-Code Audio and needs no ffmpeg.
-- Audio: Opus tracks in MP4 containers get a Content-Code Audio (decoded by rusty-opus; the
-  code may differ from iscc-sdk's in a few bits). A file whose audio the app cannot decode
-  (AC-3, HE-AAC and others) opens and signs with its other units, and says why it has no
-  Content-Code Audio, where it failed to open before.
-- The CLI gains `c2pa-iscc tools status` and `c2pa-iscc tools install` for ffmpeg.
-- Data-Code and Instance-Code of a video, and of the source view of any signed file, are hashed
-  from the file in chunks, so a large file is never read into memory whole.
-- "How was this file made?" in the Sign tab starts at "Not specified" and records no digital
-  source type, instead of claiming "Digital capture (camera)" for every file. The CLI's
-  `--source-type` has no default either. The list drops the terms IPTC retired (Digital art,
-  Software rendered image) and adds Composite of captures and Composite with AI generated
-  elements.
-- PDF: inspect and sign PDF files. The text comes from pdfium, the library iscc-sdk uses, bundled
-  with the app (build chromium/8076), and matches iscc-sdk bit for bit; title, description,
-  creator and ISCC metadata follow iscc-sdk's rules for docinfo and XMP. The first page is the
-  preview and the claim thumbnail. Signing rewrites the whole PDF, so a signed PDF is not
-  source-preserving. Encrypted PDFs inspect but cannot be signed (c2pa-rs would remove the
-  encryption or fail); for a digitally signed PDF the Sign tab warns that signing breaks that
-  signature.
-- A document without text (a scanned PDF without a text layer, an empty DOCX) gets no
-  Content-Code Text, with the reason in its place: the code of empty text would match every other
-  empty document.
-- macOS 13 or later is required (the bundled pdfium library needs it).
-- A manifest read from a sidecar file (`photo.c2pa` next to `photo.jpg`, which c2pa-rs loads when
-  the file embeds none) is marked as such in the status card, and its ISCC soft binding is
-  compared with the file itself. The app used to cut the sidecar's data hash exclusions out of
-  the file: an exact copy of the source showed an Instance-Code of about 50%, and a file with
-  other bytes in exactly those ranges showed as "Source preserved". A file signed into a sidecar
-  (`c2patool --sidecar`) now shows as source-preserving in any format, M4A included.
-- A hash binding that does not match the file rules out "Source preserved", even when the
-  Instance-Codes agree.
+- PDF: inspect and sign PDF files. Text and metadata come from pdfium, the library iscc-sdk
+  uses, bundled with the app, and match iscc-sdk bit for bit. The first page is the preview and
+  the claim thumbnail. Encrypted PDFs cannot be signed; for a digitally signed PDF the Sign tab
+  warns that signing breaks that signature.
+- Video: inspect and sign MP4, MOV, M4V and AVI files. The Content-Code Video and the Meta-Code
+  match iscc-sdk bit for bit. They need ffmpeg, which the app offers to download the first time
+  a video is opened: the build iscc-sdk uses, checked against its hash (about 70 MB on Windows
+  and Linux, 25 MB on macOS, where Apple chips run it under Rosetta 2). Without ffmpeg a video
+  still opens and signs with its Content Credentials, Data-Code and Instance-Code. Long videos
+  show a progress bar with Cancel. The CLI installs ffmpeg with `c2pa-iscc tools install`.
+- Audio: an MP4, MOV or M4V file with sound only is read like an M4A, with a Content-Code Audio
+  and without ffmpeg. Opus tracks in MP4 get a Content-Code Audio, within a few bits of
+  iscc-sdk's. A file whose audio cannot be decoded (AC-3, HE-AAC and others) opens and signs
+  with its other units and says why it has no Content-Code Audio.
+- A document without text, such as a scan without a text layer, gets no Content-Code Text: the
+  code of empty text would match every other empty document. The reason shows in its place.
+- The Sign tab records a digital source type only when one is chosen; it no longer claims
+  "Digital capture" for every file. The list follows the current IPTC terms. The same holds for
+  the CLI's `--source-type`.
+- A manifest read from a sidecar file (`photo.c2pa` next to `photo.jpg`) is marked as such, and
+  its soft binding is compared with the whole file.
+- A file whose hash no longer matches its manifest never shows as "Source preserved".
+- Large files are hashed in chunks instead of being read into memory whole.
+- macOS 13 or later is required.
 
 ## 0.1.1 - 2026-09-30
 
