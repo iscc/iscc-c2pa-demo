@@ -1,26 +1,34 @@
-// Left column: preview (image, document cover or thumbnail, audio cover art), file facts and the
-// ISCC units computed from the file.
+// Left column: preview (image, document cover or thumbnail, audio cover art, video frame), file
+// facts and the ISCC units computed from the file.
 
 import type { AssetKind, Inspection, IsccUnit, MetaFields } from "../api";
 import { esc, formatBytes, formatDuration, isccHtml } from "../util";
 
-/** Placeholder for a file without a picture: EPUBs lack a cover, audio lacks cover art, other
- * documents show their format. */
+/** Placeholder for a file without a picture: EPUBs lack a cover, audio lacks cover art, a video
+ * lacks a preview frame (no video stream, no ffmpeg, or no frame ffmpeg could pick; the unit list
+ * says why when the Content-Code is missing too), other documents show their format. */
 function placeholder(inspection: Inspection): string {
   let text = inspection.format_label;
   if (inspection.mime === "application/epub+zip") text = "no cover image";
   if (inspection.kind === "audio") text = "no cover art";
+  if (inspection.kind === "video") text = "no preview frame";
   return `<div class="nopreview">${esc(text)}</div>`;
 }
 
 /** Pixel size of an image (the rendered size of an SVG), the extracted text length ("none"
- * when there is no text to count: the unit list says why) or the audio duration. */
+ * when there is no text to count: the unit list says why), the audio duration, or the duration
+ * and frame size of a video. */
 function extent(inspection: Inspection): string {
   if (inspection.kind === "text") {
     const text = inspection.characters === null ? "none" : `${inspection.characters.toLocaleString()} characters`;
     return `<dt>Text</dt><dd>${text}</dd>`;
   }
-  if (inspection.kind === "audio") return `<dt>Duration</dt><dd>${formatDuration(inspection.duration_secs ?? 0)}</dd>`;
+  const duration = `<dt>Duration</dt><dd>${inspection.duration_secs === null ? "unknown" : formatDuration(inspection.duration_secs)}</dd>`;
+  if (inspection.kind === "audio") return duration;
+  if (inspection.kind === "video") {
+    const frames = inspection.width ? `<dt>Frames</dt><dd>${inspection.width} × ${inspection.height}</dd>` : "";
+    return duration + frames;
+  }
   const label = inspection.mime === "image/svg+xml" ? "Rendered" : "Pixels";
   return `<dt>${label}</dt><dd>${inspection.width} × ${inspection.height}</dd>`;
 }
@@ -33,7 +41,7 @@ export function assetCard(inspection: Inspection): string {
   const creator = inspection.creator ? `<dt>Creator</dt><dd>${esc(inspection.creator)}</dd>` : "";
   return `
     <section class="card">
-      <div class="preview${inspection.kind === "image" ? "" : " document"}">${preview}</div>
+      <div class="preview${inspection.kind === "image" || inspection.kind === "video" ? "" : " document"}">${preview}</div>
       <div class="body">
         <dl class="facts">
           <dt>File</dt><dd>${esc(inspection.file_name)}</dd>
@@ -63,6 +71,7 @@ const CONTENT_NAME: Record<AssetKind, string> = {
   image: "Content-Code Image",
   text: "Content-Code Text",
   audio: "Content-Code Audio",
+  video: "Content-Code Video",
 };
 
 /** Row for a unit that could not be computed, with the reason and, for the Meta-Code, the inputs
@@ -79,30 +88,43 @@ function missingUnitRow(unit: IsccUnit["unit"], name: string, error: string, fro
       </div>`;
 }
 
-/** Row of a computed unit; the Meta-Code row says where its title came from. */
-function unitRow(u: IsccUnit, meta: MetaFields): string {
+/** Where a signed video copy's Content-Code came from. */
+const FROM_SOURCE = "From the file just signed, whose video this copy carries unchanged, packet for packet";
+
+/** Row of a computed unit, with where its inputs came from when that needs saying (`from`). */
+function unitRow(u: IsccUnit, from: string): string {
   return `
       <div class="unit">
         <span class="bar" data-unit="${u.unit}"></span>
         <div>
           <div class="name">${esc(u.name)}</div>
           <div class="code">${isccHtml(u.iscc)}</div>
-          ${u.unit === "meta" ? `<div class="from">${esc(metaFrom(meta))}</div>` : ""}
+          ${from ? `<div class="from">${esc(from)}</div>` : ""}
         </div>
         <button class="btn small quiet" data-copy="${esc(u.iscc)}" title="Copy">Copy</button>
       </div>`;
 }
 
+/** Where a unit's inputs came from: the Meta-Code's title, a signed video copy's Content-Code. */
+function unitFrom(u: IsccUnit, inspection: Inspection): string {
+  if (u.unit === "meta") return metaFrom(inspection.meta_fields);
+  return u.unit === "content" && inspection.content_from_source ? FROM_SOURCE : "";
+}
+
 /** List of the file's ISCC units with their unit colour; a Meta-Code or Content-Code that could
- * not be computed keeps its place and says why. */
+ * not be computed keeps its place and says why. A Meta-Code missing for the Content-Code's reason
+ * was never tried (a video's tags unread without ffmpeg), so it names no inputs. */
 export function unitList(inspection: Inspection, hint: string): string {
-  const meta = inspection.meta_fields;
-  const rows = inspection.iscc.map((u) => unitRow(u, meta));
-  if (inspection.content_error) {
-    const row = missingUnitRow("content", CONTENT_NAME[inspection.kind], inspection.content_error, "");
-    rows.splice(inspection.meta_error ? 0 : 1, 0, row);
+  const { meta_error, content_error } = inspection;
+  const rows = inspection.iscc.map((u) => unitRow(u, unitFrom(u, inspection)));
+  if (content_error) {
+    const row = missingUnitRow("content", CONTENT_NAME[inspection.kind], content_error, "");
+    rows.splice(meta_error ? 0 : 1, 0, row);
   }
-  if (inspection.meta_error) rows.unshift(missingUnitRow("meta", "Meta-Code", inspection.meta_error, metaFrom(meta)));
+  if (meta_error) {
+    const from = meta_error === content_error ? "" : metaFrom(inspection.meta_fields);
+    rows.unshift(missingUnitRow("meta", "Meta-Code", meta_error, from));
+  }
   return `
     <section class="card">
       <header><h2>ISCC of this file</h2><span class="grow"></span><span class="hint">${esc(hint)}</span></header>

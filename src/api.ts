@@ -1,6 +1,6 @@
 // Typed wrappers around the Tauri commands exposed by the Rust core.
 
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type UnitSlug = "meta" | "semantic" | "content" | "data" | "instance";
 
@@ -161,23 +161,25 @@ export interface Inspection {
   /** Decides which Content-Code applies and how the asset is shown. */
   kind: AssetKind;
   size_bytes: number;
-  /** Pixel size of an image (the rendered size of an SVG); 0 for text and audio assets. */
+  /** Pixel size of an image (the rendered size of an SVG) or of a video's frames; 0 for text and audio assets. */
   width: number;
   height: number;
-  /** JPEG data URL (the cover or thumbnail of a document, audio cover art); empty when there is nothing to show. */
+  /** JPEG data URL (the cover or thumbnail of a document, audio cover art, a video frame); empty when there is nothing to show. */
   preview: string;
-  /** Characters of extracted text; null for images and audio. */
+  /** Characters of extracted text; null for images, audio and video. */
   characters: number | null;
-  /** Length of the decoded audio in seconds; null for images and text. */
+  /** Length of the decoded audio or of the video in seconds; null for images and text, and for a video of unknown duration. */
   duration_secs: number | null;
   /** Creator named in the file's own metadata; display only. */
   creator: string | null;
   iscc: IsccUnit[];
   meta_fields: MetaFields;
-  /** Why the Meta-Code could not be computed; `iscc` then lacks it. */
+  /** Why the Meta-Code could not be computed, or why the file's own tags could not be read (a video without ffmpeg); `iscc` then lacks it. */
   meta_error: string | null;
-  /** Why the Content-Code could not be computed (audio too short, a document without text); `iscc` then lacks it. */
+  /** Why the Content-Code could not be computed (audio too short, a document without text, a video without frames or without ffmpeg); `iscc` then lacks it. */
   content_error: string | null;
+  /** The Content-Code is that of the source just signed, whose compressed video this signed copy carries unchanged; false when it was computed from this file's own frames. */
+  content_from_source: boolean;
   /** Why this file cannot be signed (an encrypted PDF); null when it can. */
   sign_block: string | null;
   /** What signing does to this file that its owner may not want (breaking a PDF's digital signature). */
@@ -187,7 +189,7 @@ export interface Inspection {
   manifest_error: string | null;
 }
 
-export type AssetKind = "image" | "text" | "audio";
+export type AssetKind = "image" | "text" | "audio" | "video";
 
 /** Formats of one kind of asset, for the start screen and the file dialog. */
 export interface KindInfo {
@@ -247,13 +249,64 @@ export interface SignResult {
   inspection: Inspection;
 }
 
+/** How far a video analysis got: the opened file, the file being signed, or the signed copy; `write` says that
+ * the signed copy is about to be written, which cannot be stopped. */
+export interface Progress {
+  stage: "inspect" | "source" | "write" | "output";
+  /** Share of the duration decoded; null when the duration is unknown. */
+  fraction: number | null;
+}
+
+/** How much of a tool's download arrived, in bytes. */
+export interface Download {
+  received: number;
+  total: number;
+}
+
+/** Whether ffmpeg, which videos need, is installed, and what installing it means. */
+export interface ToolStatus {
+  name: string;
+  version: string | null;
+  /** Whether this platform has a build to install. */
+  available: boolean;
+  installed: boolean;
+  /** The installed program, or where it will be installed. */
+  path: string | null;
+  url: string | null;
+  /** Size of the download in bytes. */
+  bytes: number | null;
+  licence: string;
+  /** Caveat for this platform (Rosetta 2 on Macs with Apple chips). */
+  note: string | null;
+}
+
+/** A channel that hands each message to `listener`. */
+function channel<T>(listener: (message: T) => void): Channel<T> {
+  const ch = new Channel<T>();
+  ch.onmessage = listener;
+  return ch;
+}
+
 export const appInfo = () => invoke<AppInfo>("app_info");
 
 export const initialPath = () => invoke<string | null>("initial_path");
 
-export const inspectAsset = (path: string) => invoke<Inspection>("inspect_asset", { path });
+export const inspectAsset = (path: string, onProgress: (p: Progress) => void) =>
+  invoke<Inspection>("inspect_asset", { path, onProgress: channel(onProgress) });
 
-export const signAsset = (request: SignRequest) => invoke<SignResult>("sign_asset", { request });
+export const signAsset = (request: SignRequest, onProgress: (p: Progress) => void) =>
+  invoke<SignResult>("sign_asset", { request, onProgress: channel(onProgress) });
+
+/** Stop the video analyses and downloads that run now. */
+export const cancelTasks = () => invoke<void>("cancel_tasks");
+
+/** Whether opening `path` needs ffmpeg: a video does, unless it carries sound only. */
+export const needsFfmpeg = (path: string) => invoke<boolean>("needs_ffmpeg", { path });
+
+export const ffmpegStatus = () => invoke<ToolStatus>("ffmpeg_status");
+
+export const installFfmpeg = (onProgress: (d: Download) => void) =>
+  invoke<ToolStatus>("install_ffmpeg", { onProgress: channel(onProgress) });
 
 export const metaCode = (title: string, description?: string, meta?: string) =>
   invoke<IsccUnit>("meta_code", { title, description: description || null, meta: meta || null });

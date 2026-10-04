@@ -311,7 +311,7 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
     const from = m.sidecar ? "this file" : "this file without its Content Credentials";
     parts.push(`Every unit is recomputed from ${from}, which is the file that was signed.`);
   } else {
-    if (has("content")) parts.push(`Content-Code is recomputed from this file's ${contentSource(inspection)}.`);
+    if (has("content")) parts.push(contentNote(inspection));
     if (has("data") || has("instance")) parts.push(`Data-Code and Instance-Code are recomputed from ${bitstreamSource(m)}.`);
   }
   if (has("data") || has("instance")) {
@@ -323,6 +323,15 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
     );
   }
   return parts.join(" ");
+}
+
+/** What the Content-Code in the match column was computed from. */
+function contentNote(inspection: Inspection): string {
+  if (!inspection.content_from_source) return `Content-Code is recomputed from this file's ${contentSource(inspection)}.`;
+  return (
+    "Content-Code is that of the file just signed: this copy carries its compressed video unchanged, packet for packet, " +
+    "so its frames are the same. Open this file again to recompute it from its own frames."
+  );
 }
 
 /** What Data-Code and Instance-Code are recomputed from when the source is not shown as preserved. */

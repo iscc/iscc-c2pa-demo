@@ -8,14 +8,29 @@
 //! delay and padding (symphonia's gapless mode) and the MP4 edit list's priming (symphonia
 //! ignores edit lists).
 //!
+//! MP4, MOV and M4V files with a sound track and no video track ([`sound_only`]) are read like
+//! an M4A.
+//!
+//! The decoders are symphonia's plus the ones this app registers ([`CODECS`]): Opus, which
+//! symphonia reads out of an MP4 but cannot decode. A file whose container reads but whose
+//! audio does not decode (AC-3, HE-AAC, more than two AAC channels, a track type the MP4 reader
+//! does not know) still inspects and signs: it has no Content-Code Audio, with the reason in
+//! its place ([`Undecodable`]).
+//!
 //! Known deviations from fpcalc: more than two channels are averaged (swresample uses a downmix
-//! matrix; 0 to 2 bits per 64 on 5.1), and packets that fail to decode are skipped.
+//! matrix; 0 to 2 bits per 64 on 5.1), packets that fail to decode are skipped, and Opus is
+//! decoded by another decoder (`opus`), which costs a few bits of the code.
 
-use std::io::Cursor;
+use std::fmt;
+use std::fs::File;
+use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::path::Path;
+use std::sync::LazyLock;
 
 use anyhow::{anyhow, Context as _, Result};
 use rusty_chromaprint::{Configuration, Fingerprinter};
 use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions};
+use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
@@ -26,7 +41,7 @@ use symphonia::core::packet::Packet;
 use crate::asset::{Asset, AssetContent};
 use crate::formats::{self, Format};
 use crate::resample::{Resampler, OUTPUT_RATE};
-use crate::{audio_tags, iscc};
+use crate::{audio_tags, iscc, opus};
 
 /// The decoded audio as far as the ISCC needs it.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,12 +53,42 @@ pub struct Audio {
     pub seconds: f64,
 }
 
-/// Read the audio asset held in `bytes`: fingerprint, tags and cover art.
+/// Why a file that reads as its format has no audio to fingerprint; the reason takes the place
+/// of the Content-Code Audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Undecodable(pub &'static str);
+
+impl fmt::Display for Undecodable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Undecodable {}
+
+/// The file has no audio track, or one of a type symphonia's reader does not know.
+const NO_TRACK: Undecodable = Undecodable("no audio track found that this app can read");
+/// No registered decoder takes the track's codec, or its flavour of the codec.
+const NO_DECODER: Undecodable = Undecodable("this audio codec is not supported");
+
+/// symphonia's decoders and the ones this app adds; a further codec joins by registering here.
+static CODECS: LazyLock<CodecRegistry> = LazyLock::new(|| {
+    let mut registry = CodecRegistry::new();
+    symphonia::default::register_enabled_codecs(&mut registry);
+    registry.register_audio_decoder::<opus::OpusDecoder>();
+    registry
+});
+
+/// Read the audio asset held in `bytes`: fingerprint, tags and cover art. Audio that does not
+/// decode leaves the asset without content, with the reason ([`Undecodable`]).
 pub fn read(bytes: &[u8], format: &Format) -> Result<Asset> {
-    let audio = analyse(bytes, format)?;
+    let content = match analyse(bytes, format) {
+        Ok(audio) => AssetContent::Audio(audio),
+        Err(error) => AssetContent::Unavailable(error.downcast::<Undecodable>()?.0),
+    };
     let (metadata, cover) = audio_tags::read(bytes, format.mime);
     Ok(Asset {
-        content: AssetContent::Audio(audio),
+        content,
         preview: cover.and_then(|c| iscc::decode_rgb(&c).ok()),
         metadata,
         sign_block: None,
@@ -51,7 +96,8 @@ pub fn read(bytes: &[u8], format: &Format) -> Result<Asset> {
     })
 }
 
-/// Decode `bytes` and fingerprint the audio of its default track.
+/// Decode `bytes` and fingerprint the audio of its default track; an [`Undecodable`] error when
+/// the file reads but has no track or no decoder for it.
 pub fn analyse(bytes: &[u8], format: &Format) -> Result<Audio> {
     let source = MediaSourceStream::new(Box::new(Cursor::new(bytes.to_vec())), Default::default());
     let mut hint = Hint::new();
@@ -65,19 +111,18 @@ pub fn analyse(bytes: &[u8], format: &Format) -> Result<Audio> {
             MetadataOptions::default(),
         )
         .with_context(|| format!("cannot read this {} file", format.label))?;
-    let track = reader
-        .default_track(TrackType::Audio)
-        .ok_or_else(|| anyhow!("the file has no audio track"))?;
+    let track = reader.default_track(TrackType::Audio).ok_or(NO_TRACK)?;
     let track_id = track.id;
     let params = track
         .codec_params
         .as_ref()
         .and_then(|p| p.audio())
-        .ok_or_else(|| anyhow!("the audio track has no codec parameters"))?
+        .ok_or(NO_TRACK)?
         .clone();
-    let skip = match format.mime {
-        formats::M4A => mp4_priming(bytes, params.sample_rate.unwrap_or(0)),
-        _ => 0,
+    let skip = if formats::is_bmff(format.mime) {
+        mp4_priming(bytes, params.sample_rate.unwrap_or(0))
+    } else {
+        0
     };
     decode(reader.as_mut(), track_id, &params, skip)
 }
@@ -89,9 +134,9 @@ fn decode(
     params: &AudioCodecParameters,
     skip: u64,
 ) -> Result<Audio> {
-    let mut decoder = symphonia::default::get_codecs()
+    let mut decoder = CODECS
         .make_audio_decoder(params, &AudioDecoderOptions::default())
-        .context("this audio codec is not supported")?;
+        .map_err(|_| NO_DECODER)?;
     let mut sink = Chromaprint::new(skip)?;
     let (mut interleaved, mut mono) = (Vec::new(), Vec::new());
     while let Some(packet) = next_packet(reader, track_id)? {
@@ -232,7 +277,7 @@ pub fn mp4_priming(bytes: &[u8], rate: u32) -> u64 {
 /// track; `None` for other tracks. A sound track without an edit list starts at 0.
 fn sound_track_priming(trak: &[u8]) -> Option<(u64, u32)> {
     let mdia = child(trak, b"mdia")?;
-    if child(mdia, b"hdlr")?.get(8..12)? != b"soun" {
+    if handler(mdia)? != b"soun" {
         return None;
     }
     let timescale = mdhd_timescale(child(mdia, b"mdhd")?).filter(|&t| t > 0)?;
@@ -241,6 +286,63 @@ fn sound_track_priming(trak: &[u8]) -> Option<(u64, u32)> {
         .and_then(first_media_time)
         .unwrap_or(0);
     Some((media_time, timescale))
+}
+
+/// Handler type of a media box: `soun` for sound, `vide` for video, and so on.
+fn handler(mdia: &[u8]) -> Option<&[u8]> {
+    child(mdia, b"hdlr")?.get(8..12)
+}
+
+/// Largest movie box read to tell whether a file carries sound only; a larger one belongs to a
+/// video (64 MiB of sample tables is days of sound).
+const MAX_MOOV: u64 = 64 << 20;
+
+/// Whether the ISO BMFF file at `path` (MP4, MOV, M4V) has a sound track and no video track.
+/// False when the file cannot be read or its movie box cannot be found.
+pub fn sound_only(path: &Path) -> bool {
+    let Some(moov) = File::open(path).ok().and_then(movie_box) else {
+        return false;
+    };
+    let handlers: Vec<&[u8]> = boxes(&moov)
+        .filter(|(kind, _)| kind == b"trak")
+        .filter_map(|(_, trak)| child(trak, b"mdia").and_then(handler))
+        .collect();
+    handlers.contains(&&b"soun"[..]) && !handlers.contains(&&b"vide"[..])
+}
+
+/// Body of the top-level movie box (`moov`), which may come before or after the media data;
+/// every other box is skipped without reading it.
+fn movie_box(mut file: File) -> Option<Vec<u8>> {
+    loop {
+        let (kind, length) = box_header(&mut file)?;
+        if &kind == b"moov" {
+            let limit = length.unwrap_or(u64::MAX).min(MAX_MOOV + 1);
+            let mut body = Vec::new();
+            (&mut file).take(limit).read_to_end(&mut body).ok()?;
+            let complete = length.is_none_or(|n| n == body.len() as u64);
+            return (complete && body.len() as u64 <= MAX_MOOV).then_some(body);
+        }
+        file.seek(SeekFrom::Current(i64::try_from(length?).ok()?))
+            .ok()?;
+    }
+}
+
+/// Type and body length of the box at the reader's position, the reader left at its body; the
+/// length is `None` for a box that runs to the end of the file.
+fn box_header(reader: &mut impl Read) -> Option<([u8; 4], Option<u64>)> {
+    let mut header = [0u8; 8];
+    reader.read_exact(&mut header).ok()?;
+    let kind = header[4..].try_into().ok()?;
+    let length = match u32::from_be_bytes(header[..4].try_into().ok()?) {
+        0 => None,
+        1 => {
+            let mut large = [0u8; 8];
+            reader.read_exact(&mut large).ok()?;
+            Some(u64::from_be_bytes(large).checked_sub(16)?)
+        }
+        n => Some(u64::from(n).checked_sub(8)?),
+    };
+    Some((kind, length))
 }
 
 /// Timescale of a media header box.
@@ -301,8 +403,12 @@ fn split_box(data: &[u8]) -> Option<([u8; 4], &[u8], &[u8])> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::iscc::{self, Content, UnitSelection};
+    use crate::iscc::{self, Content};
     use std::path::Path;
+
+    /// Least share of equal bits between an Opus fixture's Content-Code Audio and fpcalc's
+    /// (Titusz, 2026-10-04: up to 7% apart is fine; `no-video-opus.mp4` measured 1 bit of 256).
+    const OPUS_SIMILARITY: f64 = 0.93;
 
     fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -310,17 +416,19 @@ mod tests {
             .join(name)
     }
 
+    /// `demo.m4a` with its sound track declared as a sample entry type no reader knows.
+    fn m4a_with_unknown_track() -> Vec<u8> {
+        let mut bytes = std::fs::read(fixture("demo.m4a")).unwrap();
+        let at = bytes.windows(4).position(|w| w == b"mp4a").unwrap();
+        bytes[at..at + 4].copy_from_slice(b"zzzz");
+        bytes
+    }
+
     #[test]
     fn audio_units_match_iscc_sdk_reference() {
         // Expected values produced by tests/fixtures/expected_audio.py (iscc-sdk with fpcalc).
         let expected: serde_json::Value =
             serde_json::from_str(include_str!("../tests/fixtures/expected_audio.json")).unwrap();
-        let selection = UnitSelection {
-            meta: false,
-            content: false,
-            data: true,
-            instance: true,
-        };
         for (file, want) in expected.as_object().unwrap() {
             let path = fixture(file);
             let bytes = std::fs::read(&path).unwrap();
@@ -334,17 +442,16 @@ mod tests {
             let unit = iscc::content_unit(Content::Audio(&audio.fingerprint));
             match want["audio"].as_str() {
                 None => assert!(unit.is_err(), "{file} is too short"),
+                // Opus goes through another decoder than fpcalc's.
+                Some(code) if file.contains("opus") => {
+                    let similar = iscc::similarity(&unit.unwrap().iscc, code).unwrap();
+                    assert!(similar >= Some(OPUS_SIMILARITY), "{file}: {similar:?}");
+                }
                 Some(code) => assert_eq!(unit.unwrap().iscc, code, "{file} Content-Code Audio"),
             }
-            let units = iscc::units_for(
-                &bytes,
-                Content::Audio(&audio.fingerprint),
-                Default::default(),
-                &selection,
-            )
-            .unwrap();
-            assert_eq!(units[0].iscc, want["data"], "{file} Data-Code");
-            assert_eq!(units[1].iscc, want["instance"], "{file} Instance-Code");
+            let [data, instance] = iscc::bitstream_units(&bytes).unwrap();
+            assert_eq!(data.iscc, want["data"], "{file} Data-Code");
+            assert_eq!(instance.iscc, want["instance"], "{file} Instance-Code");
         }
     }
 
@@ -372,6 +479,83 @@ mod tests {
         assert_eq!(mp4_priming(&mp3, 44100), 0);
     }
 
+    /// An ISO BMFF box of `kind` around `body`.
+    fn bmff_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(body.len() + 8).unwrap();
+        [&size.to_be_bytes()[..], kind, body].concat()
+    }
+
+    /// A movie box with one track per media handler type.
+    fn movie(handlers: &[&[u8; 4]]) -> Vec<u8> {
+        let tracks: Vec<u8> = handlers
+            .iter()
+            .flat_map(|handler| {
+                let hdlr = bmff_box(b"hdlr", &[&[0; 8][..], &handler[..], &[0; 12]].concat());
+                bmff_box(b"trak", &bmff_box(b"mdia", &hdlr))
+            })
+            .collect();
+        bmff_box(b"moov", &tracks)
+    }
+
+    #[test]
+    fn sound_only_means_a_sound_track_and_no_video_track() {
+        for file in ["no-video.mp4", "no-video.mov", "demo.m4a"] {
+            assert!(
+                sound_only(&fixture(file)),
+                "{file}: movie box after the media data"
+            );
+        }
+        let videos = [
+            "demo.mp4",
+            "demo.mov",
+            "demo.m4v",
+            "rotated.mp4",
+            "demo.avi",
+        ];
+        for file in videos.into_iter().chain(["demo.mp3", "missing.mp4"]) {
+            assert!(!sound_only(&fixture(file)), "{file}");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let ftyp = bmff_box(b"ftyp", b"isom\0\0\0\0isom");
+        let mut large_mdat = [&1u32.to_be_bytes()[..], b"mdat", &20u64.to_be_bytes()].concat();
+        large_mdat.extend([0; 4]);
+        let sound = movie(&[b"soun", b"text"]);
+        let cases: [(&str, Vec<u8>, bool); 6] = [
+            (
+                "movie first",
+                [&ftyp[..], &sound, &bmff_box(b"mdat", &[0; 9])].concat(),
+                true,
+            ),
+            (
+                "64-bit media data size",
+                [&ftyp[..], &large_mdat, &sound].concat(),
+                true,
+            ),
+            (
+                "sound and video",
+                [&ftyp[..], &movie(&[b"soun", b"vide"])].concat(),
+                false,
+            ),
+            ("no sound", [&ftyp[..], &movie(&[b"text"])].concat(), false),
+            (
+                "media data to the end",
+                [&ftyp[..], &[0, 0, 0, 0], b"mdat", &sound].concat(),
+                false,
+            ),
+            (
+                "truncated movie",
+                [&ftyp[..], &sound[..sound.len() - 1]].concat(),
+                false,
+            ),
+        ];
+        for (case, bytes, want) in cases {
+            let path = dir.path().join("case.mp4");
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(sound_only(&path), want, "{case}");
+        }
+    }
+
     #[test]
     fn downmix_averages_the_channels() {
         let mut mono = Vec::new();
@@ -386,6 +570,42 @@ mod tests {
     #[test]
     fn unreadable_audio_is_an_error() {
         let format = formats::by_path(Path::new("x.mp3")).unwrap();
-        assert!(analyse(b"not audio at all", format).is_err());
+        let error = analyse(b"not audio at all", format).unwrap_err();
+        assert!(error.downcast_ref::<Undecodable>().is_none(), "{error:#}");
+        assert!(read(b"not audio at all", format).is_err());
+    }
+
+    #[test]
+    fn audio_that_does_not_decode_has_a_reason_in_place_of_its_content() {
+        let m4a = formats::by_path(Path::new("x.m4a")).unwrap();
+        let mp4 = formats::sound_only(formats::by_path(Path::new("x.mp4")).unwrap()).unwrap();
+        // An AC-3 track has no decoder; the other file has no track type the MP4 reader knows.
+        let ac3 = std::fs::read(fixture("no-video-ac3.mp4")).unwrap();
+        let cases = [
+            (ac3, mp4, NO_DECODER),
+            (m4a_with_unknown_track(), m4a, NO_TRACK),
+        ];
+        for (bytes, format, reason) in cases {
+            let error = analyse(&bytes, format).unwrap_err();
+            assert_eq!(error.downcast_ref::<Undecodable>(), Some(&reason));
+            let asset = read(&bytes, format).unwrap();
+            assert!(matches!(asset.content, AssetContent::Unavailable(r) if r == reason.0));
+            assert!(
+                asset.metadata.name.is_some(),
+                "the tags are read all the same"
+            );
+            let error = iscc::content_unit(asset.content()).unwrap_err();
+            assert_eq!(error.to_string(), reason.0);
+        }
+    }
+
+    #[test]
+    fn opus_in_an_mp4_decodes_through_the_registered_decoder() {
+        let path = fixture("no-video-opus.mp4");
+        let bytes = std::fs::read(&path).unwrap();
+        let audio = analyse(&bytes, formats::by_path(&path).unwrap()).unwrap();
+        assert!(!audio.fingerprint.is_empty());
+        assert!((audio.seconds - 8.0).abs() < 0.1, "{}", audio.seconds);
+        assert_eq!(mp4_priming(&bytes, 48000), 312, "the pre-skip, as an edit");
     }
 }

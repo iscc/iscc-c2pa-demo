@@ -2,11 +2,16 @@
 
 Run: uv run --with iscc-sdk expected_audio.py
 
-For every audio file in this folder it records the Content-Code Audio (fpcalc's Chromaprint
-fingerprint through `gen_audio_code_v0`, null when fpcalc finds the audio too short), the name,
-description, ISCC metadata, creator and duration `audio_meta_extract` reads with TagLib, the
-256-bit Meta-Code (embedded name, else the file name, as `code_meta` does), the Data-Code and
-the Instance-Code.
+For every audio file in this folder, and for the videos with sound only, it records the
+Content-Code Audio (fpcalc's Chromaprint fingerprint through `gen_audio_code_v0`, null when
+fpcalc finds the audio too short), the name, description, ISCC metadata, creator and duration
+`audio_meta_extract` reads with TagLib, the 256-bit Meta-Code (embedded name, else the file
+name, as `code_meta` does), the Data-Code and the Instance-Code.
+
+The app reads a video with sound only like an M4A. iscc-sdk's `code_iscc` takes any MP4
+container for a video (an M4A too) and raises on it; its audio functions read it fine.
+`no-video-opus.mp4` carries Opus, which the app decodes with another decoder than fpcalc's, so
+its Content-Code Audio may differ from the reference in a few bits.
 """
 
 import json
@@ -21,6 +26,7 @@ from expected_text import meta_code
 HERE = Path(__file__).parent
 BITS = 256
 AUDIO_SUFFIXES = {".mp3", ".flac", ".wav", ".m4a"}
+SOUND_ONLY = {"no-video.mp4", "no-video.mov", "no-video-opus.mp4"}
 
 
 def audio_code(path):
@@ -34,7 +40,7 @@ def audio_code(path):
 
 def main():
     out = {}
-    for path in sorted(p for p in HERE.iterdir() if p.suffix.lower() in AUDIO_SUFFIXES):
+    for path in sorted(p for p in HERE.iterdir() if p.suffix.lower() in AUDIO_SUFFIXES or p.name in SOUND_ONLY):
         data = path.read_bytes()
         meta = idk.audio_meta_extract(path)
         out[path.name] = {

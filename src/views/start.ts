@@ -11,6 +11,7 @@ const ICONS: Record<AssetKind, string> = {
   image: `<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>`,
   text: `<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>`,
   audio: `<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>`,
+  video: `<rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 10l5-3v10l-5-3z"/>`,
 };
 
 /** The units of each row, as [unit, what it is computed from]; the Content-Code varies by kind. */
@@ -62,7 +63,7 @@ export function startScreen(info: AppInfo | null, error: string | null): string 
     <div class="empty">
       <div class="dropzone" data-action="open" role="button" tabindex="0">
         <div class="ring"><div class="dot"></div></div>
-        <h1>Drop an image, a document or an audio file</h1>
+        <h1>Drop an image, a document, an audio or a video file</h1>
         <p>See its Content Credentials and ISCC, or sign it with an ISCC soft binding.</p>
         ${formatsTable(info?.kinds ?? [])}
         ${error ? `<p class="banner error">${esc(error)}</p>` : ""}

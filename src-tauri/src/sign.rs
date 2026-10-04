@@ -3,6 +3,7 @@
 //! RFC 3161 timestamp.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::Cursor;
 use std::path::Path;
 
@@ -20,6 +21,7 @@ use crate::iscc::{self, IsccUnit, MetaInput, UnitSelection};
 use crate::metadata;
 use crate::thumbnail::{self, THUMBNAIL_EDGE, THUMBNAIL_MIME, THUMBNAIL_QUALITY};
 use crate::timestamp::{BestEffortTsa, FailureSlot};
+use crate::tools::Cancelled;
 
 /// Signing request as sent by the UI.
 #[derive(Deserialize, Debug)]
@@ -38,7 +40,8 @@ pub struct SignRequest {
     /// None records no source type, which the C2PA specification allows for an ingredient.
     #[serde(default)]
     pub source_type: Option<String>,
-    /// ISCC unit slugs to embed: meta, the Content-Code (image, text or audio), data, instance.
+    /// ISCC unit slugs to embed: meta, the Content-Code (image, text, audio or video), data,
+    /// instance.
     pub units: Vec<String>,
     /// CAWG training-mining entries keyed by use case label (e.g. `cawg.ai_training`).
     #[serde(default)]
@@ -95,22 +98,44 @@ pub enum TimestampOutcome {
     Failed { url: String, reason: String },
 }
 
+/// Where a signing run is: analysing the source, about to sign and write the copy, or analysing
+/// the signed copy to check it.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Stage {
+    Source,
+    /// Reported once, before anything is written: the last moment to stop without an output.
+    Write,
+    Output,
+}
+
 /// Sign `request.source` into `request.output`.
 pub fn sign(request: &SignRequest) -> Result<SignResult> {
+    sign_with(request, &|_, _| true)
+}
+
+/// [`sign`], with `progress` following the analysis of a video source and of its signed copy:
+/// the stage, the share of the duration decoded (`None` when unknown); false stops it. A video
+/// just inspected is not decoded again, nor is a copy that provably carries the source's video.
+/// Between the two, `progress` hears [`Stage::Write`] for every format: stopped there or before,
+/// the run leaves no output; after it the output is written and stays.
+pub fn sign_with(
+    request: &SignRequest,
+    progress: &dyn Fn(Stage, Option<f64>) -> bool,
+) -> Result<SignResult> {
     let source = Path::new(&request.source);
     let output = Path::new(&request.output);
     if same_file(source, output) {
         bail!("choose an output path different from the source file");
     }
-    let bytes =
-        std::fs::read(source).with_context(|| format!("cannot read {}", source.display()))?;
     let format = inspect::asset_format(source)?;
     let mime = format.mime;
 
     // IEP-0020: every unit is generated from the source as a whole, including any Content
     // Credentials it already carries.
     let selection = UnitSelection::from_slugs(&request.units);
-    let asset = asset::read(source, &bytes, format)?;
+    let loaded = asset::load(source, format, &|f| progress(Stage::Source, f))?;
+    let asset = &loaded.asset;
     if let Some(block) = asset.sign_block {
         bail!("{block}");
     }
@@ -119,7 +144,7 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
         description: request.description.as_deref(),
         meta: request.meta.as_deref(),
     };
-    let units = iscc::units_for(&bytes, asset.content(), meta, &selection)?;
+    let units = iscc::units_for(&loaded.bitstream, asset.content(), meta, &selection)?;
     if units.is_empty() {
         bail!("select at least one ISCC unit for the soft binding");
     }
@@ -136,14 +161,8 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
         "format": mime,
     }))?;
     builder.set_intent(BuilderIntent::Edit);
-    add_parent(
-        &mut builder,
-        source,
-        &bytes,
-        mime,
-        request.source_type.as_deref(),
-    )?;
-    add_thumbnail(&mut builder, &asset)?;
+    add_parent(&mut builder, source, mime, request.source_type.as_deref())?;
+    add_thumbnail(&mut builder, asset)?;
 
     let soft_binding: SoftBinding = serde_json::from_value(json!({
         "alg": ISCC_SOFT_BINDING_ALG,
@@ -166,6 +185,9 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
         )?;
     }
 
+    if !progress(Stage::Write, None) {
+        return Err(Cancelled.into());
+    }
     // c2pa refuses to write onto an existing file, so sign into a sibling temp file and move it
     // over the output only once signing succeeded; a failure leaves any previous output intact.
     let tmp = temp_sibling(output)?;
@@ -176,7 +198,10 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
     }
     std::fs::rename(&tmp, output)
         .with_context(|| format!("cannot replace {}", output.display()))?;
-    let inspection = inspect::inspect(output)?;
+    let copy_format = inspect::asset_format(output)?;
+    let copy =
+        asset::load_signed_copy(output, copy_format, asset, &|f| progress(Stage::Output, f))?;
+    let inspection = inspect::inspect_loaded(output, copy_format, copy)?;
     Ok(SignResult {
         output: output.to_string_lossy().into_owned(),
         units,
@@ -266,21 +291,22 @@ fn temp_sibling(output: &Path) -> Result<std::path::PathBuf> {
     Ok(output.with_file_name(format!("~{}", name.to_string_lossy())))
 }
 
-/// Record the source as the parent ingredient; with the edit intent c2pa then adds the
-/// `c2pa.opened` action that references it. A source without Content Credentials gets the
-/// digital source type chosen by the user, if any.
+/// Record the source as the parent ingredient, read from its file; with the edit intent c2pa
+/// then adds the `c2pa.opened` action that references it. A source without Content Credentials
+/// gets the digital source type chosen by the user, if any.
 fn add_parent(
     builder: &mut Builder,
     source: &Path,
-    bytes: &[u8],
     mime: &str,
     source_type: Option<&str>,
 ) -> Result<()> {
     let title = source.file_name().map(|n| n.to_string_lossy().into_owned());
+    let mut file =
+        File::open(source).with_context(|| format!("cannot read {}", source.display()))?;
     let parent = builder.add_ingredient_from_stream(
         json!({ "title": title, "relationship": "parentOf" }).to_string(),
         mime,
-        &mut Cursor::new(bytes),
+        &mut file,
     )?;
     if let (None, Some(source_type)) = (parent.active_manifest(), source_type) {
         let dst: DigitalSourceType = serde_json::from_value(json!(source_type))
@@ -833,6 +859,7 @@ mod tests {
         // PDF a full rewrite by lopdf. No source view: zip containers (collection hash) and M4A
         // (BMFF hash).
         use Preservation::*;
+        crate::tools::tests::ensure_ffmpeg();
         let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-formats-all");
         std::fs::create_dir_all(&dir).unwrap();
         let cases = [
@@ -853,6 +880,10 @@ mod tests {
             ("demo.odt", NoSourceView),
             ("demo.ods", NoSourceView),
             ("demo.odp", NoSourceView),
+            ("demo.mp4", NoSourceView),
+            ("demo.mov", NoSourceView),
+            ("demo.m4v", NoSourceView),
+            ("demo.avi", Changed),
         ];
         let mut failures = Vec::new();
         for (file, expected) in cases {
@@ -1032,6 +1063,98 @@ mod tests {
     }
 
     #[test]
+    fn signing_a_video_does_not_decode_its_copy() {
+        crate::tools::tests::ensure_ffmpeg();
+        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-video-copy");
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in [
+            "demo.mp4",
+            "demo.mov",
+            "demo.m4v",
+            "demo.avi",
+            "rotated.mp4",
+        ] {
+            let output = dir.join(file);
+            let _ = std::fs::remove_file(&output);
+            let mut req = request(file, &output);
+            req.units = vec!["video".into(), "data".into(), "instance".into()];
+            let copy_reports = std::cell::Cell::new(0);
+            let result = sign_with(&req, &|stage, _| {
+                if stage == Stage::Output {
+                    copy_reports.set(copy_reports.get() + 1);
+                }
+                true
+            })
+            .unwrap();
+            assert_eq!(copy_reports.get(), 0, "{file}: the copy is not decoded");
+            assert!(result.inspection.content_from_source, "{file}");
+            let decoded = crate::video::read_fixture(&output).unwrap();
+            let want = iscc::content_unit(decoded.content()).unwrap().iscc;
+            let shown = &result.inspection.iscc;
+            let content = shown.iter().find(|u| u.unit == "content").unwrap();
+            assert_eq!(content.iscc, want, "{file}: as decoding the copy gives");
+            assert_eq!(result.units[0].iscc, want, "{file}: as embedded");
+        }
+    }
+
+    #[test]
+    fn a_video_replaced_after_its_analysis_lends_its_copy_no_frames() {
+        crate::tools::tests::ensure_ffmpeg();
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("demo.mp4");
+        std::fs::copy(fixture("demo.mp4"), &source).unwrap();
+        let output = dir.path().join("demo-signed.mp4");
+        let mut req = request("demo.mp4", &output);
+        req.source = source.to_string_lossy().into_owned();
+        req.units = vec!["video".into(), "data".into(), "instance".into()];
+        // Analysed as demo.mp4, written from rotated.mp4.
+        let result = sign_with(&req, &|stage, _| {
+            if stage == Stage::Write {
+                std::fs::copy(fixture("rotated.mp4"), &source).unwrap();
+            }
+            true
+        })
+        .unwrap();
+        assert!(
+            !result.inspection.content_from_source,
+            "the copy is decoded"
+        );
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/expected_video.json")).unwrap();
+        let shown = &result.inspection.iscc;
+        let content = shown.iter().find(|u| u.unit == "content").unwrap();
+        assert_eq!(
+            content.iscc, expected["rotated.mp4"]["video"],
+            "the copy's own"
+        );
+        assert_eq!(
+            result.units[0].iscc, expected["demo.mp4"]["video"],
+            "as analysed"
+        );
+    }
+
+    #[test]
+    fn stopping_before_the_copy_is_written_leaves_no_output() {
+        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-stop-before-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("no_manifest-signed.jpg");
+        let stages = std::cell::RefCell::new(Vec::new());
+        let error = sign_with(&request("no_manifest.jpg", &output), &|stage, _| {
+            stages.borrow_mut().push(stage);
+            stage != Stage::Write
+        })
+        .unwrap_err();
+        assert!(error.downcast_ref::<Cancelled>().is_some(), "{error:#}");
+        assert_eq!(stages.into_inner(), [Stage::Write]);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "nothing written"
+        );
+    }
+
+    #[test]
     fn signed_files_carry_one_jpeg_thumbnail() {
         let with_picture = [
             "no_manifest.jpg",
@@ -1045,6 +1168,7 @@ mod tests {
             "demo.odt",
             "demo.pptx",
             "withcover.mp3",
+            "demo.mp4",
         ];
         let without_picture = [
             "demo.docx",
@@ -1053,7 +1177,9 @@ mod tests {
             "demo.md",
             "demo.mp3",
             "demo.m4a",
+            "no-video.mp4",
         ];
+        crate::tools::tests::ensure_ffmpeg();
         let cases = with_picture
             .iter()
             .map(|f| (*f, true))
@@ -1323,7 +1449,7 @@ mod tests {
             .unwrap();
         builder.set_intent(BuilderIntent::Edit);
         let digital_capture = "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture";
-        add_parent(&mut builder, &copy, &bytes, mime, Some(digital_capture)).unwrap();
+        add_parent(&mut builder, &copy, mime, Some(digital_capture)).unwrap();
         builder
             .add_assertion(labels::SOFT_BINDING, &soft_binding)
             .unwrap();

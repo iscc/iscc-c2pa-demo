@@ -91,13 +91,13 @@ impl Concrete {
     }
 }
 
-/// lofty's file type of an audio MIME type.
+/// lofty's file type of a MIME type that sound is read from (sound-only MP4s too).
 fn file_type(mime: &str) -> Option<FileType> {
     Some(match mime {
         formats::MP3 => FileType::Mpeg,
         formats::FLAC => FileType::Flac,
         formats::WAV => FileType::Wav,
-        formats::M4A => FileType::Mp4,
+        mime if formats::is_bmff(mime) => FileType::Mp4,
         _ => return None,
     })
 }

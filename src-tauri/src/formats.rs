@@ -12,11 +12,12 @@ pub enum Kind {
     Image,
     Text,
     Audio,
+    Video,
 }
 
 impl Kind {
     /// Every kind, in display order.
-    pub const ALL: [Kind; 3] = [Kind::Image, Kind::Text, Kind::Audio];
+    pub const ALL: [Kind; 4] = [Kind::Image, Kind::Text, Kind::Audio, Kind::Video];
 
     /// Plural display name, as used in file dialogs.
     pub fn label(self) -> &'static str {
@@ -24,6 +25,7 @@ impl Kind {
             Kind::Image => "Images",
             Kind::Text => "Documents",
             Kind::Audio => "Audio",
+            Kind::Video => "Video",
         }
     }
 
@@ -33,6 +35,7 @@ impl Kind {
             Kind::Image => "image",
             Kind::Text => "text",
             Kind::Audio => "audio",
+            Kind::Video => "video",
         }
     }
 }
@@ -88,6 +91,10 @@ pub const MP3: &str = "audio/mpeg";
 pub const FLAC: &str = "audio/flac";
 pub const WAV: &str = "audio/wav";
 pub const M4A: &str = "audio/mp4";
+pub const MP4: &str = "video/mp4";
+pub const MOV: &str = "video/quicktime";
+pub const M4V: &str = "video/x-m4v";
+pub const AVI: &str = "video/x-msvideo";
 
 /// Every supported format. c2pa-rs 0.91 embeds manifests into all of them; PDF needs its `pdf`
 /// feature, TXT and Markdown its `unstable_plain_text` and `unstable_structured_text` features.
@@ -118,7 +125,30 @@ pub const FORMATS: &[Format] = &[
     signable(&["flac"], FLAC, Kind::Audio, "FLAC", "FLAC"),
     signable(&["wav"], WAV, Kind::Audio, "WAV", "WAV"),
     signable(&["m4a"], M4A, Kind::Audio, "M4A", "M4A"),
+    signable(&["mp4"], MP4, Kind::Video, "MP4", "MP4"),
+    signable(&["mov"], MOV, Kind::Video, "QuickTime (MOV)", "MOV"),
+    signable(&["m4v"], M4V, Kind::Video, "M4V", "M4V"),
+    signable(&["avi"], AVI, Kind::Video, "AVI", "AVI"),
 ];
+
+/// MP4, QuickTime and M4V files with sound but no video, read like an M4A for a Content-Code
+/// Audio and signed as what they are.
+const SOUND_ONLY: &[Format] = &[
+    signable(&["mp4"], MP4, Kind::Audio, "MP4 audio", "MP4"),
+    signable(&["mov"], MOV, Kind::Audio, "QuickTime audio (MOV)", "MOV"),
+    signable(&["m4v"], M4V, Kind::Audio, "M4V audio", "M4V"),
+];
+
+/// The audio reading of a video format whose files may carry sound only; `None` for any other
+/// format.
+pub fn sound_only(format: &Format) -> Option<&'static Format> {
+    SOUND_ONLY.iter().find(|f| f.mime == format.mime)
+}
+
+/// Whether files of this MIME type are ISO BMFF containers (the MP4 family).
+pub fn is_bmff(mime: &str) -> bool {
+    matches!(mime, M4A | MP4 | MOV | M4V)
+}
 
 /// Format of the file at `path`, from its extension (case-insensitive).
 pub fn by_path(path: &Path) -> Option<&'static Format> {
@@ -159,6 +189,19 @@ mod tests {
     }
 
     #[test]
+    fn mp4_family_videos_may_be_sound_only() {
+        for format in FORMATS.iter().filter(|f| f.kind == Kind::Video) {
+            let audio = sound_only(format);
+            assert_eq!(audio.is_some(), is_bmff(format.mime), "{}", format.mime);
+            if let Some(audio) = audio {
+                assert_eq!(audio.kind, Kind::Audio);
+                assert_eq!(audio.extensions, format.extensions);
+            }
+        }
+        assert!(sound_only(by_path(Path::new("x.m4a")).unwrap()).is_none());
+    }
+
+    #[test]
     fn c2pa_accepts_every_mime_type() {
         // Every format must be one c2pa can embed into and read from.
         for format in FORMATS {
@@ -181,6 +224,7 @@ mod tests {
         }
         assert!(extensions(Kind::Text).contains(&"epub"));
         assert!(extensions(Kind::Audio).contains(&"m4a"));
+        assert_eq!(extensions(Kind::Video), ["mp4", "mov", "m4v", "avi"]);
     }
 
     #[test]

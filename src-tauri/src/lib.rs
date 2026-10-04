@@ -11,6 +11,7 @@ pub mod iscc;
 pub mod metadata;
 pub mod numfmt;
 pub mod office;
+pub mod opus;
 pub mod pdf;
 pub mod plain;
 pub mod resample;
@@ -18,10 +19,14 @@ pub mod sign;
 pub mod svg;
 pub mod thumbnail;
 pub mod timestamp;
+pub mod tools;
+pub mod video;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::{LogicalSize, Manager, WebviewWindow};
 
 /// Static facts the UI needs once at startup.
@@ -107,20 +112,116 @@ fn meta_code(
     .map_err(|e| format!("{e:#}"))
 }
 
+/// How far a video analysis got, for the progress bar.
+#[derive(Serialize, Clone)]
+struct Progress<S> {
+    /// `inspect` (the opened file), or the [`sign::Stage`] of a signing: `source` (the file
+    /// being signed), `write` (the signed copy is about to be written, which cannot be stopped)
+    /// or `output` (the signed copy, checked after signing).
+    stage: S,
+    /// Share of the duration decoded; `None` when the duration is unknown.
+    fraction: Option<f64>,
+}
+
+/// How much of a tool's download arrived.
+#[derive(Serialize, Clone)]
+struct Download {
+    received: u64,
+    total: u64,
+}
+
+/// Generation of the long tasks the UI waits for; [`cancel_tasks`] moves it on, and every task
+/// started before stops at its next progress report.
+static TASKS: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the UI still waits for a task started in `generation`.
+fn still_wanted(generation: u64) -> bool {
+    TASKS.load(Ordering::SeqCst) == generation
+}
+
+/// Stop the video analyses and downloads that run now.
 #[tauri::command]
-async fn inspect_asset(path: String) -> Result<inspect::Inspection, String> {
+fn cancel_tasks() {
+    TASKS.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Inspect the file at `path`, reporting the progress of a video analysis; stopped by
+/// [`cancel_tasks`].
+#[tauri::command]
+async fn inspect_asset(
+    path: String,
+    on_progress: Channel<Progress<&'static str>>,
+) -> Result<inspect::Inspection, String> {
+    let generation = TASKS.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        inspect::inspect(&PathBuf::from(path)).map_err(|e| format!("{e:#}"))
+        let progress = |fraction| {
+            let _ = on_progress.send(Progress {
+                stage: "inspect",
+                fraction,
+            });
+            still_wanted(generation)
+        };
+        inspect::inspect_with(&PathBuf::from(path), &progress).map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
+/// Sign as `request` says, reporting the stages and the progress of video analyses; stopped by
+/// [`cancel_tasks`] until the signed copy is written.
 #[tauri::command]
-async fn sign_asset(request: sign::SignRequest) -> Result<sign::SignResult, String> {
-    tauri::async_runtime::spawn_blocking(move || sign::sign(&request).map_err(|e| format!("{e:#}")))
-        .await
-        .map_err(|e| e.to_string())?
+async fn sign_asset(
+    request: sign::SignRequest,
+    on_progress: Channel<Progress<sign::Stage>>,
+) -> Result<sign::SignResult, String> {
+    let generation = TASKS.load(Ordering::SeqCst);
+    tauri::async_runtime::spawn_blocking(move || {
+        let progress = |stage, fraction| {
+            let _ = on_progress.send(Progress { stage, fraction });
+            still_wanted(generation)
+        };
+        sign::sign_with(&request, &progress).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Whether opening the file at `path` needs ffmpeg: a video does, unless it carries sound only.
+/// False when the file has no supported format, which the inspection then reports.
+#[tauri::command]
+async fn needs_ffmpeg(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        inspect::asset_format(&PathBuf::from(path)).is_ok_and(|f| f.kind == formats::Kind::Video)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Whether ffmpeg, which videos need, is installed, and what installing it means.
+#[tauri::command]
+fn ffmpeg_status() -> tools::Status {
+    tools::ffmpeg_status()
+}
+
+/// Download and install ffmpeg, reporting the bytes received; returns its new status.
+#[tauri::command]
+async fn install_ffmpeg(on_progress: Channel<Download>) -> Result<tools::Status, String> {
+    let generation = TASKS.load(Ordering::SeqCst);
+    tauri::async_runtime::spawn_blocking(move || {
+        // Reads arrive in pieces of a few KB; half a megabyte apart is enough for the bar.
+        let mut sent = 0;
+        tools::install_ffmpeg(&mut |received, total| {
+            if received == total || received - sent >= 1 << 19 {
+                sent = received;
+                let _ = on_progress.send(Download { received, total });
+            }
+            still_wanted(generation)
+        })
+        .map_err(|e| format!("{e:#}"))?;
+        Ok(tools::ffmpeg_status())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Size that fits into `room`: each side of `want` capped at the room available.
@@ -185,7 +286,11 @@ pub fn run() {
             initial_path,
             meta_code,
             inspect_asset,
-            sign_asset
+            sign_asset,
+            cancel_tasks,
+            needs_ffmpeg,
+            ffmpeg_status,
+            install_ffmpeg
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -54,7 +54,8 @@ html-escape = "0.2.15"
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 # Audio: demuxing and decoding of the formats c2pa-rs can sign (MP3, FLAC, WAV, M4A with AAC or
 # ALAC; the ID3 and APE readers let symphonia skip tags), Chromaprint (bit-exact with fpcalc's
-# TEST2 algorithm) and tags with cover art.
+# TEST2 algorithm) and tags with cover art. rusty-opus decodes Opus tracks of MP4 containers,
+# which symphonia reads but cannot decode (src/opus.rs registers it as a symphonia decoder).
 symphonia = { version = "0.6.1", default-features = false, features = [
   "opt-simd",
   "all-meta",
@@ -67,6 +68,7 @@ symphonia = { version = "0.6.1", default-features = false, features = [
   "isomp4",
 ] }
 rusty-chromaprint = "0.3.0"
+rusty-opus = "0.9.1"
 lofty = "0.25.4"
 # PDF text and rendering through the pdfium library bundled with the app (scripts/fetch_pdfium.py
 # pins the build), bound at run time, so a missing library is an inspection error. Only the raw C
@@ -77,6 +79,12 @@ pdfium-render = { version = "0.9.4", default-features = false, features = [
 ] }
 # PDF metadata (docinfo and XMP); the version and features c2pa's `pdf` feature pulls in.
 lopdf = "0.45.0"
+# Video: ffmpeg installed on first use into the local data folder (tools.rs), its archive checked
+# with BLAKE3 like iscc-sdk does, signatures written to a temporary folder. All three are in the
+# tree already (c2pa, Tauri).
+blake3 = "1.8"
+dirs = "6"
+tempfile = "3"
 
 [features]
 # The c2pa-iscc command-line tool. Off by default, because `tauri build` puts every binary whose

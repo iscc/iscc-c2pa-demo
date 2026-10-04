@@ -12,7 +12,7 @@
 <p align="center">
   <b>Match Content Credentials to their content, even after it changes.</b><br>
   An open source demo of the International Standard Content Code (ISCC)<br>
-  as a soft binding in C2PA Content Credentials. Inspect and sign images, documents and audio.
+  as a soft binding in C2PA Content Credentials. Inspect and sign images, documents, audio and video.
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@ A **soft binding** links credentials to the content itself, so a service can fin
 of a copy again. This demo uses ISCC (ISO 24138:2024), an open content code that anyone can
 calculate from the file, without registration. With the app you can:
 
-1. Inspect an image, document or audio file: who signed its Content Credentials, when, whether the
+1. Inspect an image, document, audio or video file: who signed its Content Credentials, when, whether the
    signature holds, and what its ISCC is.
 2. Sign a copy whose Content Credentials carry the ISCC and, if you choose, whether AI training and
    data mining is allowed.
@@ -49,7 +49,7 @@ calculate from the file, without registration. With the app you can:
 
 ISCC has been on the C2PA list of soft binding algorithms as `io.iscc.v0` since 2024. This demo
 runs it end to end with [c2pa-rs](https://github.com/contentauth/c2pa-rs), the open source C2PA SDK
-of the Content Authenticity Initiative, across 19 file formats.
+of the Content Authenticity Initiative, across 24 file formats.
 
 A watermark has to be embedded in the content and needs a decoder to read it back. An ISCC is
 calculated from the content as it is, so you can calculate it again from any copy, with any
@@ -79,7 +79,7 @@ body, concatenated. CBOR stores the value as a byte string; the JSON view shows 
 Next to it, the app writes a `cawg.metadata` assertion with the title and description behind the
 Meta-Code, an optional `cawg.training-mining` assertion, and an RFC 3161 timestamp. When the file
 has a picture (the image itself, the first page of a PDF, a book cover, the thumbnail a document
-was saved with, or cover art), signing also stores a 256 px JPEG thumbnail of it. When you open a signed file, the
+was saved with, cover art, or a frame of a video), signing also stores a 256 px JPEG thumbnail of it. When you open a signed file, the
 Content Credentials tab shows the thumbnail from its manifest next to the file, so you can check
 by eye that the two belong together.
 [DEVELOPMENT.md](DEVELOPMENT.md#notes-on-the-soft-binding) explains how each unit is calculated
@@ -96,7 +96,8 @@ so the download page shows you how to open them the first time.
 |---|---|
 | Images | JPEG, PNG, WebP, GIF, TIFF, SVG |
 | Documents | PDF, EPUB, DOCX, PPTX, XLSX, ODT, ODS, ODP, TXT, Markdown |
-| Audio | MP3, FLAC, WAV, M4A |
+| Audio | MP3, FLAC, WAV, M4A; MP4, MOV and M4V with sound only |
+| Video | MP4, MOV, M4V, AVI |
 
 ## Good to know
 
@@ -111,16 +112,23 @@ so the download page shows you how to open them the first time.
   list shows as "Valid, signer on a trust list". Timestamps are checked against both lists.
 - **A matching ISCC shows similar content.** It is a strong signal, not proof, that two files hold
   the same or similar content. It says nothing about who made them or who holds the rights.
-- **Your files stay on your computer.** Inspecting works offline. When you sign, only a hash of the
-  signature goes to a timestamp service.
+- **Video needs ffmpeg, downloaded once.** The MPEG-7 frame signatures behind the Content-Code
+  Video, and the tags behind a video's Meta-Code, come from ffmpeg. The first time you open a
+  video, the app offers to download the build that iscc-sdk uses (about 70 MB on Windows and
+  Linux, 25 MB on macOS) and checks it before it runs. Without it, a video still shows its
+  Content Credentials, Data-Code and Instance-Code. ffmpeg is GPL software and runs as a separate
+  program; nothing else in the app needs it.
+- **Your files stay on your computer.** Inspecting works offline, once ffmpeg is there for video.
+  When you sign, only a hash of the signature goes to a timestamp service.
 
 ## For developers
 
 The core is Rust, and the app runs on [Tauri 2](https://tauri.app). It uses
 [c2pa-rs](https://crates.io/crates/c2pa) 0.91 with Rust native crypto (no OpenSSL),
 [iscc-lib](https://crates.io/crates/iscc-lib) for the ISCC units, pure Rust readers for every
-other format, and the [pdfium](https://pdfium.googlesource.com/pdfium/) library bundled with the
-app for PDF, so you need no external tools and no Python. The tests check every ISCC unit against
+other format, the [pdfium](https://pdfium.googlesource.com/pdfium/) library bundled with the
+app for PDF, and ffmpeg for video, which the app downloads on first use. You need no other tools
+and no Python. The tests check every ISCC unit against
 iscc-core, the ISCC reference implementation, and iscc-sdk.
 
 The same core builds as `c2pa-iscc`, a command-line tool that prints JSON.

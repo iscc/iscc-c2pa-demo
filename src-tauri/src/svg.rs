@@ -371,13 +371,8 @@ mod tests {
                 want["meta_code"],
                 "{file} Meta-Code"
             );
-            let selection = iscc::UnitSelection {
-                content: true,
-                ..Default::default()
-            };
-            let units =
-                iscc::units_for(&[], asset.content(), Default::default(), &selection).unwrap();
-            assert_eq!(units[0].iscc, want["image"], "{file} Content-Code Image");
+            let unit = iscc::content_unit(asset.content()).unwrap();
+            assert_eq!(unit.iscc, want["image"], "{file} Content-Code Image");
         }
     }
 

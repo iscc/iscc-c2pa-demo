@@ -42,7 +42,7 @@ interface UnitOption {
   desc: string;
 }
 
-/** The Content-Code offered for an asset: image, text or audio. */
+/** The Content-Code offered for an asset: image, text, audio or video. */
 function contentOption(inspection: Inspection): UnitOption {
   if (inspection.kind === "text") {
     return {
@@ -58,6 +58,14 @@ function contentOption(inspection: Inspection): UnitOption {
       unit: "content",
       title: "Content-Code Audio",
       desc: `Chromaprint fingerprint of the ${contentSource(inspection)}. Survives re-encoding, format changes and metadata edits.`,
+    };
+  }
+  if (inspection.kind === "video") {
+    return {
+      slug: "video",
+      unit: "content",
+      title: "Content-Code Video",
+      desc: "MPEG-7 signatures of the video frames, five per second. Survives re-encoding, resizing and container changes.",
     };
   }
   return {
@@ -319,7 +327,7 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
           hasManifest
             ? ""
             : `<div class="field">
-          <label for="f-source">How was this ${inspection.kind === "image" ? "image" : "file"} made? <span class="hint">(recorded on the parent ingredient)</span></label>
+          <label for="f-source">How was this ${inspection.kind === "image" || inspection.kind === "video" ? inspection.kind : "file"} made? <span class="hint">(recorded on the parent ingredient)</span></label>
           <select id="f-source" name="source_type">
             ${SOURCE_TYPES.map((s) => `<option value="${s.uri}" ${s.uri === form.sourceType ? "selected" : ""}>${esc(s.label)}</option>`).join("")}
           </select>

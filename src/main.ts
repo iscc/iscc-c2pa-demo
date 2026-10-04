@@ -4,11 +4,26 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 
-import { type AppInfo, appInfo, type Inspection, initialPath, inspectAsset, metaCode, signAsset } from "./api";
+import {
+  type AppInfo,
+  appInfo,
+  cancelTasks,
+  ffmpegStatus,
+  type Inspection,
+  initialPath,
+  inspectAsset,
+  installFfmpeg,
+  metaCode,
+  needsFfmpeg,
+  type Progress,
+  signAsset,
+  type ToolStatus,
+} from "./api";
 import logoUrl from "./assets/iscc-logo-black-coral.svg";
 import { copyText, esc, json, listJoin, splitPath } from "./util";
 import { assetCard, unitList } from "./views/asset";
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
+import { type Busy, busyOverlay, downloadProgress, patchProgress, type ToolPrompt, toolOverlay } from "./views/overlay";
 import {
   metaPreviewHint,
   newSignForm,
@@ -29,7 +44,9 @@ interface State {
   inspection: Inspection | null;
   form: SignForm | null;
   tab: Tab;
-  busy: string | null;
+  busy: Busy | null;
+  /** The offer to download ffmpeg before a video is opened, and that download. */
+  tool: ToolPrompt | null;
   error: string | null;
   banner: { text: string; path?: string; note?: string } | null;
   dragging: boolean;
@@ -41,6 +58,7 @@ const state: State = {
   form: null,
   tab: "credentials",
   busy: null,
+  tool: null,
   error: null,
   banner: null,
   dragging: false,
@@ -72,7 +90,8 @@ function render() {
     <main>
       ${inspection ? workspace(inspection) : startScreen(info, state.error)}
       <div class="dropoverlay ${state.dragging ? "active" : ""}"><div class="ring">Drop to inspect</div></div>
-      ${state.busy ? `<div class="busy"><div class="ring" role="status" aria-label="${esc(state.busy)}"></div></div>` : ""}
+      ${state.busy ? busyOverlay(state.busy) : ""}
+      ${state.tool ? toolOverlay(state.tool) : ""}
     </main>`;
   app.querySelectorAll<HTMLElement>(".column").forEach((c, i) => {
     c.scrollTop = scroll[i] ?? 0;
@@ -129,11 +148,77 @@ function workspace(inspection: Inspection): string {
     </div>`;
 }
 
-/** Sequence number of the latest load; results of older loads are discarded. */
+/** Sequence numbers of the latest load and signing; results of older ones are discarded. */
 let loadSeq = 0;
+let signSeq = 0;
 
-/** Load and inspect a file path. */
-async function load(path: string) {
+/** What each stage of a video analysis is called on its progress card. */
+const STAGE_LABEL: Record<Progress["stage"], string> = {
+  inspect: "Fingerprinting the video",
+  source: "Fingerprinting the video to sign",
+  write: "Writing the signed copy",
+  output: "Checking the signed copy",
+};
+
+/** A spinner labelled `label`, until the task reports progress. */
+function spinner(label: string): Busy {
+  return { label, fraction: null, reporting: false, cancellable: false };
+}
+
+/** Show the progress of the video analysis that `busy` waits for: the first report of a stage renders its progress
+ * card, later ones move the bar in place. A report arriving once another task has taken over the overlay is dropped.
+ * Only an analysis that leaves no output behind offers Cancel: writing the signed copy and checking it do not. A
+ * signing without a progress card keeps its spinner while the copy is written. */
+function showProgress(busy: Busy, p: Progress) {
+  if (state.busy !== busy || (p.stage === "write" && !busy.reporting)) return;
+  const label = STAGE_LABEL[p.stage];
+  busy.fraction = p.fraction;
+  if (busy.reporting && busy.label === label) {
+    patchProgress(app, p.fraction);
+    return;
+  }
+  Object.assign(busy, { label, reporting: true, cancellable: p.stage === "inspect" || p.stage === "source" });
+  render();
+}
+
+/** The status of ffmpeg when opening `path` needs it and it can be installed. Null when the file needs none (no
+ * video, or one with sound only), when ffmpeg is installed or has no build for this platform, or when either is
+ * unknown: the inspection then says what is missing. */
+async function missingFfmpeg(path: string): Promise<ToolStatus | null> {
+  if (!(await needsFfmpeg(path).catch(() => false))) return null;
+  const status = await ffmpegStatus().catch(() => null);
+  return status?.available && !status.installed ? status : null;
+}
+
+/** Download ffmpeg as agreed, then open the video that needed it. */
+async function installTool() {
+  const prompt = state.tool;
+  if (!prompt) return;
+  prompt.download = { received: 0, total: prompt.status.bytes ?? 0 };
+  render();
+  try {
+    await installFfmpeg((d) => {
+      if (state.tool !== prompt) return;
+      prompt.download = d;
+      patchProgress(app, ...downloadProgress(d));
+    });
+    if (state.tool !== prompt) return;
+    state.tool = null;
+    await load(prompt.path);
+  } catch (e) {
+    if (state.tool !== prompt) return;
+    state.tool = null;
+    state.error = `ffmpeg could not be installed: ${e}`;
+    render();
+  }
+}
+
+/** Load and inspect a file path. A video with frames needs ffmpeg for its Meta-Code and Content-Code; when it is
+ * missing, the user is offered the download first, unless `offerFfmpeg` is false. The file opened last wins: it
+ * replaces whatever load or signing still runs. */
+async function load(path: string, offerFfmpeg = true) {
+  if (state.tool?.download) return;
+  state.tool = null;
   const ext = splitPath(path).ext.slice(1).toLowerCase();
   if (state.info && !state.info.extensions.includes(ext)) {
     const kinds = listJoin(state.info.kinds.map((k) => `${k.label.toLowerCase()} (${k.extensions.join(", ")})`));
@@ -141,12 +226,28 @@ async function load(path: string) {
     render();
     return;
   }
+  // Taken before the first wait, so that a file opened later, or Close, overtakes this load wherever it is.
   const seq = ++loadSeq;
-  state.busy = "Inspecting";
+  const missing = offerFfmpeg ? await missingFfmpeg(path) : null;
+  // A video still being analysed for the previous file stops first; awaited, so the
+  // cancellation cannot reach the inspection started next.
+  if (seq === loadSeq && state.busy) await cancelTasks().catch((e) => console.error(e));
+  if (seq !== loadSeq) return;
+  // A signing still running is given up with the file it belongs to.
+  signSeq++;
   state.error = null;
+  if (missing) {
+    state.busy = null;
+    state.tool = { path, status: missing, download: null };
+    return render();
+  }
+  const busy = spinner("Inspecting");
+  state.busy = busy;
   render();
   try {
-    const inspection = await inspectAsset(path);
+    const inspection = await inspectAsset(path, (p) => {
+      if (seq === loadSeq) showProgress(busy, p);
+    });
     if (seq !== loadSeq) return;
     state.inspection = inspection;
     state.tab = "credentials";
@@ -180,13 +281,14 @@ async function refreshMetaPreview() {
 }
 
 /** Fresh sign form with its Meta-Code preview. The Meta-Code starts unticked when the file's own
- * title and ISCC metadata cannot produce one (a missing title can still be typed in), the
- * Content-Code when the file has none (audio too short). */
+ * title and ISCC metadata cannot produce one, or its tags were not read (a video without ffmpeg);
+ * a title can still be typed in. The Content-Code starts unticked when the file has none (audio
+ * too short). */
 async function resetSignForm(inspection: Inspection) {
   const form = newSignForm(inspection, state.info?.tsa_presets ?? []);
   state.form = form;
   await refreshMetaPreview();
-  if (form.metaError) form.units.delete("meta");
+  if (form.metaError || inspection.meta_error) form.units.delete("meta");
   if (inspection.content_error) form.units.delete(inspection.kind);
 }
 
@@ -256,21 +358,28 @@ async function submitSign() {
     }
     return;
   }
-  state.busy = "Signing";
+  const seq = ++signSeq;
+  const busy = spinner("Signing");
+  state.busy = busy;
   state.error = null;
   render();
   try {
-    const result = await signAsset(toRequest(form, inspection));
+    const result = await signAsset(toRequest(form, inspection), (p) => {
+      if (seq === signSeq) showProgress(busy, p);
+    });
+    if (seq !== signSeq) return;
     state.inspection = result.inspection;
     state.tab = "credentials";
     const { text, note } = signedMessages(result);
     state.banner = { text, path: result.output, note: note ?? undefined };
     await resetSignForm(result.inspection);
   } catch (e) {
-    state.error = `Signing failed: ${e}`;
+    if (seq === signSeq) state.error = `Signing failed: ${e}`;
   } finally {
-    state.busy = null;
-    render();
+    if (seq === signSeq) {
+      state.busy = null;
+      render();
+    }
   }
 }
 
@@ -334,12 +443,27 @@ async function onClick(target: HTMLElement) {
   }
 }
 
-/** Top-bar and banner actions: open a file, close it, dismiss the messages. */
+/** Stop the running analysis or download in the backend and forget about its result. */
+function cancelRunning() {
+  void cancelTasks().catch((e) => console.error(e));
+  loadSeq++;
+  signSeq++;
+  state.busy = null;
+  state.tool = null;
+}
+
+/** Top-bar, banner and overlay actions: open a file, close it, dismiss the messages, download
+ * ffmpeg or open the video without it, cancel. */
 function onAction(action: string) {
   if (action === "open") return void pickFile();
+  if (action === "install-tool") return void installTool();
+  if (action === "skip-tool" && state.tool) return void load(state.tool.path, false);
+  if (action === "cancel-task" || action === "cancel-tool") {
+    cancelRunning();
+    return render();
+  }
   if (action === "close") {
-    loadSeq++;
-    state.busy = null;
+    cancelRunning();
     state.inspection = null;
     state.form = null;
   }

@@ -1,7 +1,8 @@
 //! Read an asset: file facts, preview, ISCC units and the C2PA manifest store with validation.
 
-use std::borrow::Cow;
 use std::cell::OnceCell;
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context as _, Result};
@@ -11,12 +12,13 @@ use c2pa::{Context, Manifest, Reader, ValidationState};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::asset::{self, AssetContent};
+use crate::asset::{self, AssetContent, Loaded};
 use crate::context::{base_settings, ISCC_SOFT_BINDING_ALG};
 use crate::formats::{self, Format, Kind};
 use crate::iscc::{self, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
-use crate::thumbnail;
+use crate::video::Progress;
+use crate::{audio, thumbnail};
 
 /// JPEG quality of the preview image.
 const PREVIEW_QUALITY: u8 = 82;
@@ -36,15 +38,17 @@ pub struct Inspection {
     /// Decides which Content-Code applies and how the asset is shown.
     pub kind: Kind,
     pub size_bytes: u64,
-    /// Pixel size of an image (the rendered size of an SVG); 0 for text and audio assets.
+    /// Pixel size of an image (the rendered size of an SVG) or of a video's frames; 0 for text and
+    /// audio assets.
     pub width: u32,
     pub height: u32,
     /// JPEG preview as a data URL (the cover or thumbnail of a document); empty when there is
     /// nothing to show.
     pub preview: String,
-    /// Characters of extracted text; `None` for images and audio.
+    /// Characters of extracted text; `None` for images, audio and video.
     pub characters: Option<usize>,
-    /// Length of the decoded audio in seconds; `None` for images and text.
+    /// Length of the decoded audio or of the video in seconds; `None` for images and text, and
+    /// for a video whose duration ffmpeg does not know.
     pub duration_secs: Option<f64>,
     /// Creator named in the asset's own metadata; display only.
     pub creator: Option<String>,
@@ -53,11 +57,16 @@ pub struct Inspection {
     pub iscc: Vec<IsccUnit>,
     /// Title, description and ISCC metadata behind the Meta-Code, and where the title came from.
     pub meta_fields: MetaFields,
-    /// Why the Meta-Code could not be computed from `meta_fields`; `iscc` then lacks it.
+    /// Why the Meta-Code could not be computed from `meta_fields`, or why the file's own tags
+    /// could not be read (a video without ffmpeg); `iscc` then lacks it.
     pub meta_error: Option<String>,
-    /// Why the Content-Code could not be computed (audio too short, a document without text);
-    /// `iscc` then lacks it.
+    /// Why the Content-Code could not be computed (audio too short, a document without text, a
+    /// video without frames or without ffmpeg); `iscc` then lacks it.
     pub content_error: Option<String>,
+    /// The Content-Code is that of the source just signed, whose compressed video this signed
+    /// copy carries unchanged, so it decodes to the same frames; false when it was computed from
+    /// this file's own frames.
+    pub content_from_source: bool,
     /// Why this file cannot be signed (an encrypted PDF); `None` when it can.
     pub sign_block: Option<&'static str>,
     /// What signing does to this file that its owner may not want (breaking a PDF's digital
@@ -234,17 +243,31 @@ pub fn suggested_output(path: &Path) -> PathBuf {
         .expect("some suffix is free")
 }
 
-/// Format of the asset at `path`, from its extension.
+/// Format of the asset at `path`, from its extension; an MP4, MOV or M4V file with sound but no
+/// video is audio ([`audio::sound_only`]), so it gets a Content-Code Audio and needs no ffmpeg.
 pub fn asset_format(path: &Path) -> Result<&'static Format> {
-    formats::by_path(path).ok_or_else(|| anyhow!("unsupported file type"))
+    let format = formats::by_path(path).ok_or_else(|| anyhow!("unsupported file type"))?;
+    Ok(match formats::sound_only(format) {
+        Some(audio) if audio::sound_only(path) => audio,
+        _ => format,
+    })
 }
 
 /// Inspect the file at `path`. The units in `iscc` are those of the whole file; see
 /// [`summarize_assertion`] for what soft bindings are compared with.
 pub fn inspect(path: &Path) -> Result<Inspection> {
-    let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    inspect_with(path, &|_| true)
+}
+
+/// [`inspect`], with `progress` following the analysis of a video.
+pub fn inspect_with(path: &Path, progress: Progress) -> Result<Inspection> {
     let format = asset_format(path)?;
-    let asset = asset::read(path, &bytes, format)?;
+    inspect_loaded(path, format, asset::load(path, format, progress)?)
+}
+
+/// [`inspect`] of the file at `path`, of `format`, loaded as `loaded`.
+pub fn inspect_loaded(path: &Path, format: &'static Format, loaded: Loaded) -> Result<Inspection> {
+    let asset = &loaded.asset;
 
     let (reader, manifest_error) = match read_manifest(path) {
         Ok(reader) => (Some(reader), None),
@@ -266,20 +289,27 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     };
     let meta_fields = metadata::meta_fields(asset.metadata.clone(), manifest_meta, path);
     // An unusable title or ISCC metadata costs only the Meta-Code, audio too short for a
-    // fingerprint only the Content-Code, not the inspection.
-    let (meta, meta_error) = unit_or_error(iscc::meta_unit(meta_input(&meta_fields)));
+    // fingerprint only the Content-Code, not the inspection. Unread tags give no Meta-Code:
+    // one from the fallbacks would differ from the file's own.
+    let (meta, meta_error) = match &asset.content {
+        AssetContent::Unread(reason) => (None, Some((*reason).to_owned())),
+        _ => unit_or_error(iscc::meta_unit(meta_input(&meta_fields))),
+    };
     let (content, content_error) = unit_or_error(iscc::content_unit(asset.content()));
-    let bitstream = [iscc::data_unit(&bytes)?, iscc::instance_unit(&bytes)?];
-    let units: Vec<IsccUnit> = meta.into_iter().chain(content).chain(bitstream).collect();
+    let units: Vec<IsccUnit> = meta
+        .into_iter()
+        .chain(content)
+        .chain(loaded.bitstream.clone())
+        .collect();
     let view = reader
         .as_ref()
         .and_then(source_view_ranges)
         .map(|ranges| {
             if ranges.is_empty() {
                 // Nothing to cut: the source view is the file itself.
-                Ok(SourceView::of_file(path, format, &bytes, &units))
+                Ok(SourceView::of_file(path, format, &units))
             } else {
-                SourceView::new(path, format, source_view(&bytes, &ranges), &units)
+                SourceView::new(path, format, ranges, &units)
             }
         })
         .transpose()?;
@@ -293,6 +323,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .map(|(r, j)| summarize(r, j, path, &compared, view.as_ref()));
     let (width, height) = match &asset.content {
         AssetContent::Image(rgb) => rgb.dimensions(),
+        AssetContent::Video(video) => (video.width, video.height),
         _ => (0, 0),
     };
 
@@ -306,7 +337,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         mime: format.mime,
         format_label: format.label,
         kind: format.kind,
-        size_bytes: bytes.len() as u64,
+        size_bytes: loaded.size,
         width,
         height,
         preview: asset
@@ -320,6 +351,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         },
         duration_secs: match &asset.content {
             AssetContent::Audio(audio) => Some(audio.seconds),
+            AssetContent::Video(video) => video.seconds,
             _ => None,
         },
         creator: asset.metadata.creator.clone(),
@@ -327,6 +359,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         meta_fields,
         meta_error,
         content_error,
+        content_from_source: matches!(&asset.content, AssetContent::Video(v) if v.from_source),
         sign_block: asset.sign_block,
         sign_warning: asset.sign_warning,
         manifest,
@@ -428,23 +461,71 @@ pub(crate) fn data_hash_exclusions(reader: &Reader) -> Option<Vec<(u64, u64)>> {
     Some(ranges)
 }
 
-/// The source view (IEP-0020): `bytes` without the `(start, length)` exclusion ranges, which
-/// may come in any order, overlap or reach past the end.
-pub fn source_view(bytes: &[u8], exclusions: &[(u64, u64)]) -> Vec<u8> {
-    let clamp = |n: u64| usize::try_from(n).unwrap_or(usize::MAX).min(bytes.len());
+/// The parts of a file of `len` bytes that its source view (IEP-0020) keeps, as `(start, end)`
+/// pairs in order: everything but the `(start, length)` exclusion ranges, which may come in any
+/// order, overlap or reach past the end.
+pub fn kept_ranges(len: u64, exclusions: &[(u64, u64)]) -> Vec<(u64, u64)> {
     let mut ranges = exclusions.to_vec();
     ranges.sort_unstable();
-    let mut view = Vec::with_capacity(bytes.len());
+    let mut kept = Vec::new();
     let mut pos = 0;
     for (start, length) in ranges {
-        let (start, end) = (clamp(start), clamp(start.saturating_add(length)));
+        let (start, end) = (start.min(len), start.saturating_add(length).min(len));
         if start > pos {
-            view.extend_from_slice(&bytes[pos..start]);
+            kept.push((pos, start));
         }
         pos = pos.max(end);
     }
-    view.extend_from_slice(&bytes[pos..]);
-    view
+    if pos < len {
+        kept.push((pos, len));
+    }
+    kept
+}
+
+/// The source view of a file as a reader: the file's bytes within `kept` ranges, in order.
+struct ViewReader {
+    file: File,
+    kept: Vec<(u64, u64)>,
+    /// Index of the range being read, and the position in the file.
+    index: usize,
+    pos: u64,
+}
+
+impl ViewReader {
+    /// The source view of the file at `path` without the `(start, length)` exclusion ranges.
+    fn open(path: &Path, exclusions: &[(u64, u64)]) -> Result<Self> {
+        let file = File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
+        let kept = kept_ranges(file.metadata()?.len(), exclusions);
+        Ok(ViewReader {
+            file,
+            kept,
+            index: 0,
+            pos: 0,
+        })
+    }
+}
+
+impl Read for ViewReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        while let Some(&(start, end)) = self.kept.get(self.index) {
+            if self.pos >= end {
+                self.index += 1;
+                continue;
+            }
+            if self.pos < start {
+                self.pos = self.file.seek(SeekFrom::Start(start))?;
+            }
+            let want = usize::try_from(end - self.pos).map_or(buf.len(), |n| n.min(buf.len()));
+            let n = self.file.read(&mut buf[..want])?;
+            if n == 0 {
+                // The file got shorter since its length was taken.
+                return Ok(0);
+            }
+            self.pos += n as u64;
+            return Ok(n);
+        }
+        Ok(0)
+    }
 }
 
 /// `units` with the Data-Code and Instance-Code of `view` in place of their own.
@@ -458,33 +539,36 @@ fn with_bitstream_of(units: &[IsccUnit], view: &[IsccUnit]) -> Vec<IsccUnit> {
 }
 
 /// The source view (IEP-0020) with its units. The Meta-Code is the file's, since its inputs
-/// never lie inside the manifest store. The Content-Code is computed on first use, because it
-/// only matters once the view is proven to be the source: the view of a file that is not
-/// source-preserving need not decode (then it is left out), and decoding it costs as much as
-/// the file did (a signed PDF would run pdfium a second time).
+/// never lie inside the manifest store. The view is streamed from the file, never held whole for
+/// its Data-Code and Instance-Code. The Content-Code is computed on first use, because it only
+/// matters once the view is proven to be the source: the view of a file that is not
+/// source-preserving need not decode (then it is left out), and decoding it costs as much as the
+/// file did (a signed PDF would run pdfium a second time, a video ffmpeg).
 struct SourceView<'a> {
     path: &'a Path,
     format: &'static Format,
-    bytes: Cow<'a, [u8]>,
+    /// `(start, length)` ranges cut from the file.
+    exclusions: Vec<(u64, u64)>,
     /// Meta-Code of the file, Data-Code and Instance-Code of the view.
     units: Vec<IsccUnit>,
     content: OnceCell<Option<IsccUnit>>,
 }
 
 impl<'a> SourceView<'a> {
-    /// The view `bytes` of the file at `path`, whose units are `file_units`.
+    /// The view of the file at `path` without the `(start, length)` ranges in `exclusions`; the
+    /// file's units are `file_units`.
     fn new(
         path: &'a Path,
         format: &'static Format,
-        bytes: Vec<u8>,
+        exclusions: Vec<(u64, u64)>,
         file_units: &[IsccUnit],
     ) -> Result<Self> {
         let meta = file_units.iter().find(|u| u.unit == "meta").cloned();
-        let bitstream = [iscc::data_unit(&bytes)?, iscc::instance_unit(&bytes)?];
+        let (bitstream, _) = iscc::stream_units(ViewReader::open(path, &exclusions)?)?;
         Ok(SourceView {
             path,
             format,
-            bytes: Cow::Owned(bytes),
+            exclusions,
             units: meta.into_iter().chain(bitstream).collect(),
             content: OnceCell::new(),
         })
@@ -492,12 +576,7 @@ impl<'a> SourceView<'a> {
 
     /// The file itself as its source view (a sidecar manifest, or a data hash that excludes
     /// nothing): every unit is known already.
-    fn of_file(
-        path: &'a Path,
-        format: &'static Format,
-        bytes: &'a [u8],
-        file_units: &[IsccUnit],
-    ) -> Self {
+    fn of_file(path: &'a Path, format: &'static Format, file_units: &[IsccUnit]) -> Self {
         let (content, units): (Vec<IsccUnit>, Vec<IsccUnit>) = file_units
             .iter()
             .cloned()
@@ -505,10 +584,21 @@ impl<'a> SourceView<'a> {
         SourceView {
             path,
             format,
-            bytes: Cow::Borrowed(bytes),
+            exclusions: Vec::new(),
             units,
             content: OnceCell::from(content.into_iter().next()),
         }
+    }
+
+    /// Content-Code of the view, when it decodes.
+    fn content_unit(&self) -> Option<IsccUnit> {
+        let mut bytes = Vec::new();
+        ViewReader::open(self.path, &self.exclusions)
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let asset = asset::read(self.path, &bytes, self.format).ok()?;
+        iscc::content_unit(asset.content()).ok()
     }
 
     /// Meta-Code of the file, Data-Code and Instance-Code of the view.
@@ -518,11 +608,7 @@ impl<'a> SourceView<'a> {
 
     /// Every unit, the view's Content-Code included where the view decodes.
     fn all_units(&self) -> Vec<IsccUnit> {
-        let content = self.content.get_or_init(|| {
-            asset::read(self.path, &self.bytes, self.format)
-                .ok()
-                .and_then(|a| iscc::content_unit(a.content()).ok())
-        });
+        let content = self.content.get_or_init(|| self.content_unit());
         self.units.iter().chain(content).cloned().collect()
     }
 }
@@ -1490,6 +1576,126 @@ mod tests {
         assert_eq!(inspection.iscc[1].name, "Content-Code Audio");
     }
 
+    #[test]
+    fn inspect_video_without_manifest() {
+        crate::tools::tests::ensure_ffmpeg();
+        for file in ["demo.mp4", "demo.mov", "demo.m4v", "demo.avi"] {
+            let inspection = inspect(Path::new(&fixture(file))).unwrap();
+            assert_eq!(inspection.kind, Kind::Video, "{file}");
+            assert!(inspection.manifest.is_none(), "{file}");
+            assert!(inspection.content_error.is_none(), "{file}");
+            assert!(!inspection.content_from_source, "{file}: decoded");
+            assert_eq!(
+                unit_names(&inspection),
+                [
+                    "Meta-Code",
+                    "Content-Code Video",
+                    "Data-Code",
+                    "Instance-Code"
+                ],
+                "{file}"
+            );
+            assert_eq!(inspection.meta_fields.name_source, "metadata", "{file}");
+            let seconds = inspection.duration_secs.unwrap();
+            assert!((seconds - 8.0).abs() < 0.2, "{file}: {seconds}");
+            assert_eq!((inspection.width, inspection.height), (176, 144), "{file}");
+            assert!(inspection.preview.starts_with("data:image/jpeg;base64,"));
+            let size = std::fs::metadata(fixture(file)).unwrap().len();
+            assert_eq!(inspection.size_bytes, size, "{file}");
+        }
+    }
+
+    #[test]
+    fn inspect_video_without_ffmpeg() {
+        // As `asset::load` leaves a video without ffmpeg: hashed, content and tags unread.
+        let path = fixture("demo.mp4");
+        let path = Path::new(&path);
+        let reason = crate::tools::Missing { available: true }.reason();
+        let bytes = std::fs::read(path).unwrap();
+        let loaded = Loaded {
+            asset: asset::Asset {
+                content: AssetContent::Unread(reason),
+                preview: None,
+                metadata: Default::default(),
+                sign_block: None,
+                sign_warning: None,
+            },
+            bitstream: iscc::bitstream_units(&bytes).unwrap(),
+            size: bytes.len() as u64,
+        };
+        let inspection = inspect_loaded(path, asset_format(path).unwrap(), loaded).unwrap();
+        assert_eq!(inspection.kind, Kind::Video);
+        assert_eq!(unit_names(&inspection), ["Data-Code", "Instance-Code"]);
+        assert_eq!(inspection.meta_error.as_deref(), Some(reason));
+        assert_eq!(inspection.content_error.as_deref(), Some(reason));
+        assert_eq!(inspection.preview, "");
+        assert_eq!(inspection.duration_secs, None);
+    }
+
+    #[test]
+    fn inspect_video_with_sound_only_as_audio() {
+        // Read like an M4A, without ffmpeg; the reference comes from iscc-sdk's audio functions.
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/expected_audio.json")).unwrap();
+        for (file, label) in [
+            ("no-video.mp4", "MP4 audio"),
+            ("no-video.mov", "QuickTime audio (MOV)"),
+        ] {
+            let inspection = inspect(Path::new(&fixture(file))).unwrap();
+            assert_eq!(inspection.kind, Kind::Audio, "{file}");
+            assert_eq!(inspection.format_label, label);
+            let video = formats::by_path(Path::new(file)).unwrap();
+            assert_eq!(
+                inspection.mime, video.mime,
+                "{file} is signed as what it is"
+            );
+            assert!(inspection.content_error.is_none(), "{file}");
+            assert_eq!(
+                unit_names(&inspection),
+                [
+                    "Meta-Code",
+                    "Content-Code Audio",
+                    "Data-Code",
+                    "Instance-Code"
+                ],
+                "{file}"
+            );
+            let want = &expected[file];
+            let codes: Vec<&str> = inspection.iscc.iter().map(|u| u.iscc.as_str()).collect();
+            assert_eq!(
+                codes,
+                [
+                    &want["meta"],
+                    &want["audio"],
+                    &want["data"],
+                    &want["instance"]
+                ],
+                "{file}"
+            );
+            let seconds = inspection.duration_secs.unwrap();
+            assert!((seconds - 8.0).abs() < 0.2, "{file}: {seconds}");
+            assert_eq!(inspection.preview, "", "{file} has no cover art");
+        }
+    }
+
+    #[test]
+    fn inspect_audio_that_does_not_decode() {
+        // A sound-only MP4 whose track is AC-3, which no decoder here takes.
+        let inspection = inspect(Path::new(&fixture("no-video-ac3.mp4"))).unwrap();
+        assert_eq!(inspection.kind, Kind::Audio);
+        assert_eq!(inspection.format_label, "MP4 audio");
+        assert_eq!(
+            inspection.content_error.as_deref(),
+            Some("this audio codec is not supported")
+        );
+        assert_eq!(
+            unit_names(&inspection),
+            ["Meta-Code", "Data-Code", "Instance-Code"]
+        );
+        assert_eq!(inspection.duration_secs, None);
+        assert_eq!(inspection.meta_fields.name_source, "metadata");
+    }
+
     /// A validly signed, unchanged file with a data hash, signed from a file without a manifest.
     const FACTS: BindingFacts = BindingFacts {
         source_view: true,
@@ -1498,8 +1704,28 @@ mod tests {
         resigned: false,
     };
 
+    /// The source view of `bytes`, written to a file and read back through [`ViewReader`].
+    fn source_view(bytes: &[u8], exclusions: &[(u64, u64)]) -> Vec<u8> {
+        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-view");
+        std::fs::create_dir_all(&dir).unwrap();
+        let name: String = format!("{exclusions:?}")
+            .chars()
+            .map(|c| if c.is_ascii_digit() { c } else { '_' })
+            .collect();
+        let path = dir.join(format!("view{name}.bin"));
+        std::fs::write(&path, bytes).unwrap();
+        let mut view = Vec::new();
+        ViewReader::open(&path, exclusions)
+            .unwrap()
+            .read_to_end(&mut view)
+            .unwrap();
+        view
+    }
+
     #[test]
     fn source_view_cuts_the_exclusion_ranges() {
+        assert_eq!(kept_ranges(10, &[(2, 3)]), [(0, 2), (5, 10)]);
+        assert_eq!(kept_ranges(0, &[]), []);
         let bytes: Vec<u8> = (0..10).collect();
         assert_eq!(source_view(&bytes, &[]), bytes);
         assert_eq!(source_view(&bytes, &[(2, 3)]), [0, 1, 5, 6, 7, 8, 9]);

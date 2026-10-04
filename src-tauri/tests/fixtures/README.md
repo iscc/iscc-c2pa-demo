@@ -11,6 +11,8 @@ by the Python scripts in this folder; see "Regenerating" below for the commands.
 | `demo.epub`, `demo.docx`, `demo.pptx`, `demo.xlsx`, `demo.odt`, `demo.txt`, `demo.md`, `demo.gif`, `demo.tif` | [iscc-samples](https://github.com/iscc/iscc-samples) 0.6.0 (`files/text`, `files/image`); `demo.txt` without its second trailing newline | CC-BY-4.0, © 2021 Titusz Pan |
 | `demo.mp3`, `withcover.mp3`, `short.wav` | [iscc-samples](https://github.com/iscc/iscc-samples) 0.6.0 (`files/audio`), unchanged | CC-BY-4.0, © 2021 Titusz Pan |
 | `demo.flac`, `demo.m4a`, `demo.wav`, `iscc-tags.mp3`, `iscc-tags.flac`, `tags-*.*` | converted by `audio_fixtures.sh` from iscc-samples 0.6.0 `files/audio/demo.wav` with ffmpeg; the `iscc-tags.*` files are `demo.mp3` and `demo.flac` tagged by iscc-sdk's `audio_meta_embed`; the `tags-*.*` files are one-second conversions tagged with mutagen, one TagLib tag rule each | CC-BY-4.0, © 2021 Titusz Pan |
+| `demo.mp4`, `demo.mov`, `demo.m4v`, `demo.avi`, `rotated.mp4`, `no-video.mp4`, `no-video.mov`, `no-video-opus.mp4`, `no-video-ac3.mp4`, `tags-*.mp4` | made by `video_fixtures.sh` from [iscc-samples](https://github.com/iscc/iscc-samples) 0.6.0 `files/video/demo.mp4` with ffmpeg: eight seconds re-encoded small, copied into MOV and M4V, re-encoded as MPEG-4 Part 2 AVI, given a 90 degree display matrix, reduced to its sound (MP4 and MOV, and that sound re-encoded as Opus and, two seconds of it, as AC-3); the `tags-*.mp4` files are one-second clips, each tagged with one case of iscc-sdk's metadata map | CC-BY-4.0, © 2021 Titusz Pan |
+| `demo.mp4.mp7sig` | the MPEG-7 signature ffmpeg 8.1 writes for `demo.mp4`, saved by `expected_video.py` | CC-BY-4.0, © 2021 Titusz Pan |
 | `demo.ods`, `demo.odp` | `demo.xlsx` and `demo.pptx` from iscc-samples, saved as OpenDocument with LibreOffice | CC-BY-4.0, © 2021 Titusz Pan |
 | `demo.svg` | written for this project | Apache-2.0 |
 | `features.docx`, `.odt`, `.pptx`, `.odp`, `.xlsx`, `.ods` | converted by `office_fixtures.sh` from `features.fodt`, `.fodp` and `.fods`, written for this project | Apache-2.0 |
@@ -28,7 +30,8 @@ Reference values:
 | `expected_meta.json` | `expected_meta.py` | iscc-sdk with exiv2: image metadata and Meta-Code; SVG metadata and Content-Code Image (resvg) |
 | `expected_text.json` | `expected_text.py` | iscc-sdk with Tika: document metadata, Meta-Code, Content-Code Text, Data-Code, Instance-Code |
 | `expected_pdf.json` | `expected_pdf.py` | iscc-sdk with pypdfium2 5.14.0b1 (pdfium 8076) and Tika: PDF metadata, Meta-Code, Content-Code Text, Data-Code, Instance-Code |
-| `expected_audio.json` | `expected_audio.py` | iscc-sdk with fpcalc and TagLib: audio tags, duration, Meta-Code, Content-Code Audio, Data-Code, Instance-Code |
+| `expected_audio.json` | `expected_audio.py` | iscc-sdk with fpcalc and TagLib: audio tags, duration, Meta-Code, Content-Code Audio, Data-Code, Instance-Code; also for `no-video.mp4`, `no-video.mov` and `no-video-opus.mp4`, which the app reads like an M4A (not for `no-video-ac3.mp4`, which the app cannot decode) |
+| `expected_video.json` | `expected_video.py` | iscc-sdk with ffmpeg 8.1: video tags, Meta-Code, Content-Code Video, Data-Code, Instance-Code; frame count and first frame of `demo.mp4.mp7sig` |
 
 The hygiene hooks rewrite text files on commit (line endings, final newline, trailing
 whitespace). Text fixtures must already be clean when their reference is generated, or the
@@ -43,12 +46,14 @@ also the tool named in the comment next to them.
 bash meta_fixtures.sh                                         # meta-*.* (exiftool)
 bash office_fixtures.sh                                       # features.* office files (LibreOffice; SOFFICE=path)
 bash audio_fixtures.sh                                        # audio conversions and tags (ffmpeg)
+bash video_fixtures.sh                                        # video clips and tags (ffmpeg 7+; FFMPEG=path)
 uv run --with iscc-sdk pdf_fixtures.py                        # meta-*.pdf, scan.pdf, rtl.pdf (LibreOffice; SOFFICE=path)
 uv run --with pillow --with numpy synthetic.py                # synthetic-*.png
 uv run --with pillow --with iscc-core expected_iscc.py        # expected_iscc.json
 uv run --with iscc-sdk expected_meta.py                       # expected_meta.json
 uv run --with iscc-sdk expected_text.py [DUMP_DIR]            # expected_text.json; Tika's texts to DUMP_DIR
 uv run --with iscc-sdk expected_audio.py                      # expected_audio.json
+uv run --with iscc-sdk expected_video.py                      # expected_video.json, demo.mp4.mp7sig
 uv run --with iscc-sdk --with pypdfium2==5.14.0b1 expected_pdf.py  # expected_pdf.json
 ```
 

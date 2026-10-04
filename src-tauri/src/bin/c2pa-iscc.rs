@@ -1,6 +1,6 @@
 //! Command-line interface to the same core as the desktop app: inspect and sign files, compute a
-//! Meta-Code, list the supported formats. Prints the JSON the UI consumes; errors go to stderr
-//! as one line with exit code 1 (usage errors exit with 2).
+//! Meta-Code, list the supported formats, install ffmpeg for video. Prints the JSON the UI
+//! consumes; errors go to stderr as one line with exit code 1 (usage errors exit with 2).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -8,11 +8,11 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
-use iscc_c2pa_demo_lib::formats;
+use iscc_c2pa_demo_lib::formats::{self, Kind};
 use iscc_c2pa_demo_lib::inspect::{self, Inspection};
 use iscc_c2pa_demo_lib::iscc::{self, MetaInput};
 use iscc_c2pa_demo_lib::sign::{self, Credentials, SignRequest, TimestampOutcome, TrainingEntry};
-use iscc_c2pa_demo_lib::timestamp;
+use iscc_c2pa_demo_lib::{timestamp, tools};
 use serde::Serialize;
 
 #[derive(Parser)]
@@ -53,6 +53,19 @@ enum Command {
     },
     /// List the supported file formats.
     Formats,
+    /// Manage ffmpeg, which video files need; it is downloaded once, on request.
+    Tools {
+        #[command(subcommand)]
+        action: ToolsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ToolsAction {
+    /// Show whether ffmpeg is installed, where, and what installing it downloads.
+    Status,
+    /// Download ffmpeg (GPL) from iscc-binaries, check it and install it for the app and the CLI.
+    Install,
 }
 
 #[derive(Args)]
@@ -69,9 +82,9 @@ struct SignArgs {
     /// Description for the Meta-Code [default: the one the title came with].
     #[arg(long)]
     description: Option<String>,
-    /// ISCC units to embed: meta, image, text or audio, data, instance [default: all four,
+    /// ISCC units to embed: meta, image, text, audio or video, data, instance [default: all four,
     /// without meta or the Content-Code when it cannot be computed].
-    #[arg(long, value_delimiter = ',', value_parser = ["meta", "image", "text", "audio", "data", "instance"])]
+    #[arg(long, value_delimiter = ',', value_parser = ["meta", "image", "text", "audio", "video", "data", "instance"])]
     units: Option<Vec<String>>,
     /// Digital source type URI, recorded on the parent ingredient when the file has no Content
     /// Credentials yet [default: none recorded].
@@ -110,11 +123,35 @@ fn main() -> ExitCode {
     }
 }
 
+/// How to get the Meta-Code and Content-Code of a video of `kind` read without ffmpeg; `None`
+/// when it is no video, ffmpeg is `installed`, or there is no build to install.
+fn ffmpeg_note(kind: Kind, installed: bool) -> Option<String> {
+    let tool = tools::ffmpeg().filter(|_| kind == Kind::Video && !installed)?;
+    Some(format!(
+        "a video's Meta-Code and Content-Code need ffmpeg ({} download); run `c2pa-iscc tools \
+        install`",
+        megabytes(tool.bytes)
+    ))
+}
+
+/// Print [`ffmpeg_note`] for `inspection` on stderr.
+fn note_missing_ffmpeg(inspection: &Inspection) {
+    if let Some(note) = ffmpeg_note(inspection.kind, tools::ffmpeg_status().installed) {
+        eprintln!("note: {note}");
+    }
+}
+
+/// A byte count in megabytes (MiB, as the app counts them), as "69 MB".
+fn megabytes(bytes: u64) -> String {
+    format!("{} MB", (bytes as f64 / 1_048_576.0).round())
+}
+
 /// Execute the parsed command and print its JSON.
 fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Inspect { file } => {
             let mut inspection = inspect::inspect(file)?;
+            note_missing_ffmpeg(&inspection);
             strip_preview(&mut inspection, cli.no_preview);
             print(&inspection, cli.compact)
         }
@@ -139,7 +176,39 @@ fn run(cli: &Cli) -> Result<()> {
             cli.compact,
         ),
         Command::Formats => print(&formats::FORMATS, cli.compact),
+        Command::Tools { action } => {
+            if let ToolsAction::Install = action {
+                install_ffmpeg()?;
+            }
+            print(&tools::ffmpeg_status(), cli.compact)
+        }
     }
+}
+
+/// Install ffmpeg unless it is there, with a progress line on stderr every tenth of the download.
+fn install_ffmpeg() -> Result<()> {
+    if tools::ffmpeg_status().installed {
+        return Ok(());
+    }
+    if let Some(tool) = tools::ffmpeg() {
+        eprintln!(
+            "downloading ffmpeg {} ({}, {}) from {}",
+            tool.version,
+            megabytes(tool.bytes),
+            tools::FFMPEG_LICENCE,
+            tool.url
+        );
+    }
+    let mut shown = 0;
+    tools::install_ffmpeg(&mut |received, total| {
+        let tenth = received * 10 / total.max(1);
+        if tenth > shown {
+            shown = tenth;
+            eprintln!("{}%", tenth * 10);
+        }
+        true
+    })?;
+    Ok(())
 }
 
 /// Write `value` as JSON to stdout.
@@ -165,6 +234,7 @@ fn strip_preview(inspection: &mut Inspection, strip: bool) {
 /// its owner may not want is a note.
 fn sign_request(args: &SignArgs) -> Result<SignRequest> {
     let source = inspect::inspect(&args.file)?;
+    note_missing_ffmpeg(&source);
     if let Some(block) = source.sign_block {
         bail!("{block}");
     }
@@ -179,7 +249,12 @@ fn sign_request(args: &SignArgs) -> Result<SignRequest> {
         .or_else(|| fields.description.clone());
     let units = match &args.units {
         Some(units) => units.clone(),
-        None => default_units(&source, &title, description.as_deref()),
+        None => default_units(
+            &source,
+            args.title.is_some(),
+            &title,
+            description.as_deref(),
+        ),
     };
     Ok(SignRequest {
         source: args.file.to_string_lossy().into_owned(),
@@ -199,14 +274,23 @@ fn sign_request(args: &SignArgs) -> Result<SignRequest> {
 }
 
 /// All four units for the asset's kind; the Meta-Code only when it can be computed from the
-/// title, description and the file's ISCC metadata, the Content-Code only when the inspection
-/// computed it (audio can be too short), each with a note on stderr otherwise.
-fn default_units(source: &Inspection, title: &str, description: Option<&str>) -> Vec<String> {
-    let meta = iscc::meta_unit(MetaInput {
-        name: Some(title),
-        description,
-        meta: source.meta_fields.meta.as_deref(),
-    });
+/// title, description and the file's ISCC metadata, and, when the inspection computed none (a
+/// video's tags unread without ffmpeg), only for a title `given`; the Content-Code only when
+/// the inspection computed it (audio can be too short); each with a note on stderr otherwise.
+fn default_units(
+    source: &Inspection,
+    given: bool,
+    title: &str,
+    description: Option<&str>,
+) -> Vec<String> {
+    let meta = match &source.meta_error {
+        Some(e) if !given => Err(anyhow!("{e}")),
+        _ => iscc::meta_unit(MetaInput {
+            name: Some(title),
+            description,
+            meta: source.meta_fields.meta.as_deref(),
+        }),
+    };
     let mut units = vec!["meta", source.kind.slug(), "data", "instance"];
     if let Some(e) = &source.content_error {
         eprintln!("note: Content-Code left out: {e}");
@@ -256,5 +340,24 @@ fn credentials(args: &SignArgs) -> Credentials {
             alg: args.alg.clone(),
         },
         _ => Credentials::Demo,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_ffmpeg_says_how_to_install_it() {
+        match ffmpeg_note(Kind::Video, false) {
+            Some(note) => {
+                assert!(note.ends_with("run `c2pa-iscc tools install`"), "{note}");
+                assert!(note.contains(" MB download"), "{note}");
+            }
+            None => assert!(tools::ffmpeg().is_none(), "no build to install"),
+        }
+        assert_eq!(ffmpeg_note(Kind::Video, true), None);
+        assert_eq!(ffmpeg_note(Kind::Audio, false), None);
+        assert_eq!(megabytes(72_252_640), "69 MB");
     }
 }

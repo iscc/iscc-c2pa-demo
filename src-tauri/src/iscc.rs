@@ -1,11 +1,11 @@
-//! ISCC units for image, text and audio assets and the ISCC-SEQ soft-binding value defined by
-//! IEP-0020.
+//! ISCC units for image, text, audio and video assets and the ISCC-SEQ soft-binding value
+//! defined by IEP-0020.
 //!
 //! Image preprocessing mirrors `iscc_sdk.image_normalize` (EXIF transpose, white fill for
 //! transparency, uniform border trim, ITU-R 601-2 luma, bicubic 32x32 resize) so that codes
 //! agree with the Python reference implementation.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use anyhow::{anyhow, bail, Result};
 use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
@@ -30,20 +30,20 @@ pub struct IsccUnit {
 #[derive(Clone, Debug, Default)]
 pub struct UnitSelection {
     pub meta: bool,
-    /// Content-Code of the asset's media type (image, text or audio).
+    /// Content-Code of the asset's media type (image, text, audio or video).
     pub content: bool,
     pub data: bool,
     pub instance: bool,
 }
 
 impl UnitSelection {
-    /// Build a selection from slugs such as `["image", "data"]`; `image`, `text` and `audio` all
-    /// select the Content-Code.
+    /// Build a selection from slugs such as `["image", "data"]`; `image`, `text`, `audio` and
+    /// `video` all select the Content-Code.
     pub fn from_slugs(slugs: &[String]) -> Self {
         let has = |s: &str| slugs.iter().any(|x| x == s);
         Self {
             meta: has("meta"),
-            content: has("image") || has("text") || has("audio"),
+            content: has("image") || has("text") || has("audio") || has("video"),
             data: has("data"),
             instance: has("instance"),
         }
@@ -59,6 +59,8 @@ pub enum Content<'a> {
     Text(&'a str),
     /// Chromaprint fingerprint of the decoded audio, as fpcalc prints it with `-signed`.
     Audio(&'a [i32]),
+    /// Distinct MPEG-7 frame signatures of the video, 380 values in 0..=2 each.
+    Video(&'a [Vec<i32>]),
     /// No input for a Content-Code, with the reason.
     Unavailable(&'a str),
 }
@@ -120,10 +122,10 @@ pub fn meta_unit(meta: MetaInput<'_>) -> Result<IsccUnit> {
     describe_unit(&code.iscc)
 }
 
-/// Generate the selected units for an asset held in memory. Data-Code and Instance-Code are
-/// computed over `bytes`; the Content-Code over `content`; the Meta-Code over `meta`.
+/// The selected units of an asset: the Meta-Code over `meta`, the Content-Code over `content`,
+/// and the Data-Code and Instance-Code from `bitstream`, those of the asset's bytes.
 pub fn units_for(
-    bytes: &[u8],
+    bitstream: &[IsccUnit; 2],
     content: Content<'_>,
     meta: MetaInput<'_>,
     selection: &UnitSelection,
@@ -136,12 +138,45 @@ pub fn units_for(
         units.push(content_unit(content)?);
     }
     if selection.data {
-        units.push(data_unit(bytes)?);
+        units.push(bitstream[0].clone());
     }
     if selection.instance {
-        units.push(instance_unit(bytes)?);
+        units.push(bitstream[1].clone());
     }
     Ok(units)
+}
+
+/// Data-Code and Instance-Code of `bytes`.
+pub fn bitstream_units(bytes: &[u8]) -> Result<[IsccUnit; 2]> {
+    Ok([data_unit(bytes)?, instance_unit(bytes)?])
+}
+
+/// Read size when hashing a stream.
+const STREAM_CHUNK: usize = 1 << 20;
+
+/// Data-Code and Instance-Code of everything `reader` yields, read in 1 MiB chunks so a large
+/// file never sits in memory, and the number of bytes read.
+pub fn stream_units(mut reader: impl Read) -> Result<([IsccUnit; 2], u64)> {
+    let mut data = iscc_lib::DataHasher::new();
+    let mut instance = iscc_lib::InstanceHasher::new();
+    let mut buf = vec![0u8; STREAM_CHUNK];
+    let mut size = 0u64;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
+        data.update(&buf[..n]);
+        instance.update(&buf[..n]);
+        size += n as u64;
+    }
+    let units = [
+        describe_unit(&data.finalize(UNIT_BITS)?.iscc)?,
+        describe_unit(&instance.finalize(UNIT_BITS)?.iscc)?,
+    ];
+    Ok((units, size))
 }
 
 /// The Data-Code of `bytes`.
@@ -164,6 +199,8 @@ pub fn content_unit(content: Content<'_>) -> Result<IsccUnit> {
             bail!("audio too short for a Content-Code Audio (Chromaprint needs about 3 seconds)")
         }
         Content::Audio(fingerprint) => iscc_lib::gen_audio_code_v0(fingerprint, UNIT_BITS)?.iscc,
+        Content::Video([]) => bail!("no video frames found; the file may have no video stream"),
+        Content::Video(signatures) => iscc_lib::gen_video_code_v0(signatures, UNIT_BITS)?.iscc,
         Content::Unavailable(reason) => bail!("{reason}"),
     };
     describe_unit(&code)
@@ -466,8 +503,14 @@ mod tests {
             let path = format!("{}/tests/fixtures/{file}", env!("CARGO_MANIFEST_DIR"));
             let bytes = std::fs::read(path).unwrap();
             let rgb = decode_rgb(&bytes).unwrap();
-            let units =
-                units_for(&bytes, Content::Image(&rgb), Default::default(), &selection).unwrap();
+            let bitstream = bitstream_units(&bytes).unwrap();
+            let units = units_for(
+                &bitstream,
+                Content::Image(&rgb),
+                Default::default(),
+                &selection,
+            )
+            .unwrap();
             let got: Vec<&str> = units.iter().map(|u| u.iscc.as_str()).collect();
             let want: Vec<&str> = codes
                 .as_array()
@@ -485,5 +528,41 @@ mod tests {
             }
             assert_eq!(got, want, "{file}");
         }
+    }
+
+    /// A reader that hands out at most 7777 bytes per read, so chunk borders fall anywhere.
+    struct Pieces<'a>(&'a [u8]);
+
+    impl Read for Pieces<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.0.len()).min(7777);
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn streamed_units_equal_the_in_memory_ones() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut files = 0;
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            if !entry.file_type().unwrap().is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(entry.path()).unwrap();
+            let (streamed, size) = stream_units(Pieces(&bytes)).unwrap();
+            assert_eq!(size, bytes.len() as u64);
+            assert_eq!(
+                streamed,
+                bitstream_units(&bytes).unwrap(),
+                "{:?}",
+                entry.path()
+            );
+            files += 1;
+        }
+        assert!(files > 50, "{files} fixtures");
+        let (empty, size) = stream_units(&[][..]).unwrap();
+        assert_eq!((empty, size), (bitstream_units(&[]).unwrap(), 0));
     }
 }

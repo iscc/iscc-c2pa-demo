@@ -47,6 +47,11 @@
 *.flac binary
 *.wav binary
 *.m4a binary
+*.mp4 binary
+*.mov binary
+*.m4v binary
+*.avi binary
+*.mp7sig binary
 *.pdf binary
 *.woff binary
 *.woff2 binary

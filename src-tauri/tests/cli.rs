@@ -257,3 +257,62 @@ fn sign_pdf_refuses_encryption_and_notes_a_digital_signature() {
         "Trusted"
     );
 }
+
+#[test]
+fn video_inspects_and_signs_once_ffmpeg_is_installed() {
+    // Installs into the user's tools folder on the first run on a machine; instant afterwards.
+    let status = json(&cli(&["tools", "install"]));
+    assert_eq!(status["installed"], true);
+    assert_eq!(status["licence"], "GPL-2.0-or-later");
+    assert_eq!(json(&cli(&["tools", "status"])), status);
+
+    let path = fixture("demo.mp4");
+    let inspection = json(&cli(&["inspect", path.to_str().unwrap(), "--no-preview"]));
+    assert_eq!(inspection["kind"], "video");
+    assert_eq!(inspection["iscc"][1]["name"], "Content-Code Video");
+    assert_eq!(inspection["width"], 176);
+
+    let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli-video");
+    std::fs::create_dir_all(&dir).unwrap();
+    let output = dir.join("demo-signed.mp4");
+    let _ = std::fs::remove_file(&output);
+    let result = json(&cli(&[
+        "sign",
+        path.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--no-timestamp",
+        "--no-preview",
+    ]));
+    assert_eq!(result["units"].as_array().unwrap().len(), 4);
+    let manifest = &result["inspection"]["manifest"];
+    assert_eq!(manifest["validation_state"], "Trusted");
+    let sb = &manifest["soft_bindings"][0];
+    assert_eq!(sb["preservation"], "no_source_view");
+    assert_eq!(sb["matches"][1]["embedded"]["name"], "Content-Code Video");
+    assert_eq!(sb["matches"][1]["similarity"], 1.0);
+}
+
+#[test]
+fn mp4_with_sound_only_is_signed_with_its_audio_code() {
+    let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli-sound-only");
+    std::fs::create_dir_all(&dir).unwrap();
+    let result = json(&cli(&[
+        "sign",
+        fixture("no-video.mp4").to_str().unwrap(),
+        "--output",
+        dir.join("no-video-signed.mp4").to_str().unwrap(),
+        "--no-timestamp",
+        "--no-preview",
+    ]));
+    assert_eq!(result["units"][1]["name"], "Content-Code Audio");
+    let inspection = &result["inspection"];
+    assert_eq!(inspection["kind"], "audio");
+    assert_eq!(inspection["format_label"], "MP4 audio");
+    assert_eq!(inspection["mime"], "video/mp4");
+    let manifest = &inspection["manifest"];
+    assert_eq!(manifest["validation_state"], "Trusted");
+    let sb = &manifest["soft_bindings"][0];
+    assert_eq!(sb["matches"][1]["embedded"]["name"], "Content-Code Audio");
+    assert_eq!(sb["matches"][1]["similarity"], 1.0);
+}

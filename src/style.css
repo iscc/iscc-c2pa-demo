@@ -462,6 +462,18 @@ input[readonly] { background: var(--paper); color: var(--muted); }
 .busy .ring { width: 48px; height: 48px; border-radius: 50%; border: 2px solid var(--rule); border-top-color: var(--coral); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Modal card above everything: a video analysis's progress, the question to download ffmpeg. */
+.overlay { position: absolute; inset: 0; z-index: 15; display: grid; place-items: center; padding: 24px; background: rgba(248, 249, 250, 0.85); }
+.dialog { width: 100%; max-width: 520px; box-shadow: 0 8px 32px rgba(33, 37, 41, 0.12); }
+.dialog p { margin: 0 0 16px; }
+.dialog .facts { margin: 0; }
+.dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.meter { height: 6px; border-radius: 3px; background: var(--rule-soft); overflow: hidden; }
+.meter span { display: block; height: 100%; background: var(--ink); transition: width var(--motion) var(--ease); }
+.meter span.indeterminate { width: 30%; animation: sweep 1.2s ease-in-out infinite alternate; }
+@keyframes sweep { from { margin-left: 0; } to { margin-left: 70%; } }
+.progress-text { margin: 8px 0 0; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--muted); }
+
 .center { text-align: center; padding: 48px 24px; color: var(--muted); }
 .center h3 { color: var(--ink); font-weight: 400; font-size: 20px; margin-bottom: 8px; }
 .center .btn { margin-top: 16px; }

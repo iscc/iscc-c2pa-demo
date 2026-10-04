@@ -396,7 +396,7 @@ mod tests {
     use super::*;
     use crate::asset::{self, AssetContent};
     use crate::formats;
-    use crate::iscc::{self, UnitSelection};
+    use crate::iscc;
     use crate::metadata::tests::sdk_meta_code;
     use serde_json::Value;
 
@@ -447,16 +447,9 @@ mod tests {
             check("Meta-Code", Some(&sdk_meta_code(m, path)), &want["meta"]);
         }
         check("iscc_meta", m.meta.as_deref(), &want["iscc_meta"]);
-        let selection = UnitSelection {
-            meta: false,
-            content: false,
-            data: true,
-            instance: true,
-        };
-        let units = iscc::units_for(&bytes, asset.content(), Default::default(), &selection);
-        let units = units.unwrap();
-        check("Data-Code", Some(&units[0].iscc), &want["data"]);
-        check("Instance-Code", Some(&units[1].iscc), &want["instance"]);
+        let [data, instance] = iscc::bitstream_units(&bytes).unwrap();
+        check("Data-Code", Some(&data.iscc), &want["data"]);
+        check("Instance-Code", Some(&instance.iscc), &want["instance"]);
         let no_text = want["text"].is_null() || want["collapsed"] == 0;
         match (&asset.content, no_text) {
             (AssetContent::Unavailable(_), true) => {}
