@@ -7,7 +7,7 @@
   <meta name="description" content="A tech demo of the International Standard Content Code (ISCC, ISO 24138:2024) as a soft binding in C2PA Content Credentials. When a signed file is re-encoded, the hash breaks and the ISCC Content-Code still matches. Open source, for Windows, macOS and Linux.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="ISCC C2PA Demo: match Content Credentials to their content, even after it changes">
-  <meta property="og:description" content="Tech demo of ISCC (ISO 24138:2024) as a soft binding in C2PA Content Credentials. Images, documents and audio. Open source, for Windows, macOS and Linux.">
+  <meta property="og:description" content="Tech demo of ISCC (ISO 24138:2024) as a soft binding in C2PA Content Credentials. Images, documents, audio and video. Open source, for Windows, macOS and Linux.">
   <meta property="og:url" content="https://c2pa-demo.iscc.codes/">
   <meta property="og:image" content="https://c2pa-demo.iscc.codes/assets/og.jpg">
   <meta name="twitter:card" content="summary_large_image">
@@ -37,7 +37,7 @@
         <span class="label version">{{version_label}}</span>
       </div>
       <figure class="shot">
-        <img src="assets/changed.webp" width="1898" height="1277" alt="The app with a changed copy of a signed image open: the Content Credentials tab says Invalid because the file changed after signing, and the ISCC soft binding still matches the Content-Code Image at 100 percent, while the byte-based Data-Code and Instance-Code no longer match.">
+        <img src="assets/changed.webp" width="1898" height="1374" alt="The app with a changed copy of a signed image open: the Content Credentials tab says Invalid because the file changed after signing, and the ISCC soft binding still matches the Content-Code Image at 100 percent, while the byte-based Data-Code and Instance-Code no longer match.">
       </figure>
       <p class="caption">A signed image, re-encoded at half size, with its Content Credentials copied back in. C2PA
         now says <b>Invalid</b>: the bytes changed. The ISCC Content-Code still matches the pixels at <b>100%</b>, and
@@ -48,8 +48,8 @@
     <section class="wrap grid3" aria-label="What you can do">
       <div>
         <h3><span class="step">1</span>Inspect</h3>
-        <p>Drop an image, a document or an audio file. See its Content Credentials (who signed it, when, and whether
-          the signature holds) and its ISCC.</p>
+        <p>Drop an image, a document, an audio or a video file. See its Content Credentials (who signed it, when, and
+          whether the signature holds) and its ISCC.</p>
       </div>
       <div>
         <h3><span class="step">2</span>Sign</h3>
@@ -96,12 +96,12 @@
           <a href="https://ieps.iscc.codes/iep-0020/">IEP-0020</a> defines.</p>
         <p>Each unit is compared as a percentage: unrelated content scores around 50%, and the closer to 100%, the
           closer the content. The byte-based Data-Code and Instance-Code drop as soon as a file is re-encoded; that is
-          their job. The Content-Code follows the image, the text or the sound.</p>
+          their job. The Content-Code follows the image, the text, the sound or the video.</p>
       </div>
       <ol class="units" aria-label="ISCC units in the soft binding">
         <li class="meta"><b>Meta-Code</b><span>From title and description, which the manifest also stores.</span></li>
-        <li class="content"><b>Content-Code</b><span>From the pixels, the text or the sound. Usually stays close
-          through resizing and re-encoding.</span></li>
+        <li class="content"><b>Content-Code</b><span>From the pixels, the text, the sound or the video frames.
+          Usually stays close through resizing and re-encoding.</span></li>
         <li class="data"><b>Data-Code</b><span>From the raw bytes. Survives small byte edits, not re-encoding.</span></li>
         <li class="instance"><b>Instance-Code</b><span>A checksum of the bytes: an exact match, or none.</span></li>
       </ol>
@@ -112,7 +112,7 @@
       <h2>See ISCC work inside C2PA</h2>
       <p><code>io.iscc.v0</code> has been on the C2PA soft binding algorithm list since 2024. This demo runs it end
         to end with <a href="https://github.com/contentauth/c2pa-rs">c2pa-rs</a>, the open source C2PA SDK of the
-        Content Authenticity Initiative, on 19&nbsp;file formats.</p>
+        Content Authenticity Initiative, on 24&nbsp;file formats.</p>
       <p>ISCC is an ISO standard with an open source reference implementation, so you can calculate the codes again
         and compare. The tests check every unit of this app against iscc-core and iscc-sdk, bit for bit.</p>
     </section>
@@ -120,9 +120,9 @@
     <section class="wrap" id="download">
       <p class="label">Download · {{version_label}}</p>
       <h2>Try it with a file you know</h2>
-      <p>Images: JPEG, PNG, WebP, GIF, TIFF, SVG. Documents: EPUB, Word, PowerPoint, Excel, OpenDocument, plain text,
-        Markdown. Audio: MP3, FLAC, WAV, M4A. The builds are not code-signed, so each card says how to get past the
-        system's warning at the first start.</p>
+      <p>Images: JPEG, PNG, WebP, GIF, TIFF, SVG. Documents: PDF, EPUB, Word, PowerPoint, Excel, OpenDocument, plain
+        text, Markdown. Audio: MP3, FLAC, WAV, M4A. Video: MP4, MOV, M4V, AVI. The builds are not code-signed, so each
+        card says how to get past the system's warning at the first start.</p>
       <div class="downloads">
         <article data-os="windows">
           <h3>Windows</h3>
@@ -134,7 +134,7 @@
         </article>
         <article data-os="macos" id="macos">
           <h3>macOS</h3>
-          <p class="label">macOS 11 or later, Apple silicon and Intel</p>
+          <p class="label">macOS 13 or later, Apple silicon and Intel</p>
           <button class="button primary" type="button" data-copy="curl -fsSL https://c2pa-demo.iscc.codes/install-mac.sh | bash">Copy install command</button>
           <p class="file">for Terminal · <a href="install-mac.sh">read the script</a></p>
           <pre><code>curl -fsSL https://c2pa-demo.iscc.codes/install-mac.sh | bash</code></pre>
@@ -167,8 +167,11 @@
           demo signature. Sign with your own certificate and key for anything real.</li>
         <li><b>A matching ISCC shows similar content.</b> It is a strong signal, not proof, that two files hold the
           same or similar content. It says nothing about who made them or who holds the rights.</li>
-        <li><b>Your files stay on your computer.</b> Inspecting works offline. When you sign, only a hash of the
-          signature goes to a timestamp service.</li>
+        <li><b>Video needs ffmpeg, downloaded once.</b> The first time you open a video, the app offers to download
+          the ffmpeg build that iscc-sdk uses and checks it before it runs. Without it, a video still shows its
+          Content Credentials, Data-Code and Instance-Code.</li>
+        <li><b>Your files stay on your computer.</b> Inspecting works offline, once ffmpeg is there for video. When you
+          sign, only a hash of the signature goes to a timestamp service.</li>
       </ul>
     </section>
 
@@ -177,15 +180,17 @@
         <p class="label">For developers</p>
         <h2>Rust, Tauri and a little TypeScript</h2>
         <p>The core is Rust: <a href="https://crates.io/crates/c2pa">c2pa-rs</a> for Content Credentials,
-          <a href="https://crates.io/crates/iscc-lib">iscc-lib</a> for ISCC, and pure Rust readers for every format,
-          so you need no external tools and no Python. The same core also builds as <code>c2pa-iscc</code>, a
-          command-line tool that prints JSON, for scripts and agents. Both are Apache-2.0.</p>
-        <p class="small">Needs Rust 1.96 or later, Node 22.12 or later and pnpm. On Linux also the
+          <a href="https://crates.io/crates/iscc-lib">iscc-lib</a> for ISCC, pure Rust readers for most formats,
+          the bundled pdfium library for PDF, and ffmpeg for video, which the app downloads on first use. The same
+          core also builds as <code>c2pa-iscc</code>, a command-line tool that prints JSON, for scripts and agents.
+          Both are Apache-2.0.</p>
+        <p class="small">Needs Rust 1.96 or later, Node 22.12 or later, pnpm and uv. On Linux also the
           <a href="https://tauri.app/start/prerequisites/">Tauri system libraries</a>.</p>
       </div>
       <pre><code>git clone https://github.com/iscc/iscc-c2pa-demo
 cd iscc-c2pa-demo
 pnpm install
+uv run scripts/fetch_pdfium.py
 pnpm tauri dev
 
 # the command-line tool
