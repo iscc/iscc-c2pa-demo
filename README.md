@@ -22,13 +22,13 @@
   <a href="#help-shape-iep-0020">IEP-0020</a>
 </p>
 
-![A signed image, re-encoded at half size with its Content Credentials copied back in. C2PA reports the credentials as invalid because the file changed after signing; the ISCC soft binding still matches the Content-Code at 100 percent, while the byte-based Data-Code and Instance-Code no longer match.](site/assets/changed.webp)
+![A signed image in the app: its Content Credentials are valid with a verified timestamp, the source is preserved, and every ISCC unit in the soft binding matches the file: Meta-Code, Semantic-Code Image, Content-Code Image and Data-Code at 100 percent, and the Instance-Code exactly.](site/assets/signed.webp)
 
-<p align="center"><sub>A signed image, re-encoded at half size, with its Content Credentials copied
-back in. C2PA now says <b>Invalid</b> (<code>assertion.dataHash.mismatch</code>): the bytes changed.
-The ISCC Content-Code still matches the pixels at <b>100%</b>, and at 81% after a crop, where
-unrelated images score around 50%. The credentials stay invalid, but the ISCC tells you which
-content they were made for.</sub></p>
+<p align="center"><sub>A signed image, opened again. C2PA says <b>Valid</b>, and every ISCC unit in its
+soft binding matches the file. Re-encode it at half size and the C2PA hash breaks
+(<code>assertion.dataHash.mismatch</code>), but the Content-Code still matches at <b>100%</b> and the
+experimental Semantic-Code at 99%. Crop 5% off each side as well and they score 81% and 95%, where
+unrelated images score around 50%.</sub></p>
 
 Content Credentials tell you where a file comes from. C2PA ties them to the file by a hash of its
 exact bytes. Resize or re-encode the file and the hash no longer matches; strip the manifest and
@@ -58,8 +58,8 @@ implementation of the open standard, and compare.
 ## What goes into the manifest
 
 The app adds a `c2pa.soft-binding` assertion. Its value is an ISCC-SEQ: the ISCC units of the file
-(here Meta-Code, Content-Code Image, Data-Code and Instance-Code), each a header and a 256-bit
-body, concatenated. CBOR stores the value as a byte string; the JSON view shows it in base64.
+(for an image: Meta-Code, Content-Code Image, Data-Code and Instance-Code, plus the Semantic-Code
+Image once it is switched on), each a header and a 256-bit body, concatenated. CBOR stores the value as a byte string; the JSON view shows it in base64.
 
 ```json
 {
