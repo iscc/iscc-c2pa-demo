@@ -121,6 +121,29 @@ pub fn read(ffmpeg: &Path, path: &Path, progress: Progress) -> Result<Asset> {
     })
 }
 
+/// The video at `path` at a glance, with the ffmpeg at `ffmpeg`: tags, facts and a preview
+/// frame, its frames not decoded ([`AssetContent::Undecoded`]). Two short ffmpeg runs.
+pub fn glance(ffmpeg: &Path, path: &Path) -> Result<Asset> {
+    let input = std::path::absolute(path)?;
+    let probe = probe(ffmpeg, &input)?;
+    let preview = probe.has_video.then(|| thumbnail(ffmpeg, &input)).flatten();
+    Ok(Asset {
+        content: AssetContent::Undecoded(Video {
+            signatures: Vec::new(),
+            frames: 0,
+            seconds: probe.seconds,
+            width: probe.width,
+            height: probe.height,
+            from_source: false,
+            fingerprint: None,
+        }),
+        preview,
+        metadata: probe.metadata,
+        sign_block: None,
+        sign_warning: None,
+    })
+}
+
 /// [`frame_signatures`], with the [`stream_fingerprint`] of the same file taken alongside
 /// (`None` when that fails). A failed or stopped signature pass stops the fingerprint too.
 fn frames_and_fingerprint(

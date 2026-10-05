@@ -1,12 +1,17 @@
-//! External tools installed on first use: ffmpeg, which computes the MPEG-7 video signatures
-//! behind the Content-Code Video. It is never bundled. The app and the CLI ask first, then
-//! download the build iscc-sdk uses for the platform from iscc-binaries, check the archive's
-//! BLAKE3 hash and extract the program into the tools folder. ffmpeg is GPL software and runs as
-//! a separate program, so the app stays Apache-2.0.
+//! External tools installed on first use, never bundled: ffmpeg, which computes the MPEG-7 video
+//! signatures behind the Content-Code Video, and the semantic models behind the Semantic-Codes.
+//! The app and the CLI ask first, then download each file, check its size and BLAKE3 hash and put
+//! it into the tools folder.
 //!
-//! There is no PATH lookup: another ffmpeg build may lack the signature filter or compute other
-//! codes. Without ffmpeg, and on platforms without a build in iscc-binaries (Linux and Windows
-//! on ARM), a video inspects and signs without its Meta-Code and Content-Code.
+//! ffmpeg is the build iscc-sdk uses for the platform, from iscc-binaries, extracted from its zip
+//! archive. It is GPL software and runs as a separate program, so the app stays Apache-2.0. There
+//! is no PATH lookup: another ffmpeg build may lack the signature filter or compute other codes.
+//! Without ffmpeg, and on platforms without a build in iscc-binaries (Linux and Windows on ARM),
+//! a video inspects and signs without its Meta-Code and Content-Code.
+//!
+//! The semantic models are weight-compressed copies of the iscc-sci and iscc-sct models with
+//! iscc-sct's tokenizer, plain files in this repository's `models-v1` release, the same on every
+//! platform. Without them images and text documents have no Semantic-Code.
 
 use std::fmt;
 use std::fs::{self, File};
@@ -33,7 +38,8 @@ macro_rules! release_url {
 /// Longest wait for the connection and for the response headers.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Longest wait for the whole archive: 72 MB at 20 KB/s. ureq has no per-read timeout.
+/// Longest wait for one whole download: the largest file (140 MB) at 40 KB/s. ureq has no per-read
+/// timeout.
 const BODY_TIMEOUT: Duration = Duration::from_secs(3600);
 /// Read size while downloading and hashing.
 const CHUNK: usize = 1 << 20;
@@ -43,25 +49,35 @@ const BAD_CPU_TYPE: i32 = 86;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// A program downloaded on first use.
+/// Download URL of `file` in this repository's release of the semantic models.
+macro_rules! models_url {
+    ($file:literal) => {
+        concat!(
+            "https://github.com/iscc/iscc-c2pa-demo/releases/download/models-v1/",
+            $file
+        )
+    };
+}
+
+/// A program or data file downloaded on first use.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Tool {
     pub name: &'static str,
     pub version: &'static str,
-    /// Download URL of the zip archive.
+    /// Download URL of the zip archive, or of the file itself.
     pub url: &'static str,
-    /// BLAKE3 hash of the archive, hex.
+    /// BLAKE3 hash of the download, hex.
     pub blake3: &'static str,
-    /// Archive member that is the program.
-    pub member: &'static str,
-    /// Size of the archive in bytes.
+    /// Archive member that is the program; `None` when the download is the file itself.
+    pub member: Option<&'static str>,
+    /// Size of the download in bytes.
     pub bytes: u64,
 }
 
 impl Tool {
-    /// File name of the installed program: name and version, so another version never stands in.
+    /// File name of the installed file: name and version, so another version never stands in.
     fn file_name(&self) -> String {
-        let ext = Path::new(self.member)
+        let ext = Path::new(self.member.unwrap_or(self.url))
             .extension()
             .map(|e| format!(".{}", e.to_string_lossy()))
             .unwrap_or_default();
@@ -74,7 +90,7 @@ const FFMPEG_WINDOWS: Tool = Tool {
     version: "8.1",
     url: release_url!("ffmpeg-8.1-win-64.zip"),
     blake3: "d84c72395b9f52cf34c516fdfab83edfa631165b32ab1674ed0f4686989e1126",
-    member: "ffmpeg.exe",
+    member: Some("ffmpeg.exe"),
     bytes: 72_252_640,
 };
 const FFMPEG_LINUX: Tool = Tool {
@@ -82,7 +98,7 @@ const FFMPEG_LINUX: Tool = Tool {
     version: "8.1",
     url: release_url!("ffmpeg-8.1-linux-64.zip"),
     blake3: "9a49dc5c1d7720acee5e269565f2674d8bb6a08fa9b428cfb173c5ff22188b45",
-    member: "ffmpeg",
+    member: Some("ffmpeg"),
     bytes: 73_269_447,
 };
 /// x86_64 only; Macs with Apple chips run it under Rosetta 2.
@@ -91,9 +107,44 @@ const FFMPEG_MACOS: Tool = Tool {
     version: "8.1",
     url: release_url!("ffmpeg-8.1-macos-64.zip"),
     blake3: "abc4ddf4f0fa0273ab635cde87cbaa02b71caa0fb77cd93a29e6945a8c17758d",
-    member: "ffmpeg",
+    member: Some("ffmpeg"),
     bytes: 25_927_146,
 };
+
+/// The image model of iscc-sci, its weights stored as fp16 (codes at most 1 of 256 bits off).
+pub const SCI_MODEL: Tool = Tool {
+    name: "iscc-sci",
+    version: "v0.1.0-w16",
+    url: models_url!("iscc-sci-v0.1.0-w16.onnx"),
+    blake3: "9f24dd3d0440eaa07adf121b21a1cbd8518fe36048b9d8a72b606d8a6416e8a3",
+    member: None,
+    bytes: 104_790_555,
+};
+/// The text model of iscc-sct, its word embeddings stored as int8 and the other weights as fp16
+/// (codes at most 2 of 256 bits off).
+pub const SCT_MODEL: Tool = Tool {
+    name: "iscc-sct",
+    version: "v0.1.0-emb8-w16",
+    url: models_url!("iscc-sct-v0.1.0-emb8-w16.onnx"),
+    blake3: "e04671ff5ff9cc325400dd73318af9919322a367986f03a199c769f8143a4679",
+    member: None,
+    bytes: 140_304_326,
+};
+/// iscc-sct's tokenizer, unchanged from its tag v0.2.2.
+pub const SCT_TOKENIZER: Tool = Tool {
+    name: "iscc-sct-tokenizer",
+    version: "v0.2.2",
+    url: models_url!("tokenizer.json"),
+    blake3: "bb64a20ac363c0669830ae3a084406ed2ee1dcaaff3675e07fbc7090e34df060",
+    member: None,
+    bytes: 9_081_590,
+};
+/// Everything the Semantic-Codes need, installed together.
+pub const SEMANTIC_MODELS: [&Tool; 3] = [&SCI_MODEL, &SCT_MODEL, &SCT_TOKENIZER];
+/// The release that holds the semantic models, with their sources and licences.
+pub const MODELS_RELEASE: &str = "https://github.com/iscc/iscc-c2pa-demo/releases/tag/models-v1";
+/// Licences of the semantic models: the ISC21 descriptor is MIT, the rest Apache-2.0.
+pub const MODELS_LICENCE: &str = "MIT and Apache-2.0";
 
 /// Licence of ffmpeg's builds with the signature filter.
 pub const FFMPEG_LICENCE: &str = "GPL-2.0-or-later";
@@ -115,20 +166,28 @@ pub fn ffmpeg() -> Option<&'static Tool> {
     }
 }
 
-/// ffmpeg, which a video needs, is not installed; `available` tells whether this platform has a
-/// build to install.
+/// A tool that a unit needs is not installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Missing {
-    pub available: bool,
+pub enum Missing {
+    /// ffmpeg, which a video needs; `available` tells whether this platform has a build to
+    /// install.
+    Ffmpeg { available: bool },
+    /// The semantic models, which the Semantic-Codes need.
+    SemanticModels,
 }
 
 impl Missing {
-    /// What is missing, as the reason a video has no Meta-Code and no Content-Code.
+    /// What is missing, as the reason a unit is not there: a video's Meta-Code and Content-Code,
+    /// or a Semantic-Code.
     pub fn reason(&self) -> &'static str {
-        if self.available {
-            "video needs ffmpeg, which is not installed yet"
-        } else {
-            "video needs ffmpeg, and there is no build of it for this platform"
+        match self {
+            Missing::Ffmpeg { available: true } => "video needs ffmpeg, which is not installed yet",
+            Missing::Ffmpeg { available: false } => {
+                "video needs ffmpeg, and there is no build of it for this platform"
+            }
+            Missing::SemanticModels => {
+                "the Semantic-Code needs the semantic models, which are not installed yet"
+            }
         }
     }
 }
@@ -166,9 +225,9 @@ pub fn installed(tool: &Tool, dir: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// The error for ffmpeg not being installed; `available` as in [`Missing`].
+/// The error for ffmpeg not being installed; `available` as in [`Missing::Ffmpeg`].
 fn ffmpeg_missing(available: bool) -> anyhow::Error {
-    anyhow::Error::new(Missing { available })
+    anyhow::Error::new(Missing::Ffmpeg { available })
 }
 
 /// The installed ffmpeg, or a [`Missing`] error.
@@ -182,6 +241,49 @@ pub fn ffmpeg_path() -> Result<PathBuf> {
 pub fn install_ffmpeg(progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<PathBuf> {
     let tool = ffmpeg().ok_or_else(|| ffmpeg_missing(false))?;
     install(tool, &tools_dir()?, progress)
+}
+
+/// Installed files of the semantic models.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticPaths {
+    pub image_model: PathBuf,
+    pub text_model: PathBuf,
+    pub tokenizer: PathBuf,
+}
+
+/// The installed semantic models, or a [`Missing::SemanticModels`] error unless all of them are
+/// there.
+pub fn semantic_paths() -> Result<SemanticPaths> {
+    let dir = tools_dir()?;
+    let path = |tool: &Tool| {
+        installed(tool, &dir).ok_or_else(|| anyhow::Error::new(Missing::SemanticModels))
+    };
+    Ok(SemanticPaths {
+        image_model: path(&SCI_MODEL)?,
+        text_model: path(&SCT_MODEL)?,
+        tokenizer: path(&SCT_TOKENIZER)?,
+    })
+}
+
+/// Install the semantic models that are not installed yet, one after the other, and return
+/// their paths. `progress` gets the bytes received of all three and their total size, and stops
+/// the download by returning false; files installed before stay.
+pub fn install_semantic(progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<SemanticPaths> {
+    let dir = tools_dir()?;
+    let total = semantic_bytes();
+    let mut done = 0;
+    for tool in SEMANTIC_MODELS {
+        install(tool, &dir, &mut |received, _| {
+            progress(done + received, total)
+        })?;
+        done += tool.bytes;
+    }
+    semantic_paths()
+}
+
+/// Size of the semantic models' downloads together.
+fn semantic_bytes() -> u64 {
+    SEMANTIC_MODELS.iter().map(|t| t.bytes).sum()
 }
 
 /// What the UI and the CLI tell about a tool before and after installing it.
@@ -220,13 +322,32 @@ pub fn ffmpeg_status() -> Status {
     }
 }
 
+/// Whether the semantic models are installed, and what installing them means. `path` is the
+/// tools folder they go into.
+pub fn semantic_status() -> Status {
+    let dir = tools_dir().ok();
+    Status {
+        name: "semantic models",
+        version: Some("models-v1"),
+        available: true,
+        installed: dir
+            .as_ref()
+            .is_some_and(|d| SEMANTIC_MODELS.iter().all(|t| installed(t, d).is_some())),
+        path: dir.map(|d| d.to_string_lossy().into_owned()),
+        url: Some(MODELS_RELEASE),
+        bytes: Some(semantic_bytes()),
+        licence: MODELS_LICENCE,
+        note: None,
+    }
+}
+
 /// Serialises installs within the process, so concurrent requests wait for one download.
 static INSTALLING: Mutex<()> = Mutex::new(());
 
 /// Install `tool` into `dir` unless it is there already, and return its path. `progress` gets
-/// the bytes received and the archive size, and stops the download by returning false. The
-/// archive is checked against the tool's size and BLAKE3 hash before anything is extracted; any
-/// failure removes the partial files.
+/// the bytes received and the download's size, and stops the download by returning false. The
+/// download is checked against the tool's size and BLAKE3 hash before anything is extracted or
+/// put in place; any failure removes the partial files.
 pub fn install(
     tool: &Tool,
     dir: &Path,
@@ -240,9 +361,13 @@ pub fn install(
     let unique = unique_suffix();
     let archive = dir.join(format!("{}.zip.{unique}.part", tool.file_name()));
     let program = dir.join(format!("{}.{unique}.part", tool.file_name()));
-    let result = download(tool, &archive, progress)
-        .and_then(|()| extract(tool, &archive, &program))
-        .and_then(|()| put_in_place(&program, &dir.join(tool.file_name())));
+    let unpacked = match tool.member {
+        Some(member) => {
+            download(tool, &archive, progress).and_then(|()| extract(member, &archive, &program))
+        }
+        None => download(tool, &program, progress),
+    };
+    let result = unpacked.and_then(|()| put_in_place(&program, &dir.join(tool.file_name())));
     let _ = fs::remove_file(&archive);
     let _ = fs::remove_file(&program);
     result
@@ -257,7 +382,7 @@ fn unique_suffix() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
-/// Download the archive of `tool` to `path`, checking its size and BLAKE3 hash.
+/// Download the archive or file of `tool` to `path`, checking its size and BLAKE3 hash.
 fn download(tool: &Tool, path: &Path, progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<()> {
     let config = ureq::Agent::config_builder()
         .timeout_connect(Some(CONNECT_TIMEOUT))
@@ -298,12 +423,12 @@ fn download(tool: &Tool, path: &Path, progress: &mut dyn FnMut(u64, u64) -> bool
     Ok(())
 }
 
-/// Extract the program from the archive at `archive` to `path`, executable on Unix.
-fn extract(tool: &Tool, archive: &Path, path: &Path) -> Result<()> {
+/// Extract the program `member` from the archive at `archive` to `path`, executable on Unix.
+fn extract(member: &str, archive: &Path, path: &Path) -> Result<()> {
     let mut zip = zip::ZipArchive::new(File::open(archive)?)?;
     let mut member = zip
-        .by_name(tool.member)
-        .with_context(|| format!("the archive holds no {}", tool.member))?;
+        .by_name(member)
+        .with_context(|| format!("the archive holds no {member}"))?;
     let mut out = File::create(path)?;
     io::copy(&mut member, &mut out)?;
     out.sync_all()?;
@@ -315,7 +440,7 @@ fn extract(tool: &Tool, archive: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Move the extracted program to `target`. Another process may have installed it meanwhile and
+/// Move the extracted program or the downloaded file to `target`. Another process may have installed it meanwhile and
 /// be running it, which keeps Windows from replacing it; its copy is just as good.
 fn put_in_place(program: &Path, target: &Path) -> Result<PathBuf> {
     match fs::rename(program, target) {
@@ -358,6 +483,15 @@ pub(crate) mod tests {
         static ENSURED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         ENSURED
             .get_or_init(|| install_ffmpeg(&mut |_, _| true).unwrap())
+            .clone()
+    }
+
+    /// Install the semantic models into the user's tools folder if they are missing, for the
+    /// tests that run them. The first run on a machine downloads them (254 MB).
+    pub(crate) fn ensure_semantic() -> SemanticPaths {
+        static ENSURED: std::sync::OnceLock<SemanticPaths> = std::sync::OnceLock::new();
+        ENSURED
+            .get_or_init(|| install_semantic(&mut |_, _| true).unwrap())
             .clone()
     }
 
@@ -414,7 +548,7 @@ pub(crate) mod tests {
             version: "1.0",
             url: serve(archive.to_vec(), length),
             blake3: Box::leak(blake3.to_owned().into_boxed_str()),
-            member: "demo-tool.exe",
+            member: Some("demo-tool.exe"),
             bytes: archive.len() as u64,
         }
     }
@@ -448,6 +582,34 @@ pub(crate) mod tests {
         // Installed already: no second download.
         let again = install(&tool, &dir, &mut |_, _| panic!("downloaded again")).unwrap();
         assert_eq!(again, path);
+    }
+
+    #[test]
+    fn install_puts_a_plain_file_in_place() {
+        let content = b"{\"model\": \"weights\"}";
+        let hash = blake3::hash(content).to_hex().to_string();
+        let tool = Tool {
+            name: "demo-model",
+            version: "v1",
+            member: None,
+            ..local_tool(content, &hash, content.len())
+        };
+        let dir = fresh_dir("iscc-c2pa-demo-test-tools-plain");
+        let path = install(&tool, &dir, &mut |_, _| true).unwrap();
+        // The extension comes from the URL, which ends in tool.zip for the local server.
+        assert_eq!(path, dir.join("demo-model-v1.zip"));
+        assert_eq!(fs::read(&path).unwrap(), content);
+        let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(leftovers.len(), 1, "only the file stays");
+
+        let wrong = Tool {
+            name: "other-model",
+            blake3: Box::leak("0".repeat(64).into_boxed_str()),
+            ..tool
+        };
+        let error = install(&wrong, &dir, &mut |_, _| true).unwrap_err();
+        assert!(error.to_string().contains("integrity check"), "{error}");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "nothing added");
     }
 
     #[test]
@@ -532,15 +694,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn semantic_models_come_from_the_models_release() {
+        for tool in SEMANTIC_MODELS {
+            assert!(tool.url.starts_with(models_url!("")), "{}", tool.url);
+            assert_eq!(tool.member, None, "plain files");
+            assert_eq!(tool.blake3.len(), 64);
+        }
+        assert_eq!(SCI_MODEL.file_name(), "iscc-sci-v0.1.0-w16.onnx");
+        assert_eq!(SCT_MODEL.file_name(), "iscc-sct-v0.1.0-emb8-w16.onnx");
+        assert_eq!(SCT_TOKENIZER.file_name(), "iscc-sct-tokenizer-v0.2.2.json");
+        let status = semantic_status();
+        assert_eq!(status.bytes, Some(254_176_471));
+        assert!(status.available);
+        assert_eq!(status.licence, "MIT and Apache-2.0");
+        assert!(MODELS_RELEASE.starts_with("https://github.com/iscc/iscc-c2pa-demo/"));
+    }
+
+    #[test]
     fn missing_tool_errors_say_what_to_do() {
-        let missing = Missing { available: true };
+        let missing = Missing::Ffmpeg { available: true };
         assert_eq!(
             missing.to_string(),
             "video needs ffmpeg, which is not installed yet"
         );
         assert_eq!(missing.reason(), missing.to_string());
-        let unavailable = Missing { available: false };
+        let unavailable = Missing::Ffmpeg { available: false };
         assert!(unavailable.to_string().contains("no build"));
+        assert!(Missing::SemanticModels
+            .to_string()
+            .contains("needs the semantic models"));
         let error = anyhow::Error::new(missing).context("cannot read this MP4 file");
         assert_eq!(error.downcast_ref::<Missing>(), Some(&missing));
     }

@@ -1,5 +1,6 @@
 //! The c2pa-iscc command-line binary: inspect and sign a fixture, timestamp fallback, error
-//! handling. No test goes online: signing passes --no-timestamp or a closed local port.
+//! handling. Signing passes --no-timestamp or a closed local port; only installing ffmpeg and
+//! the semantic models goes online, once per machine.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -19,6 +20,26 @@ fn cli(args: &[&str]) -> Output {
         .expect("the CLI runs")
 }
 
+/// Install the semantic models for the tests whose units include the Semantic-Code; 254 MB on
+/// the first run on a machine, instant afterwards.
+fn ensure_semantic() {
+    static INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let status = json(&cli(&["tools", "install", "semantic"]));
+        assert_eq!(status["installed"], true);
+    });
+}
+
+/// Names of the units in a JSON list of units.
+fn names(units: &Value) -> Vec<&str> {
+    units
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["name"].as_str().unwrap())
+        .collect()
+}
+
 fn json(output: &Output) -> Value {
     assert!(
         output.status.success(),
@@ -30,12 +51,23 @@ fn json(output: &Output) -> Value {
 
 #[test]
 fn inspect_prints_the_inspection() {
+    ensure_semantic();
     let path = fixture("no_manifest.jpg");
     let inspection = json(&cli(&["inspect", path.to_str().unwrap(), "--no-preview"]));
     assert_eq!(inspection["kind"], "image");
     assert_eq!(inspection["preview"], "");
     assert!(inspection["manifest"].is_null());
-    assert_eq!(inspection["iscc"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        names(&inspection["iscc"]),
+        [
+            "Meta-Code",
+            "Semantic-Code Image",
+            "Content-Code Image",
+            "Data-Code",
+            "Instance-Code"
+        ]
+    );
+    assert!(inspection["pending"].as_array().unwrap().is_empty());
     assert_eq!(inspection["meta_fields"]["name"], "no manifest");
 
     let compact = cli(&["--compact", "inspect", path.to_str().unwrap()]);
@@ -49,6 +81,7 @@ fn inspect_prints_the_inspection() {
 
 #[test]
 fn sign_writes_a_trusted_copy_with_prefilled_fields() {
+    ensure_semantic();
     let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli");
     std::fs::create_dir_all(&dir).unwrap();
     let output = dir.join("cli-signed.jpg");
@@ -73,7 +106,8 @@ fn sign_writes_a_trusted_copy_with_prefilled_fields() {
         result["inspection"]["manifest"]["signature"]["timestamp"]["status"],
         "none"
     );
-    assert_eq!(result["units"].as_array().unwrap().len(), 4);
+    assert_eq!(result["units"].as_array().unwrap().len(), 5);
+    assert_eq!(result["units"][1]["name"], "Semantic-Code Image");
     let manifest = &result["inspection"]["manifest"];
     assert_eq!(manifest["validation_state"], "Trusted");
     assert_eq!(manifest["title"], "no manifest", "title from the file name");
@@ -251,7 +285,7 @@ fn sign_pdf_refuses_encryption_and_notes_a_digital_signature() {
         "{stderr}"
     );
     let result = json(&signed);
-    assert_eq!(result["units"][1]["name"], "Content-Code Text");
+    assert!(names(&result["units"]).contains(&"Content-Code Text"));
     assert_eq!(
         result["inspection"]["manifest"]["validation_state"],
         "Trusted"
@@ -264,7 +298,9 @@ fn video_inspects_and_signs_once_ffmpeg_is_installed() {
     let status = json(&cli(&["tools", "install"]));
     assert_eq!(status["installed"], true);
     assert_eq!(status["licence"], "GPL-2.0-or-later");
-    assert_eq!(json(&cli(&["tools", "status"])), status);
+    let both = json(&cli(&["tools", "status"]));
+    assert_eq!(both["ffmpeg"], status);
+    assert_eq!(both["semantic"]["licence"], "MIT and Apache-2.0");
 
     let path = fixture("demo.mp4");
     let inspection = json(&cli(&["inspect", path.to_str().unwrap(), "--no-preview"]));
@@ -284,7 +320,11 @@ fn video_inspects_and_signs_once_ffmpeg_is_installed() {
         "--no-timestamp",
         "--no-preview",
     ]));
-    assert_eq!(result["units"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        result["units"].as_array().unwrap().len(),
+        4,
+        "video has no Semantic-Code"
+    );
     let manifest = &result["inspection"]["manifest"];
     assert_eq!(manifest["validation_state"], "Trusted");
     let sb = &manifest["soft_bindings"][0];

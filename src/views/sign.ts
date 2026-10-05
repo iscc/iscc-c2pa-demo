@@ -3,7 +3,7 @@
 
 import type { AppInfo, Credentials, Inspection, IsccUnit, SignRequest, SignResult, TrainingEntry, TsaPreset } from "../api";
 import { contentSource, embedding } from "../formats";
-import { esc, fullStop, isccHtml, splitPath } from "../util";
+import { esc, formatBytes, fullStop, isccHtml, splitPath } from "../util";
 import { USE_CASES } from "./credentials";
 
 /** Digital source types offered for sources without Content Credentials (IPTC NewsCodes and C2PA
@@ -40,6 +40,39 @@ interface UnitOption {
   unit: IsccUnit["unit"];
   title: string;
   desc: string;
+}
+
+/** The Semantic-Code offered for an image or a text; none for audio and video. */
+function semanticOption(inspection: Inspection): UnitOption[] {
+  if (inspection.kind === "image") {
+    return [
+      {
+        slug: "semantic",
+        unit: "semantic",
+        title: "Semantic-Code Image",
+        desc: "Experimental. Sign bits of a neural image descriptor (ISC21). Survives crops, recolouring, overlays and re-composition that the Content-Code Image does not. Codes may differ from iscc-sci by a few bits, because the model is compressed.",
+      },
+    ];
+  }
+  if (inspection.kind === "text") {
+    return [
+      {
+        slug: "semantic",
+        unit: "semantic",
+        title: "Semantic-Code Text",
+        desc: "Experimental. Sign bits of a multilingual sentence embedding averaged over the whole text. Matches translations, paraphrases and heavy edits that the Content-Code Text does not. Codes may differ from iscc-sct by a few bits, because the model is compressed.",
+      },
+    ];
+  }
+  return [];
+}
+
+/** What the Sign tab needs to know about the app besides the file. */
+export interface SignContext {
+  /** True while the background pass computes units of this file: signing waits for it. */
+  analysing: boolean;
+  /** Download size of the semantic models when they are not installed; null when they are or it is unknown. */
+  modelsToInstall: number | null;
 }
 
 /** The Content-Code offered for an asset: image, text, audio or video. */
@@ -97,6 +130,7 @@ function unitOptions(inspection: Inspection): UnitOption[] {
       title: "Meta-Code",
       desc: "Similarity hash of title and description, both stored in the Content Credentials (cawg.metadata). Needs a title.",
     },
+    ...semanticOption(inspection),
     contentOption(inspection),
     {
       slug: "data",
@@ -143,13 +177,15 @@ export function metaPreviewHint(form: SignForm): string {
   return form.metaError ? `not available: ${form.metaError}` : "enter a title to preview";
 }
 
-/** Fresh form state for a newly loaded file; timestamps with the first preset. */
+/** Fresh form state for a newly loaded file; timestamps with the first preset. The Semantic-Code of an image or a
+ * text starts ticked when it can be computed (the models installed). */
 export function newSignForm(inspection: Inspection, presets: TsaPreset[]): SignForm {
+  const semantic = semanticOption(inspection).length > 0 && semanticAvailable(inspection);
   return {
     title: inspection.meta_fields.name,
     description: inspection.meta_fields.description ?? "",
     sourceType: SOURCE_TYPES[0].uri,
-    units: new Set(["meta", inspection.kind, "data", "instance"]),
+    units: new Set(["meta", ...(semantic ? ["semantic"] : []), inspection.kind, "data", "instance"]),
     training: {},
     credentials: { kind: "demo" },
     timestamp: { on: presets.length > 0, preset: presets[0]?.url ?? CUSTOM_TSA, custom: "" },
@@ -157,6 +193,18 @@ export function newSignForm(inspection: Inspection, presets: TsaPreset[]): SignF
     metaPreview: null,
     metaError: null,
   };
+}
+
+/** Whether the file's Semantic-Code is computed or on its way. */
+function semanticAvailable(inspection: Inspection): boolean {
+  return inspection.iscc.some((u) => u.unit === "semantic") || inspection.pending.includes("semantic");
+}
+
+/** Untick the units the finished analysis could not compute (a video without frames, a text the models could not
+ * embed); every other choice stays as the user left it. */
+export function dropFailedUnits(form: SignForm, inspection: Inspection) {
+  if (inspection.content_error) form.units.delete(inspection.kind);
+  if (inspection.semantic_error) form.units.delete("semantic");
 }
 
 /** Problems that keep the form from being signed; empty when it is complete. */
@@ -269,21 +317,40 @@ function timestampFieldset(choice: TimestampChoice, info: AppInfo | null): strin
       </div>`;
 }
 
+/** The code line under a unit option: the code, "computing…" while a later pass computes it, why the Semantic-Code
+ * is not available (with the offer of the models), or the Meta-Code preview hint. */
+function optionCode(o: UnitOption, form: SignForm, inspection: Inspection, context: SignContext): string {
+  const muted = (html: string, meta = false) =>
+    `<span class="code"${meta ? ` data-meta-code="1"` : ""} style="color:var(--muted)">${html}</span>`;
+  if (o.slug === "meta") {
+    const code = form.metaPreview?.iscc;
+    return code ? `<span class="code" data-meta-code="1">${isccHtml(code)}</span>` : muted(esc(metaPreviewHint(form)), true);
+  }
+  const unit = inspection.iscc.find((u) => u.name === o.title);
+  if (unit) return `<span class="code">${isccHtml(unit.iscc)}</span>`;
+  if (inspection.pending.includes(o.unit)) return muted("computing…");
+  if (o.slug !== "semantic" || !inspection.semantic_error) return "";
+  if (context.modelsToInstall !== null && inspection.semantic_error !== inspection.content_error) {
+    const offer = `<button type="button" class="linkbtn" data-action="offer-semantic">Install the models (${esc(formatBytes(context.modelsToInstall))})</button>`;
+    return muted(`not available: the semantic models are not installed · ${offer}`);
+  }
+  return muted(`not available: ${esc(inspection.semantic_error)}`);
+}
+
 /** Render the sign form. */
-export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | null): string {
+export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | null, context: SignContext): string {
   const hasManifest = Boolean(inspection.manifest);
-  const computed = new Map(inspection.iscc.map((u) => [u.name, u.iscc]));
   const custom = form.credentials.kind === "custom" ? form.credentials : null;
 
   const unitChecks = unitOptions(inspection)
     .map((o) => {
-      const code = o.slug === "meta" ? (form.metaPreview?.iscc ?? null) : (computed.get(o.title) ?? null);
+      const unavailable = o.slug === "semantic" && !semanticAvailable(inspection);
       return `
       <label class="check">
-        <input type="checkbox" name="unit" value="${o.slug}" ${form.units.has(o.slug) ? "checked" : ""} />
+        <input type="checkbox" name="unit" value="${o.slug}" ${form.units.has(o.slug) && !unavailable ? "checked" : ""} ${unavailable ? "disabled" : ""} />
         <span class="title"><span class="swatch" data-unit="${o.unit}"></span>${esc(o.title)}</span>
         <span class="desc">${esc(o.desc)}</span>
-        ${code ? `<span class="code" data-meta-code="${o.slug === "meta" ? "1" : ""}">${isccHtml(code)}</span>` : o.slug === "meta" ? `<span class="code" data-meta-code="1" style="color:var(--muted)">${esc(metaPreviewHint(form))}</span>` : ""}
+        ${optionCode(o, form, inspection, context)}
       </label>`;
     })
     .join("");
@@ -378,13 +445,17 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
         </div>
       </div>
 
-      ${signActions(inspection)}
+      ${signActions(inspection, context.analysing)}
     </form>`;
 }
 
+/** Why the Sign button waits. */
+export const WAITING = "Waiting for the units still being computed.";
+
 /** The submit area: the reason a file cannot be signed in place of the button, or the button
- * with a warning above it when signing does something to the file its owner may not want. */
-function signActions(inspection: Inspection): string {
+ * with a warning above it when signing does something to the file its owner may not want. The
+ * button waits while the background pass computes units of the file (`analysing`). */
+function signActions(inspection: Inspection, analysing: boolean): string {
   if (inspection.sign_block) {
     return `<div class="actions"><p class="banner error grow">${esc(inspection.sign_block)}</p></div>`;
   }
@@ -392,7 +463,7 @@ function signActions(inspection: Inspection): string {
   return `
       ${warning}
       <div class="actions">
-        <span class="msg" id="sign-msg"></span>
-        <button type="submit" class="btn primary" id="sign-submit">Sign and embed</button>
+        <span class="msg" id="sign-msg">${analysing ? esc(WAITING) : ""}</span>
+        <button type="submit" class="btn primary" id="sign-submit" ${analysing ? "disabled" : ""}>Sign and embed</button>
       </div>`;
 }

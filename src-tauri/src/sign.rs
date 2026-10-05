@@ -16,12 +16,12 @@ use serde_json::json;
 
 use crate::asset::{self, Asset};
 use crate::context::{self, base_settings, ISCC_SOFT_BINDING_ALG};
-use crate::inspect::{self, Inspection, TRAINING_MINING_LABEL};
+use crate::inspect::{self, Depth, Inspection, Semantic, TRAINING_MINING_LABEL};
 use crate::iscc::{self, IsccUnit, MetaInput, UnitSelection};
-use crate::metadata;
 use crate::thumbnail::{self, THUMBNAIL_EDGE, THUMBNAIL_MIME, THUMBNAIL_QUALITY};
 use crate::timestamp::{BestEffortTsa, FailureSlot};
 use crate::tools::Cancelled;
+use crate::{metadata, semantic};
 
 /// Signing request as sent by the UI.
 #[derive(Deserialize, Debug)]
@@ -114,9 +114,11 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
     sign_with(request, &|_, _| true)
 }
 
-/// [`sign`], with `progress` following the analysis of a video source and of its signed copy:
-/// the stage, the share of the duration decoded (`None` when unknown); false stops it. A video
-/// just inspected is not decoded again, nor is a copy that provably carries the source's video.
+/// [`sign`], with `progress` following the slow units of the source and of its signed copy: the
+/// stage, the share of a video decoded or of a text embedded (`None` when unknown); false stops
+/// it. A video just inspected is not decoded again, nor is a copy that provably carries the
+/// source's video, and the Semantic-Code of pixels or text embedded before comes from the memo
+/// of `semantic`.
 /// Between the two, `progress` hears [`Stage::Write`] for every format: stopped there or before,
 /// the run leaves no output; after it the output is written and stays.
 pub fn sign_with(
@@ -144,7 +146,15 @@ pub fn sign_with(
         description: request.description.as_deref(),
         meta: request.meta.as_deref(),
     };
-    let units = iscc::units_for(&loaded.bitstream, asset.content(), meta, &selection)?;
+    let semantic = selection
+        .semantic
+        .then(|| semantic::unit(asset.content(), &|f| progress(Stage::Source, f)))
+        .transpose()?;
+    let bitstream = loaded
+        .bitstream
+        .as_ref()
+        .ok_or_else(|| anyhow!("the source is not hashed"))?;
+    let units = iscc::units_for(bitstream, asset.content(), meta, semantic, &selection)?;
     if units.is_empty() {
         bail!("select at least one ISCC unit for the soft binding");
     }
@@ -201,7 +211,17 @@ pub fn sign_with(
     let copy_format = inspect::asset_format(output)?;
     let copy =
         asset::load_signed_copy(output, copy_format, asset, &|f| progress(Stage::Output, f))?;
-    let inspection = inspect::inspect_loaded(output, copy_format, copy)?;
+    // A Semantic-Code left out at signing is left to a later pass, as for any file just opened.
+    let depth = Depth {
+        decode_video: true,
+        semantic: if selection.semantic {
+            Semantic::Now
+        } else {
+            Semantic::Later
+        },
+    };
+    let output_progress = |_, f| progress(Stage::Output, f);
+    let inspection = inspect::inspect_loaded(output, copy_format, copy, depth, &output_progress)?;
     Ok(SignResult {
         output: output.to_string_lossy().into_owned(),
         units,
@@ -437,6 +457,32 @@ mod tests {
         assert_eq!(unit_match(sb, "Meta-Code").similarity, Some(1.0));
         assert_eq!(unit_match(sb, "Data-Code").similarity, Some(1.0));
         assert_eq!(unit_match(sb, "Instance-Code").similarity, Some(1.0));
+    }
+
+    #[test]
+    fn semantic_codes_are_embedded_and_match_after_signing() {
+        crate::tools::tests::ensure_semantic();
+        let dir = tempfile::tempdir().unwrap();
+        // A JPEG is source-preserving, so its unit is compared with the source view's; a DOCX
+        // has no source view, so with the file's own text.
+        for (source, slug, name) in [
+            ("no_manifest.jpg", "image", "Semantic-Code Image"),
+            ("demo.docx", "text", "Semantic-Code Text"),
+        ] {
+            let mut req = request(source, &dir.path().join(format!("signed-{source}")));
+            req.units = ["meta", "semantic", slug, "data", "instance"]
+                .map(String::from)
+                .to_vec();
+            let result = sign(&req).unwrap();
+            assert_eq!(result.units.len(), 5, "{source}");
+            assert_eq!(result.units[1].name, name);
+            let sb = &result.inspection.manifest.as_ref().unwrap().soft_bindings[0];
+            assert_eq!(unit_match(sb, name).similarity, Some(1.0), "{source}");
+            assert!(result.inspection.pending.is_empty());
+        }
+        // Left out at signing, the copy's Semantic-Code is left to a later pass.
+        let result = sign_no_manifest("iscc-c2pa-demo-test-semantic-later");
+        assert_eq!(result.inspection.pending, ["semantic"]);
     }
 
     #[test]

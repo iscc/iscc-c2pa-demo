@@ -12,13 +12,13 @@ use c2pa::{Context, Manifest, Reader, ValidationState};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::asset::{self, AssetContent, Loaded};
+use crate::asset::{self, Asset, AssetContent, Loaded};
 use crate::context::{base_settings, ISCC_SOFT_BINDING_ALG};
 use crate::formats::{self, Format, Kind};
-use crate::iscc::{self, IsccUnit, MetaInput};
+use crate::iscc::{self, Content, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
-use crate::video::Progress;
-use crate::{audio, thumbnail};
+use crate::tools::{self, Cancelled};
+use crate::{audio, semantic, thumbnail};
 
 /// JPEG quality of the preview image.
 const PREVIEW_QUALITY: u8 = 82;
@@ -52,9 +52,12 @@ pub struct Inspection {
     pub duration_secs: Option<f64>,
     /// Creator named in the asset's own metadata; display only.
     pub creator: Option<String>,
-    /// Meta, Content, Data and Instance units of the whole file, as any ISCC tool computes them
-    /// and as signing this file would embed them.
+    /// Meta, Semantic, Content, Data and Instance units of the whole file, as any ISCC tool
+    /// computes them and as signing this file would embed them.
     pub iscc: Vec<IsccUnit>,
+    /// Units a later pass still computes ([`Depth::GLANCE`]): `semantic`, and a video's
+    /// `content`, `data` and `instance`.
+    pub pending: Vec<&'static str>,
     /// Title, description and ISCC metadata behind the Meta-Code, and where the title came from.
     pub meta_fields: MetaFields,
     /// Why the Meta-Code could not be computed from `meta_fields`, or why the file's own tags
@@ -63,6 +66,9 @@ pub struct Inspection {
     /// Why the Content-Code could not be computed (audio too short, a document without text, a
     /// video without frames or without ffmpeg); `iscc` then lacks it.
     pub content_error: Option<String>,
+    /// Why an image or a text has no Semantic-Code (the models are not installed, a document
+    /// without text); `iscc` then lacks it. `None` for audio and video, which have none.
+    pub semantic_error: Option<String>,
     /// The Content-Code is that of the source just signed, whose compressed video this signed
     /// copy carries unchanged, so it decodes to the same frames; false when it was computed from
     /// this file's own frames.
@@ -86,6 +92,8 @@ pub struct ManifestSummary {
     pub title: Option<String>,
     pub claim_generator: Option<String>,
     pub manifest_count: usize,
+    /// c2pa's `Trusted`, `Valid` or `Invalid`; `Pending` while a video at a glance waits for the
+    /// check that hashes it.
     pub validation_state: String,
     /// Why the manifest is invalid; set exactly when `validation_state` is `Invalid`.
     pub invalid_reason: Option<InvalidReason>,
@@ -253,27 +261,191 @@ pub fn asset_format(path: &Path) -> Result<&'static Format> {
     })
 }
 
-/// Inspect the file at `path`. The units in `iscc` are those of the whole file; see
-/// [`summarize_assertion`] for what soft bindings are compared with.
+/// What an inspection computes now, and what it leaves pending for a later pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Depth {
+    /// Decode and hash a video now; false shows it at a glance ([`asset::glance`]), its
+    /// Content-Code, Data-Code and Instance-Code pending.
+    pub decode_video: bool,
+    pub semantic: Semantic,
+}
+
+/// When the Semantic-Code of an image or a text is computed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Semantic {
+    /// Now: the unit, or why there is none (the models are not installed).
+    Now,
+    /// In a later pass: pending when the models are installed, else why there is none.
+    Later,
+    /// Not at all, and not mentioned.
+    Never,
+}
+
+impl Depth {
+    /// What shows at once: every unit but the slow ones, which stay pending.
+    pub const GLANCE: Depth = Depth {
+        decode_video: false,
+        semantic: Semantic::Later,
+    };
+    /// Every unit.
+    pub const FULL: Depth = Depth {
+        decode_video: true,
+        semantic: Semantic::Now,
+    };
+    /// Every unit but the Semantic-Code, which needs the models.
+    pub const NO_SEMANTIC: Depth = Depth {
+        decode_video: true,
+        semantic: Semantic::Never,
+    };
+}
+
+/// Hears how far a slow unit got: `content` while a video decodes, `semantic` while a text is
+/// embedded, with the share done (`None` when unknown); false stops the inspection.
+pub type Progress<'a> = &'a dyn Fn(&'static str, Option<f64>) -> bool;
+
+/// Inspect the file at `path`, every unit but the Semantic-Code. The units in `iscc` are those
+/// of the whole file; see [`summarize_assertion`] for what soft bindings are compared with.
 pub fn inspect(path: &Path) -> Result<Inspection> {
-    inspect_with(path, &|_| true)
+    inspect_with(path, Depth::NO_SEMANTIC, &|_, _| true)
 }
 
-/// [`inspect`], with `progress` following the analysis of a video.
-pub fn inspect_with(path: &Path, progress: Progress) -> Result<Inspection> {
+/// [`inspect`] to `depth`, with `progress` following the slow units.
+pub fn inspect_with(path: &Path, depth: Depth, progress: Progress) -> Result<Inspection> {
     let format = asset_format(path)?;
-    inspect_loaded(path, format, asset::load(path, format, progress)?)
+    let loaded = if depth.decode_video {
+        asset::load(path, format, &|f| progress("content", f))?
+    } else {
+        asset::glance(path, format)?
+    };
+    inspect_loaded(path, format, loaded, depth, progress)
 }
 
-/// [`inspect`] of the file at `path`, of `format`, loaded as `loaded`.
-pub fn inspect_loaded(path: &Path, format: &'static Format, loaded: Loaded) -> Result<Inspection> {
-    let asset = &loaded.asset;
+/// The units of a file, the reasons for those it lacks and the ones still to come.
+struct FileUnits {
+    units: Vec<IsccUnit>,
+    meta_error: Option<String>,
+    semantic_error: Option<String>,
+    content_error: Option<String>,
+    pending: Vec<&'static str>,
+}
 
-    let (reader, manifest_error) = match read_manifest(path) {
+/// The units of `loaded` to `depth`. An unusable title or ISCC metadata costs only the
+/// Meta-Code, audio too short for a fingerprint only the Content-Code, missing models only the
+/// Semantic-Code, not the inspection. Unread tags give no Meta-Code: one from the fallbacks would
+/// differ from the file's own.
+fn file_units(
+    loaded: &Loaded,
+    kind: Kind,
+    meta_fields: &MetaFields,
+    depth: Depth,
+    progress: Progress,
+) -> Result<FileUnits> {
+    let asset = &loaded.asset;
+    let (meta, meta_error) = match &asset.content {
+        AssetContent::Unread(reason) => (None, Some((*reason).to_owned())),
+        _ => unit_or_error(iscc::meta_unit(meta_input(meta_fields))),
+    };
+    let semantic = semantic_unit(kind, asset, depth.semantic, progress)?;
+    let undecoded = matches!(asset.content, AssetContent::Undecoded(_));
+    let (content, content_error) = if undecoded {
+        (None, None)
+    } else {
+        unit_or_error(iscc::content_unit(asset.content()))
+    };
+    let mut pending = Vec::new();
+    if semantic == Slow::Pending {
+        pending.push("semantic");
+    }
+    if undecoded {
+        pending.push("content");
+    }
+    if loaded.bitstream.is_none() {
+        pending.extend(["data", "instance"]);
+    }
+    let (semantic, semantic_error) = semantic.split();
+    let units = meta
+        .into_iter()
+        .chain(semantic)
+        .chain(content)
+        .chain(loaded.bitstream.clone().into_iter().flatten())
+        .collect();
+    Ok(FileUnits {
+        units,
+        meta_error,
+        semantic_error,
+        content_error,
+        pending,
+    })
+}
+
+/// A unit that may take long: computed, left for later, failed with a reason, or not one this
+/// file has.
+#[derive(Debug, PartialEq)]
+enum Slow {
+    Done(IsccUnit),
+    Pending,
+    Failed(String),
+    Absent,
+}
+
+impl Slow {
+    /// The unit and the reason it failed.
+    fn split(self) -> (Option<IsccUnit>, Option<String>) {
+        match self {
+            Slow::Done(unit) => (Some(unit), None),
+            Slow::Failed(reason) => (None, Some(reason)),
+            Slow::Pending | Slow::Absent => (None, None),
+        }
+    }
+}
+
+/// The Semantic-Code of an image or a text as `when` asks; audio and video have none. A
+/// document without text has none for the reason it has no Content-Code. Only a cancelled run
+/// fails the inspection.
+fn semantic_unit(kind: Kind, asset: &Asset, when: Semantic, progress: Progress) -> Result<Slow> {
+    if when == Semantic::Never || !matches!(kind, Kind::Image | Kind::Text) {
+        return Ok(Slow::Absent);
+    }
+    let content = asset.content();
+    if let Content::Unavailable(reason) = content {
+        return Ok(Slow::Failed(reason.to_owned()));
+    }
+    if when == Semantic::Later {
+        return Ok(match tools::semantic_paths() {
+            Ok(_) => Slow::Pending,
+            Err(e) => Slow::Failed(e.to_string()),
+        });
+    }
+    match semantic::unit(content, &|f| progress("semantic", f)) {
+        Ok(unit) => Ok(Slow::Done(unit)),
+        Err(e) if e.downcast_ref::<Cancelled>().is_some() => Err(e),
+        Err(e) => Ok(Slow::Failed(e.to_string())),
+    }
+}
+
+/// The manifest store of the file at `path`, or why it could not be read; `(None, None)` when
+/// the file has none. `check` validates it, which hashes the whole file for its hard binding.
+fn manifest_store(path: &Path, check: bool) -> (Option<Reader>, Option<String>) {
+    match read_manifest(path, check) {
         Ok(reader) => (Some(reader), None),
         Err(c2pa::Error::JumbfNotFound) => (None, None),
         Err(e) => (None, Some(e.to_string())),
-    };
+    }
+}
+
+/// [`inspect`] to `depth` of the file at `path`, of `format`, loaded as `loaded`.
+pub fn inspect_loaded(
+    path: &Path,
+    format: &'static Format,
+    loaded: Loaded,
+    depth: Depth,
+    progress: Progress,
+) -> Result<Inspection> {
+    let asset = &loaded.asset;
+    // An unhashed file (a video at a glance) has no source view yet, and its manifest store is
+    // checked with its hashes: c2pa reads the whole file for the hard binding.
+    let hashed = loaded.bitstream.is_some();
+    let (reader, manifest_error) = manifest_store(path, hashed);
     let json = reader
         .as_ref()
         .map(|r| serde_json::from_str::<Value>(&r.json()).unwrap_or(Value::Null));
@@ -288,42 +460,32 @@ pub fn inspect_loaded(path: &Path, format: &'static Format, loaded: Loaded) -> R
             .and_then(Manifest::title),
     };
     let meta_fields = metadata::meta_fields(asset.metadata.clone(), manifest_meta, path);
-    // An unusable title or ISCC metadata costs only the Meta-Code, audio too short for a
-    // fingerprint only the Content-Code, not the inspection. Unread tags give no Meta-Code:
-    // one from the fallbacks would differ from the file's own.
-    let (meta, meta_error) = match &asset.content {
-        AssetContent::Unread(reason) => (None, Some((*reason).to_owned())),
-        _ => unit_or_error(iscc::meta_unit(meta_input(&meta_fields))),
-    };
-    let (content, content_error) = unit_or_error(iscc::content_unit(asset.content()));
-    let units: Vec<IsccUnit> = meta
-        .into_iter()
-        .chain(content)
-        .chain(loaded.bitstream.clone())
-        .collect();
+    let file = file_units(&loaded, format.kind, &meta_fields, depth, progress)?;
+    let units = &file.units;
     let view = reader
         .as_ref()
+        .filter(|_| hashed)
         .and_then(source_view_ranges)
         .map(|ranges| {
             if ranges.is_empty() {
                 // Nothing to cut: the source view is the file itself.
-                Ok(SourceView::of_file(path, format, &units))
+                Ok(SourceView::of_file(path, format, units))
             } else {
-                SourceView::new(path, format, ranges, &units)
+                SourceView::new(path, format, ranges, units, depth.semantic)
             }
         })
         .transpose()?;
     let compared = match &view {
-        Some(view) => with_bitstream_of(&units, view.units()),
+        Some(view) => with_bitstream_of(units, view.units()),
         None => units.clone(),
     };
     let manifest = reader
         .as_ref()
         .zip(json.as_ref())
-        .map(|(r, j)| summarize(r, j, path, &compared, view.as_ref()));
+        .map(|(r, j)| summarize(r, j, path, &compared, view.as_ref(), hashed));
     let (width, height) = match &asset.content {
         AssetContent::Image(rgb) => rgb.dimensions(),
-        AssetContent::Video(video) => (video.width, video.height),
+        AssetContent::Video(video) | AssetContent::Undecoded(video) => (video.width, video.height),
         _ => (0, 0),
     };
 
@@ -351,14 +513,16 @@ pub fn inspect_loaded(path: &Path, format: &'static Format, loaded: Loaded) -> R
         },
         duration_secs: match &asset.content {
             AssetContent::Audio(audio) => Some(audio.seconds),
-            AssetContent::Video(video) => video.seconds,
+            AssetContent::Video(video) | AssetContent::Undecoded(video) => video.seconds,
             _ => None,
         },
         creator: asset.metadata.creator.clone(),
-        iscc: units,
+        iscc: file.units,
+        pending: file.pending,
         meta_fields,
-        meta_error,
-        content_error,
+        meta_error: file.meta_error,
+        semantic_error: file.semantic_error,
+        content_error: file.content_error,
         content_from_source: matches!(&asset.content, AssetContent::Video(v) if v.from_source),
         sign_block: asset.sign_block,
         sign_warning: asset.sign_warning,
@@ -540,10 +704,11 @@ fn with_bitstream_of(units: &[IsccUnit], view: &[IsccUnit]) -> Vec<IsccUnit> {
 
 /// The source view (IEP-0020) with its units. The Meta-Code is the file's, since its inputs
 /// never lie inside the manifest store. The view is streamed from the file, never held whole for
-/// its Data-Code and Instance-Code. The Content-Code is computed on first use, because it only
-/// matters once the view is proven to be the source: the view of a file that is not
-/// source-preserving need not decode (then it is left out), and decoding it costs as much as the
-/// file did (a signed PDF would run pdfium a second time, a video ffmpeg).
+/// its Data-Code and Instance-Code. The Content-Code and the Semantic-Code are computed on first
+/// use, because they only matter once the view is proven to be the source: the view of a file
+/// that is not source-preserving need not decode (then they are left out), and decoding it costs
+/// as much as the file did (a signed PDF would run pdfium a second time, a video ffmpeg). The
+/// Semantic-Code of a view that decodes like the file comes from the memo of `semantic`.
 struct SourceView<'a> {
     path: &'a Path,
     format: &'static Format,
@@ -551,7 +716,10 @@ struct SourceView<'a> {
     exclusions: Vec<(u64, u64)>,
     /// Meta-Code of the file, Data-Code and Instance-Code of the view.
     units: Vec<IsccUnit>,
-    content: OnceCell<Option<IsccUnit>>,
+    /// Whether the Semantic-Code is computed now, as for the file.
+    semantic: Semantic,
+    /// Content-Code and Semantic-Code of the decoded view.
+    decoded: OnceCell<Vec<IsccUnit>>,
 }
 
 impl<'a> SourceView<'a> {
@@ -562,6 +730,7 @@ impl<'a> SourceView<'a> {
         format: &'static Format,
         exclusions: Vec<(u64, u64)>,
         file_units: &[IsccUnit],
+        semantic: Semantic,
     ) -> Result<Self> {
         let meta = file_units.iter().find(|u| u.unit == "meta").cloned();
         let (bitstream, _) = iscc::stream_units(ViewReader::open(path, &exclusions)?)?;
@@ -570,35 +739,44 @@ impl<'a> SourceView<'a> {
             format,
             exclusions,
             units: meta.into_iter().chain(bitstream).collect(),
-            content: OnceCell::new(),
+            semantic,
+            decoded: OnceCell::new(),
         })
     }
 
     /// The file itself as its source view (a sidecar manifest, or a data hash that excludes
     /// nothing): every unit is known already.
     fn of_file(path: &'a Path, format: &'static Format, file_units: &[IsccUnit]) -> Self {
-        let (content, units): (Vec<IsccUnit>, Vec<IsccUnit>) = file_units
+        let (decoded, units): (Vec<IsccUnit>, Vec<IsccUnit>) = file_units
             .iter()
             .cloned()
-            .partition(|u| u.unit == "content");
+            .partition(|u| u.unit == "content" || u.unit == "semantic");
         SourceView {
             path,
             format,
             exclusions: Vec::new(),
             units,
-            content: OnceCell::from(content.into_iter().next()),
+            semantic: Semantic::Never,
+            decoded: OnceCell::from(decoded),
         }
     }
 
-    /// Content-Code of the view, when it decodes.
-    fn content_unit(&self) -> Option<IsccUnit> {
+    /// Content-Code and, when computed now, Semantic-Code of the view, where the view decodes.
+    fn decoded_units(&self) -> Vec<IsccUnit> {
         let mut bytes = Vec::new();
-        ViewReader::open(self.path, &self.exclusions)
-            .ok()?
-            .read_to_end(&mut bytes)
-            .ok()?;
-        let asset = asset::read(self.path, &bytes, self.format).ok()?;
-        iscc::content_unit(asset.content()).ok()
+        let read = ViewReader::open(self.path, &self.exclusions)
+            .and_then(|mut view| Ok(view.read_to_end(&mut bytes)?));
+        let Some(asset) = read
+            .ok()
+            .and_then(|_| asset::read(self.path, &bytes, self.format).ok())
+        else {
+            return Vec::new();
+        };
+        let content = iscc::content_unit(asset.content()).ok();
+        let semantic = (self.semantic == Semantic::Now)
+            .then(|| semantic::unit(asset.content(), &|_| true).ok())
+            .flatten();
+        content.into_iter().chain(semantic).collect()
     }
 
     /// Meta-Code of the file, Data-Code and Instance-Code of the view.
@@ -606,16 +784,19 @@ impl<'a> SourceView<'a> {
         &self.units
     }
 
-    /// Every unit, the view's Content-Code included where the view decodes.
+    /// Every unit, the view's Content-Code and Semantic-Code included where the view decodes.
     fn all_units(&self) -> Vec<IsccUnit> {
-        let content = self.content.get_or_init(|| self.content_unit());
-        self.units.iter().chain(content).cloned().collect()
+        let decoded = self.decoded.get_or_init(|| self.decoded_units());
+        self.units.iter().chain(decoded).cloned().collect()
     }
 }
 
 /// Open the manifest store with the shared trust settings.
-fn read_manifest(path: &Path) -> c2pa::Result<Reader> {
-    let context = Context::new().with_settings(base_settings())?;
+/// The manifest store of the file at `path`, validated when `check` is set.
+fn read_manifest(path: &Path, check: bool) -> c2pa::Result<Reader> {
+    let mut settings = base_settings();
+    settings["verify"]["verify_after_reading"] = Value::Bool(check);
+    let context = Context::new().with_settings(settings)?;
     Reader::from_context(context).with_file(path)
 }
 
@@ -627,13 +808,16 @@ fn preview_data_url(rgb: &image::RgbImage) -> Result<String> {
 
 /// Build the display summary of the active manifest of the file at `path`. `view` is the
 /// source view, when there is one (see [`source_view_ranges`]); see [`summarize_assertion`] for
-/// `compared`.
+/// `compared`. `hashed` is false while the file's Data-Code and Instance-Code are pending, which
+/// leaves its source view, the preservation verdict and the validation for later: the store was
+/// read unchecked, and its validation state is `Pending`.
 fn summarize(
     reader: &Reader,
     json: &Value,
     path: &Path,
     compared: &[IsccUnit],
     view: Option<&SourceView>,
+    hashed: bool,
 ) -> ManifestSummary {
     let label = reader.active_label().unwrap_or_default().to_owned();
     let manifest = reader.active_manifest();
@@ -668,11 +852,15 @@ fn summarize(
         title: manifest.and_then(|m| m.title().map(str::to_owned)),
         claim_generator,
         manifest_count: reader.manifests().len(),
-        validation_state: format!("{:?}", reader.validation_state()),
-        invalid_reason: invalid_reason(reader),
+        validation_state: if hashed {
+            format!("{:?}", reader.validation_state())
+        } else {
+            "Pending".to_owned()
+        },
+        invalid_reason: invalid_reason(reader).filter(|_| hashed),
         trust_list: signer_trust_list(reader),
         validation: serde_json::to_value(reader.validation_results()).unwrap_or(Value::Null),
-        source_view: view.is_some(),
+        source_view: view.is_some() || (!hashed && source_view_ranges(reader).is_some()),
         sidecar: sidecar_name(reader, path),
         signature: manifest
             .and_then(Manifest::signature_info)
@@ -706,7 +894,7 @@ fn summarize(
         soft_bindings: manifest
             .map(|m| {
                 let facts = binding_facts(reader, m, view.is_some());
-                soft_bindings(m, compared, view, &facts)
+                soft_bindings(m, compared, view, hashed.then_some(&facts))
             })
             .unwrap_or_default(),
         training_mining,
@@ -1007,12 +1195,13 @@ fn claim_generator_from_json(json: &Value, label: &str) -> Option<String> {
     })
 }
 
-/// Decode every soft-binding assertion of a manifest.
+/// Decode every soft-binding assertion of a manifest; `facts` is `None` while the file is not
+/// hashed yet, which leaves the preservation verdict open.
 fn soft_bindings(
     manifest: &Manifest,
     compared: &[IsccUnit],
     view: Option<&SourceView>,
-    facts: &BindingFacts,
+    facts: Option<&BindingFacts>,
 ) -> Vec<SoftBindingSummary> {
     manifest
         .assertions()
@@ -1028,16 +1217,24 @@ fn soft_bindings(
 /// source-preserving, the embedded units are compared with those of `view`, because the source
 /// view then is the source. Otherwise they are compared with `compared`: Meta-Code and Content-Code
 /// of the file, which always decodes, with Data-Code and Instance-Code of the source view where
-/// there is one, so that the manifest store does not count as a change.
+/// there is one, so that the manifest store does not count as a change. Without `facts` (the
+/// file not hashed yet) there is no verdict, and the units known so far are compared.
 fn summarize_assertion(
     sb: &SoftBinding,
     compared: &[IsccUnit],
     view: Option<&SourceView>,
-    facts: &BindingFacts,
+    facts: Option<&BindingFacts>,
 ) -> Vec<SoftBindingSummary> {
     let metadata = binding_metadata(sb);
     let summarize = |value: &[u8], units: &[IsccUnit]| {
         summarize_soft_binding(sb.alg.clone(), value, units, metadata.clone())
+    };
+    let Some(facts) = facts else {
+        return sb
+            .blocks
+            .iter()
+            .map(|block| summarize(&block.value, compared))
+            .collect();
     };
     sb.blocks
         .iter()
@@ -1530,6 +1727,126 @@ mod tests {
         inspection.iscc.iter().map(|u| u.name).collect()
     }
 
+    /// Progress that is never stopped.
+    fn unstopped(_: &str, _: Option<f64>) -> bool {
+        true
+    }
+
+    #[test]
+    fn a_glance_leaves_the_slow_units_pending() {
+        crate::tools::tests::ensure_semantic();
+        crate::tools::tests::ensure_ffmpeg();
+        let image = fixture("no_manifest.jpg");
+        let glanced = inspect_with(Path::new(&image), Depth::GLANCE, &unstopped).unwrap();
+        assert_eq!(glanced.pending, ["semantic"]);
+        let quick = [
+            "Meta-Code",
+            "Content-Code Image",
+            "Data-Code",
+            "Instance-Code",
+        ];
+        assert_eq!(unit_names(&glanced), quick);
+        assert_eq!(glanced.semantic_error, None);
+        let full = inspect_with(Path::new(&image), Depth::FULL, &unstopped).unwrap();
+        assert!(full.pending.is_empty());
+        assert_eq!(unit_names(&full)[1], "Semantic-Code Image");
+
+        let video = fixture("demo.mp4");
+        let glanced = inspect_with(Path::new(&video), Depth::GLANCE, &unstopped).unwrap();
+        assert_eq!(glanced.pending, ["content", "data", "instance"]);
+        assert_eq!(unit_names(&glanced), ["Meta-Code"]);
+        assert_eq!(
+            (glanced.content_error, glanced.semantic_error),
+            (None, None)
+        );
+        assert_eq!((glanced.width, glanced.height), (176, 144));
+        assert!(glanced.duration_secs.is_some_and(|s| (s - 8.0).abs() < 0.2));
+        assert!(glanced.preview.starts_with("data:image/jpeg;base64,"));
+        let full = inspect_with(Path::new(&video), Depth::FULL, &unstopped).unwrap();
+        assert!(full.pending.is_empty());
+        let units = [
+            "Meta-Code",
+            "Content-Code Video",
+            "Data-Code",
+            "Instance-Code",
+        ];
+        assert_eq!(unit_names(&full), units);
+    }
+
+    #[test]
+    fn a_signed_video_at_a_glance_leaves_its_verdict_open() {
+        crate::tools::tests::ensure_ffmpeg();
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("demo-signed.avi");
+        let request = crate::sign::SignRequest {
+            source: fixture("demo.avi"),
+            output: output.to_string_lossy().into_owned(),
+            title: "Demo video".into(),
+            description: None,
+            meta: None,
+            source_type: None,
+            units: ["meta", "video", "data", "instance"]
+                .map(String::from)
+                .to_vec(),
+            training: Default::default(),
+            credentials: crate::sign::Credentials::Demo,
+            tsa_url: None,
+        };
+        crate::sign::sign(&request).unwrap();
+        let glanced = inspect_with(&output, Depth::GLANCE, &unstopped).unwrap();
+        let manifest = glanced.manifest.unwrap();
+        assert!(manifest.source_view, "an AVI has a byte-range hash");
+        assert_eq!(
+            manifest.validation_state, "Pending",
+            "checked with the hashes"
+        );
+        assert_eq!(manifest.invalid_reason, None);
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, None, "decided once the file is hashed");
+        let compared: Vec<bool> = sb.matches.iter().map(|m| m.similarity.is_some()).collect();
+        assert_eq!(
+            compared,
+            [true, false, false, false],
+            "only the Meta-Code is known"
+        );
+        let full = inspect_with(&output, Depth::FULL, &unstopped).unwrap();
+        let manifest = full.manifest.unwrap();
+        assert_eq!(manifest.validation_state, "Trusted");
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::Changed));
+    }
+
+    #[test]
+    fn only_images_and_texts_have_a_semantic_code() {
+        crate::tools::tests::ensure_semantic();
+        let full = |name: &str| inspect_with(Path::new(&fixture(name)), Depth::FULL, &unstopped);
+        let audio = full("demo.mp3").unwrap();
+        assert!(audio.iscc.iter().all(|u| u.unit != "semantic"));
+        assert_eq!(audio.semantic_error, None);
+        let scan = full("scan.pdf").unwrap();
+        assert!(scan.semantic_error.is_some());
+        assert_eq!(
+            scan.semantic_error, scan.content_error,
+            "no text, for the same reason"
+        );
+
+        let reports = std::cell::RefCell::new(Vec::new());
+        let text = inspect_with(Path::new(&fixture("demo.txt")), Depth::FULL, &|unit, f| {
+            reports.borrow_mut().push((unit, f));
+            true
+        })
+        .unwrap();
+        assert_eq!(unit_names(&text)[1], "Semantic-Code Text");
+        let reports = reports.into_inner();
+        assert!(
+            reports.iter().all(|(unit, _)| *unit == "semantic"),
+            "{reports:?}"
+        );
+        assert_eq!(reports.last(), Some(&("semantic", Some(1.0))));
+        let stopped = inspect_with(Path::new(&fixture("demo.md")), Depth::FULL, &|_, _| false);
+        assert!(stopped.unwrap_err().downcast_ref::<Cancelled>().is_some());
+    }
+
     #[test]
     fn inspect_audio_without_manifest() {
         for file in ["demo.mp3", "demo.flac", "demo.wav", "demo.m4a"] {
@@ -1610,7 +1927,7 @@ mod tests {
         // As `asset::load` leaves a video without ffmpeg: hashed, content and tags unread.
         let path = fixture("demo.mp4");
         let path = Path::new(&path);
-        let reason = crate::tools::Missing { available: true }.reason();
+        let reason = crate::tools::Missing::Ffmpeg { available: true }.reason();
         let bytes = std::fs::read(path).unwrap();
         let loaded = Loaded {
             asset: asset::Asset {
@@ -1620,10 +1937,12 @@ mod tests {
                 sign_block: None,
                 sign_warning: None,
             },
-            bitstream: iscc::bitstream_units(&bytes).unwrap(),
+            bitstream: Some(iscc::bitstream_units(&bytes).unwrap()),
             size: bytes.len() as u64,
         };
-        let inspection = inspect_loaded(path, asset_format(path).unwrap(), loaded).unwrap();
+        let format = asset_format(path).unwrap();
+        let inspection =
+            inspect_loaded(path, format, loaded, Depth::NO_SEMANTIC, &|_, _| true).unwrap();
         assert_eq!(inspection.kind, Kind::Video);
         assert_eq!(unit_names(&inspection), ["Data-Code", "Instance-Code"]);
         assert_eq!(inspection.meta_error.as_deref(), Some(reason));
@@ -1777,7 +2096,7 @@ mod tests {
             "blocks": [{ "scope": {}, "value": [1, 2, 3] }],
         }))
         .unwrap();
-        let summaries = summarize_assertion(&sb, &[], None, &FACTS);
+        let summaries = summarize_assertion(&sb, &[], None, Some(&FACTS));
         assert_eq!(summaries.len(), 1);
         assert!(summaries[0].metadata.is_none());
 

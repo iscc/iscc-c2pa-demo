@@ -8,11 +8,18 @@ tested, and how a release is made.
 Opening a file shows:
 
 - the C2PA manifest store with validation state, signer, actions, ingredients and every assertion;
-- the ISCC units of the file (Meta-Code, Content-Code Image, Text, Audio or Video, Data-Code,
-  Instance-Code), computed from the whole file as any ISCC tool computes them. Title, description,
-  text, audio fingerprint and video signatures are extracted with the same rules as
-  [iscc-sdk](https://github.com/iscc/iscc-sdk), and the test suite checks the units against
-  iscc-sdk's output for every fixture;
+- the ISCC units of the file (Meta-Code, Semantic-Code Image or Text, Content-Code Image, Text,
+  Audio or Video, Data-Code, Instance-Code), computed from the whole file as any ISCC tool computes
+  them. Title, description, text, audio fingerprint and video signatures are extracted with the same
+  rules as [iscc-sdk](https://github.com/iscc/iscc-sdk), and the test suite checks the units against
+  iscc-sdk's output for every fixture. Documents of more than 500,000 characters are the exception:
+  iscc-sdk extracts their text (PDF aside) through a Tika wrapper that silently stops there, while
+  the app takes the whole text, so their Content-Code Text and Semantic-Code Text differ from
+  iscc-sdk's. The experimental Semantic-Codes come from compressed copies of the iscc-sci and
+  iscc-sct models and stay within a few bits of their codes (see [Semantic-Codes](#semantic-codes)).
+  Units that take long (a video's frames and hashes, the Semantic-Code) are computed in the
+  background after the file is shown, each with its own progress bar (see
+  [Shown at once](#shown-at-once));
 - the ISCC soft binding embedded in the manifest, decoded from its ISCC-SEQ value and compared
   unit by unit with the file, and whether the file is source-preserving (see
   [Notes on the soft binding](#notes-on-the-soft-binding));
@@ -48,6 +55,7 @@ The Sign tab writes a signed copy with:
 | SVG | [`resvg`](https://crates.io/crates/resvg) 0.48 with the settings iscc-sdk uses through resvg_py |
 | Audio | [`symphonia`](https://crates.io/crates/symphonia) 0.6 decodes, a resampler with fpcalc's settings in `src-tauri/src/resample.rs`, [`rusty-chromaprint`](https://crates.io/crates/rusty-chromaprint) fingerprints, [`lofty`](https://crates.io/crates/lofty) reads tags and cover art; [`rusty-opus`](https://crates.io/crates/rusty-opus) decodes Opus tracks of MP4 containers, registered as a symphonia decoder in `src-tauri/src/opus.rs`; no external tools |
 | Video | ffmpeg 8.1, the [iscc-binaries](https://github.com/iscc/iscc-binaries) build iscc-sdk uses, downloaded on first use and run as a separate program for the MPEG-7 frame signatures, the tags and a preview frame (see [Video](#video)) |
+| Semantic-Codes | [`rten`](https://crates.io/crates/rten) 0.27 runs weight-compressed copies of the iscc-sci and iscc-sct models, downloaded on first use; [`tokenizers`](https://crates.io/crates/tokenizers) 0.23 (pure Rust, no Oniguruma) and [`text-splitter`](https://crates.io/crates/text-splitter) 0.33 tokenize and chunk text as iscc-sct does (see [Semantic-Codes](#semantic-codes)) |
 | CLI | [`clap`](https://crates.io/crates/clap) |
 | UI | Vite + TypeScript, no framework; ISCC brand tokens, Readex Pro and JetBrains Mono |
 | Content Credentials pin | `src/assets/content_credentials_{icon,logo}.svg`, copied from [c2pa-conformance-tool](https://github.com/contentauth/c2pa-conformance-tool) (Apache 2.0). The icon and the name are C2PA trademarks; shown unmodified as the presence indicator per the [C2PA UX guidance](https://spec.c2pa.org/specifications/specifications/2.2/ux/UX_Recommendations.html) |
@@ -95,18 +103,22 @@ cargo run --features cli --bin c2pa-iscc -- sign ../report.docx --training cawg.
 cargo run --features cli --bin c2pa-iscc -- meta-code --title "A title" --description "Some text"
 cargo run --features cli --bin c2pa-iscc -- formats                                    # supported formats
 cargo run --features cli --bin c2pa-iscc -- tools install                              # ffmpeg, for video
+cargo run --features cli --bin c2pa-iscc -- tools install semantic                     # the semantic models (242 MB)
 cargo run --features cli --bin c2pa-iscc -- sign --help                                # every option
 ```
 
 The CLI prints the same JSON the desktop app works with (`--compact` for one line,
 `--no-preview` to leave out the base64 preview image). `sign` fills in every option you leave
-out the way the Sign tab prefills its form: the file's own title and description, all four
-units, the built-in demo certificate, a timestamp from Encypher, and a `-signed` copy next to
-the source. `--tsa URL` picks another timestamp service, `--no-timestamp` signs without network
+out the way the Sign tab prefills its form: the file's own title and description, every unit
+it can compute, the built-in demo certificate, a timestamp from Encypher, and a `-signed` copy
+next to the source. `--tsa URL` picks another timestamp service, `--no-timestamp` signs without network
 access. Errors print one line on stderr and exit with code 1. A video's Meta-Code and
 Content-Code need ffmpeg: without it, `inspect` and `sign` leave both out (`sign` keeps a
 Meta-Code you ask for with `--title`) and a note says to run `c2pa-iscc tools install`, which
-downloads it with a progress line on stderr (`tools status` shows where it is).
+downloads it with a progress line on stderr. The Semantic-Code of an image or a document needs the
+semantic models: without them `inspect` and `sign` leave it out with a note to run
+`c2pa-iscc tools install semantic`, and `--units semantic` is an error with the same hint.
+`tools status` shows both tools and where they are.
 
 ## Test
 
@@ -127,9 +139,13 @@ uv run --with iscc-sdk expected_text.py                  # documents (iscc-sdk w
 uv run --with iscc-sdk expected_audio.py                 # audio (iscc-sdk with fpcalc and TagLib)
 uv run --with iscc-sdk --with pypdfium2==5.14.0b1 expected_pdf.py   # PDF (iscc-sdk, pdfium 8076)
 uv run --with iscc-sdk expected_video.py                 # video (iscc-sdk with ffmpeg 8.1)
+uv run --with "iscc-sci[cpu]==0.3.0" --with "iscc-sct[cpu]==0.2.2" --with semantic-text-splitter==0.33.0 --with blake3 expected_semantic.py DUMP_DIR   # Semantic-Codes
 ```
 
-The video tests run ffmpeg and install it on the first run (see [Video](#video)).
+The video tests run ffmpeg and the Semantic-Code tests the semantic models; both are installed
+on the first run (see [Video](#video) and [Semantic-Codes](#semantic-codes)).
+`expected_semantic.py` reads the texts our extractors produce from `DUMP_DIR`, written by
+`DUMP_TEXT_DIR=DUMP_DIR cargo test --lib dump_texts -- --ignored`.
 
 `expected_pdf.py DIR` writes references for every PDF below a folder of your own, and
 `PDF_CORPUS_DIR=DIR cargo test --lib pdf_corpus -- --ignored` compares the app with them. Run it
@@ -142,8 +158,8 @@ Sources and licences of the fixtures are listed in
 
 Signing asks a time stamping authority (TSA) to countersign the signature, so the manifest
 proves that it existed at a given time and stays verifiable after the signing certificate
-expires. Besides the one-time ffmpeg download for video, which the user starts, this is the
-only network access of the app: it sends a SHA-256 hash of the signature, nothing of the file. The default service is [Encypher](https://tsa.encypher.com), the only free
+expires. Besides the one-time downloads of ffmpeg for video and of the semantic models, which
+the user starts, this is the only network access of the app: it sends a SHA-256 hash of the signature, nothing of the file. The default service is [Encypher](https://tsa.encypher.com), the only free
 service found whose timestamps are on the C2PA TSA trust list; the Sign tab also offers DigiCert
 and Sectigo (valid timestamps, but not on that list) and any other RFC 3161 URL. Timestamping is
 best effort: when the service fails, does not answer within 10 seconds, or returns a timestamp
@@ -307,9 +323,9 @@ ffmpeg open any `file:` path it names, a network share on Windows included (`a_c
   subtitle and data streams are not decoded (`-an -sn -dn`), which leaves the video filter chain
   as it is and saves time. ffmpeg rotates by the display matrix before filtering, so a portrait
   phone video is fingerprinted upright, as in iscc-sdk. `-progress pipe:1` drives the progress
-  bar; Cancel kills ffmpeg. Signing can be cancelled while the source is fingerprinted; once the
-  signed copy is being written, the card offers no Cancel, and a signing stopped before that
-  point leaves no output.
+  bar of the Content-Code row; Stop kills ffmpeg. Signing can be cancelled while the source is
+  fingerprinted; once the signed copy is being written, the card offers no Cancel, and a signing
+  stopped before that point leaves no output.
 - The stream fingerprint (see "Decoded once" below), alongside the signature pass and stopped
   with it.
 
@@ -390,6 +406,95 @@ source-preserving. MKV, WebM, MPEG-TS and OGV stay out: c2pa-rs has no handler f
 on a machine downloads it; they never skip. CI caches the folder per OS and installs Rosetta 2
 on the arm64 macOS runner.
 
+## Shown at once
+
+Opening a file shows it at once and computes the slow units afterwards, in the background
+(`inspect::Depth`). The first inspection is a glance (`Depth::GLANCE`): everything but a video's
+frames and hashes and the Semantic-Code. A video at a glance takes two short ffmpeg runs, the
+ffmetadata dump and the preview frame (`video::glance`), so its tags, Meta-Code, duration, frame
+size and preview show right away; its Content-Code, Data-Code and Instance-Code are pending
+(`Inspection.pending`), and so is the preservation verdict of a signed AVI, which needs the hash of
+its source view. Its Content Credentials are read but not checked yet (validation state `Pending`,
+shown as "Checking…"): c2pa-rs reads and hashes the whole file to check the hard binding, so that
+check runs once, in the second pass. The second inspection (`Depth::FULL`) computes everything and
+replaces the first; it reports the progress of each slow unit by name (`content` while a video
+decodes, `semantic` while a text is embedded), shown in that unit's row. Data-Code and Instance-Code
+have no share to report and show a moving bar.
+
+The background pass stops when another file is opened or the file is closed; Stop in the unit list
+ends it and Resume starts it again, as after a failed pass. The Sign button waits for it, because
+signing needs the units, and a video signed afterwards is not decoded again (see "Decoded once" in
+[Video](#video)). The full pass repeats the cheap part of the glance (the manifest, the tags, an
+image's decoding, a document's text extraction). A signed copy is inspected in full, except a
+Semantic-Code that was left out at signing, which the background pass computes as for any file just
+opened. The CLI always inspects in full.
+
+## Semantic-Codes
+
+The Semantic-Code Image and the Semantic-Code Text are experimental ISCC units: the sign bits of
+a neural embedding, so they match what a picture shows or what a text says, across crops,
+recolouring and overlays, translations and paraphrases. iscc-sci and iscc-sct compute them with
+onnxruntime; the app runs the same models in [rten](https://github.com/robertknight/rten), a pure
+Rust engine that gives the same bits as onnxruntime on the original fp32 models (all 16 image and
+20 text test inputs). rten appears only in `src-tauri/src/semantic/`.
+
+**Models, downloaded on first use.** The fp32 originals weigh 684 MB. The app uses
+weight-compressed copies, published as release
+[`models-v1`](https://github.com/iscc/iscc-c2pa-demo/releases/tag/models-v1) of this repository:
+`iscc-sci-v0.1.0-w16.onnx` (weights as fp16) and `iscc-sct-v0.1.0-emb8-w16.onnx` (word
+embeddings as int8 with a scale per row, other weights as fp16), with iscc-sct's
+`tokenizer.json`, 242 MB together. All maths stays fp32. `scripts/compress_models.py` rebuilds
+them from the originals. `tools.rs` downloads them like ffmpeg, as plain files checked by size and
+BLAKE3, into the same tools folder (`c2pa-iscc tools install semantic` in the CLI). The app never
+asks on its own: the Semantic-Code row and the Sign tab offer them with a link. Without them
+images and documents have no Semantic-Code, and the reason stands in its place. A changed model
+gets a new release (`models-v2`); published files are never replaced.
+
+**Drift.** Measured on 2026-10-04 against the fp32 models: at most 1 of 256 bits on the image test
+set and 2 on the text set (AVX-512); on the fixtures 0 to 3 bits on x86_64 with AVX2 and AVX-512.
+The smaller variants (`w8mix`, `w8`, 56 and 119 MB) drift up to 13 and 4 bits at the same speed,
+which is why the larger ones were chosen (Titusz, 2026-10-04). rten's kernels depend on the
+instruction set, so codes may differ by a bit or so between machines; the tests allow 16 of 256
+bits, and CI checks that on Windows, Linux and macOS (NEON).
+
+**Image.** As iscc-sci 0.3.0: the decoded picture (EXIF-rotated, transparency on white, the same
+`AssetContent::Image` the Content-Code uses), its uniform border trimmed, squashed to 512x512 with
+Pillow's bilinear filter (`iscc::resize_pillow`, bit for bit), each sample `(x / 255 - 0.5) / 0.5`
+in f32. The model input equals iscc-sci's exactly for every PNG, GIF, TIFF and WebP fixture.
+JPEGs decode a little differently from Pillow's libjpeg-turbo; photos still come out 0 to 3 bits
+apart, but the `meta-*.jpg` fixtures, a 48x32 colour gradient without content, come out 58 bits
+apart, and the tests leave them out. SVGs get the unit of their rendered picture; covers, cover
+art and video frames get none.
+
+**Text.** As iscc-sct 0.2.2: the cleaned text (whitespace kept, because it moves chunk
+boundaries), split into chunks of at most 127 tokens overlapping by 48, with text-splitter 0.33,
+the crate behind iscc-sct's `semantic-text-splitter`, kept in lockstep with the version iscc-sct
+resolves. Chunk sizes are counted with `tokenizer.json` without truncation, and for text with
+long spans between line breaks with iscc-sct's guarded count (`semantic::TokenSizer`). Each chunk
+is tokenized as the file declares (truncated to 128 tokens), embedded, mean-pooled and
+normalised; the document vector is the mean of the chunk vectors. The chunks equal iscc-sct's for
+every test text, the long synthetic cases of its own test suite included.
+
+The chunks are embedded in parallel, one per logical core and each on a single thread, while the
+splitter is still cutting the text: rten spreads a single chunk of 128 tokens poorly over many
+cores. Each chunk embeds exactly as it does on its own, and the mean adds the chunk vectors in text
+order, so the code is the same on any number of cores (test
+`the_number_of_workers_changes_nothing`). Measured on 2026-10-04 with the release CLI on a
+603,000-character book (1,741 chunks): 4.3 s on a 16-core Ryzen AI Max+ 395 (46 s on one of its
+cores) and 63 s on a four-core Core i7-7700K, where one chunk after the other took about 95 s;
+iscc-sct takes 11 s for it on the 16 cores. Cutting the text into chunks alone takes 1.3 s and 9 s
+on these two.
+
+**Memo.** A session keeps the units it computed, keyed by a BLAKE3 hash of the model input (64 at
+most): a file, its source view, its signed copy and that copy reopened usually decode to the same
+pixels or text and are embedded once. Each computation loads its model and drops it after, so the
+app holds no model while it idles.
+
+**Build profiles.** The app's release build optimises for size; rten's kernels then run at half
+speed, so `Cargo.toml` builds the rten crates with `opt-level = 3`. Dev builds compile every
+dependency at `opt-level = 3` without debug assertions and overflow checks; with them the
+Semantic-Code Text took 1.7 to 2.6 times as long.
+
 ## Thumbnail
 
 Each signed file carries one thumbnail, the claim thumbnail (`c2pa.thumbnail.claim`), made by the
@@ -454,7 +559,10 @@ The code is Apache-2.0, see [LICENSE](LICENSE). The installers bundle the pdfium
 and Apache-2.0, the build scripts under MIT); its licence files, those of the third-party code
 compiled into it included, sit next to it as `LICENSE-*`. ffmpeg is not bundled: the app
 downloads it on request from iscc-binaries, a GPL-2.0-or-later build, and runs it as a separate
-program. Test fixtures and certificates from other projects keep
+program. The semantic models are not bundled either: the ISC21 image descriptor (MIT, exported
+through Towhee, Apache-2.0) as iscc-sci packages it (Apache-2.0), and
+`paraphrase-multilingual-MiniLM-L12-v2` with its tokenizer (Apache-2.0) as iscc-sct packages it
+(Apache-2.0); the `models-v1` release names the sources. Test fixtures and certificates from other projects keep
 their own licences, listed in [`src-tauri/tests/fixtures/README.md`](src-tauri/tests/fixtures/README.md)
 and [`src-tauri/resources/certs/README.md`](src-tauri/resources/certs/README.md). The fonts
 (Readex Pro, JetBrains Mono) are under the SIL Open Font License, with the licence texts in

@@ -85,6 +85,18 @@ lopdf = "0.45.0"
 blake3 = "1.8"
 dirs = "6"
 tempfile = "3"
+# Semantic-Codes: the iscc-sci and iscc-sct models (downloaded on first use, tools.rs) run in rten,
+# pure Rust and bit-exact with onnxruntime. The tokenizer and the chunking are those iscc-sct
+# uses; text-splitter moves in lockstep with the semantic-text-splitter version iscc-sct resolves,
+# because a splitter release can move chunk boundaries. tokenizers without its default features
+# needs no C library (no Oniguruma; text-splitter's `tokenizers` feature would force it, so
+# semantic/text.rs sizes chunks itself), and 0.23 honours the truncation tokenizer.json declares.
+rten = "=0.27.0"
+rten-tensor = "=0.27.0"
+tokenizers = { version = "=0.23.2", default-features = false, features = [
+  "unstable_wasm",
+] }
+text-splitter = "=0.33.0"
 
 [features]
 # The c2pa-iscc command-line tool. Off by default, because `tauri build` puts every binary whose
@@ -112,6 +124,25 @@ opt-level = "s"
 panic = "abort"
 strip = true
 
+# rten's kernels run at half speed when optimised for size; the rest of the app stays small.
+[profile.release.package.rten]
+opt-level = 3
+[profile.release.package.rten-base]
+opt-level = 3
+[profile.release.package.rten-gemm]
+opt-level = 3
+[profile.release.package.rten-parallel]
+opt-level = 3
+[profile.release.package.rten-simd]
+opt-level = 3
+[profile.release.package.rten-tensor]
+opt-level = 3
+[profile.release.package.rten-vecmath]
+opt-level = 3
+
 # Image decoding and hashing are far too slow unoptimized; keep dependencies fast in dev builds.
+# Their debug assertions and overflow checks made the Semantic-Code Text 1.7 to 2.6 times slower.
 [profile.dev.package."*"]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false

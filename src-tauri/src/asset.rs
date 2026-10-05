@@ -1,6 +1,6 @@
 //! One reader for every supported format: the content behind the Content-Code, a preview picture,
 //! the asset's own title and description, and its creator; [`load`] adds the Data-Code and
-//! Instance-Code of the file.
+//! Instance-Code of the file. [`glance`] leaves the slow part of a video for later.
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -20,6 +20,8 @@ use crate::{audio, epub, office, pdf, plain, svg, tools};
 
 /// Why a text document without text has no Content-Code.
 const NO_TEXT: &str = "no text found in this document";
+/// Why a video at a glance has no Content-Code yet.
+const NOT_DECODED: &str = "the video is not decoded yet";
 
 /// The input of the Content-Code.
 #[derive(Debug, Clone)]
@@ -37,6 +39,9 @@ pub enum AssetContent {
     /// Not read at all, with the reason (a video without ffmpeg): neither the content nor the
     /// tags are known, so there is neither a Content-Code nor a Meta-Code.
     Unread(&'static str),
+    /// A video at a [`glance`]: its tags, facts and a frame are read, its frames not decoded yet,
+    /// so its Content-Code is still to come. The signatures of the [`video::Video`] are empty.
+    Undecoded(video::Video),
 }
 
 /// What an asset contributes to inspection and signing.
@@ -84,6 +89,7 @@ impl Asset {
             AssetContent::Unavailable(reason) | AssetContent::Unread(reason) => {
                 Content::Unavailable(reason)
             }
+            AssetContent::Undecoded(_) => Content::Unavailable(NOT_DECODED),
         }
     }
 
@@ -100,8 +106,9 @@ impl Asset {
 #[derive(Debug)]
 pub struct Loaded {
     pub asset: Asset,
-    /// Data-Code and Instance-Code of the whole file.
-    pub bitstream: [IsccUnit; 2],
+    /// Data-Code and Instance-Code of the whole file; `None` for a video at a [`glance`], which
+    /// is not hashed yet.
+    pub bitstream: Option<[IsccUnit; 2]>,
     pub size: u64,
 }
 
@@ -119,8 +126,29 @@ pub fn load(path: &Path, format: &Format, progress: Progress) -> Result<Loaded> 
     let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     Ok(Loaded {
         asset: read(path, &bytes, format)?,
-        bitstream: iscc::bitstream_units(&bytes)?,
+        bitstream: Some(iscc::bitstream_units(&bytes)?),
         size: bytes.len() as u64,
+    })
+}
+
+/// Load the asset at `path` so that it shows at once: a video's tags, facts and a preview frame
+/// only, neither its frames decoded ([`AssetContent::Undecoded`]) nor the file hashed; without
+/// ffmpeg it stays unread. Every other format loads as with [`load`].
+pub fn glance(path: &Path, format: &Format) -> Result<Loaded> {
+    if format.kind != Kind::Video {
+        return load(path, format, &|_| true);
+    }
+    let size = std::fs::metadata(path)
+        .with_context(|| format!("cannot read {}", path.display()))?
+        .len();
+    let asset = match tools::ffmpeg_path() {
+        Ok(ffmpeg) => video::glance(&ffmpeg, path)?,
+        Err(e) => unread(missing_reason(e)?),
+    };
+    Ok(Loaded {
+        asset,
+        bitstream: None,
+        size,
     })
 }
 
@@ -172,13 +200,18 @@ fn with_ffmpeg(
     match ffmpeg {
         Ok(ffmpeg) => hashed_alongside(path, || analyse(&ffmpeg)),
         Err(e) => {
-            let reason = e
-                .downcast_ref::<tools::Missing>()
-                .map(tools::Missing::reason);
-            let reason = reason.ok_or(e)?;
+            let reason = missing_reason(e)?;
             hashed_alongside(path, || Ok(unread(reason)))
         }
     }
+}
+
+/// The reason of a [`tools::Missing`] error; any other error stays one.
+fn missing_reason(e: anyhow::Error) -> Result<&'static str> {
+    let reason = e
+        .downcast_ref::<tools::Missing>()
+        .map(tools::Missing::reason);
+    reason.ok_or(e)
 }
 
 /// A video not read, for `reason`.
@@ -238,16 +271,17 @@ impl Memory {
         let (bitstream, size) = iscc::stream_units(file)?;
         Ok((bitstream[1].iscc == instance).then_some(Loaded {
             asset,
-            bitstream,
+            bitstream: Some(bitstream),
             size,
         }))
     }
 
     /// Keep the analysis of the file with `stamp` in place of the one before.
     fn keep(&self, stamp: Option<Stamp>, loaded: &Loaded) {
-        *self.lock() = stamp.map(|stamp| Decoded {
+        let instance = loaded.bitstream.as_ref().map(|b| b[1].iscc.clone());
+        *self.lock() = stamp.zip(instance).map(|(stamp, instance)| Decoded {
             stamp,
-            instance: loaded.bitstream[1].iscc.clone(),
+            instance,
             asset: loaded.asset.clone(),
         });
     }
@@ -276,7 +310,7 @@ fn hashed_alongside(path: &Path, read: impl FnOnce() -> Result<Asset>) -> Result
     let (bitstream, size) = hashed.map_err(|_| anyhow!("hashing the file failed"))??;
     Ok(Loaded {
         asset,
-        bitstream,
+        bitstream: Some(bitstream),
         size,
     })
 }
@@ -405,7 +439,30 @@ mod tests {
         let loaded = load(&path, formats::by_path(&path).unwrap(), &|_| true).unwrap();
         assert_eq!(loaded.size, std::fs::metadata(&path).unwrap().len());
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(loaded.bitstream, iscc::bitstream_units(&bytes).unwrap());
+        assert_eq!(
+            loaded.bitstream,
+            Some(iscc::bitstream_units(&bytes).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_video_at_a_glance_is_neither_decoded_nor_hashed() {
+        crate::tools::tests::ensure_ffmpeg();
+        let path = fixture("demo.mp4");
+        let glanced = glance(&path, formats::by_path(&path).unwrap()).unwrap();
+        let AssetContent::Undecoded(video) = &glanced.asset.content else {
+            panic!("{:?}", glanced.asset.content);
+        };
+        assert!(video.signatures.is_empty());
+        assert_eq!((video.width, video.height), (176, 144));
+        assert!(glanced.asset.preview.is_some(), "a frame to show");
+        assert_eq!(glanced.bitstream, None);
+        assert_eq!(glanced.size, std::fs::metadata(&path).unwrap().len());
+        assert!(iscc::content_unit(glanced.asset.content()).is_err());
+        // Any other format loads in full.
+        let image = fixture("CA.jpg");
+        let loaded = glance(&image, formats::by_path(&image).unwrap()).unwrap();
+        assert!(loaded.bitstream.is_some());
     }
 
     #[test]
@@ -440,8 +497,11 @@ mod tests {
         drop(file);
         let changed = load_video(&path, tools::ffmpeg_path(), &counting, &memory).unwrap();
         assert!(reports.get() > 0, "changed bytes are decoded again");
-        assert_eq!(changed.bitstream, iscc::bitstream_units(&bytes).unwrap());
-        assert_ne!(changed.bitstream[1], first.bitstream[1]);
+        assert_eq!(
+            changed.bitstream,
+            Some(iscc::bitstream_units(&bytes).unwrap())
+        );
+        assert_ne!(changed.bitstream, first.bitstream);
     }
 
     #[test]
@@ -449,14 +509,17 @@ mod tests {
         crate::tools::tests::ensure_ffmpeg();
         let path = fixture("demo.mp4");
         let memory = memory();
-        let missing = tools::Missing { available: true };
+        let missing = tools::Missing::Ffmpeg { available: true };
         let never = |_: Option<f64>| -> bool { panic!("nothing is decoded") };
         let unread = load_video(&path, Err(missing.into()), &never, &memory).unwrap();
         assert!(matches!(unread.asset.content, AssetContent::Unread(r) if r == missing.reason()));
         assert_eq!(unread.asset.metadata, Embedded::default(), "tags unread");
         assert!(unread.asset.preview.is_none());
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(unread.bitstream, iscc::bitstream_units(&bytes).unwrap());
+        assert_eq!(
+            unread.bitstream,
+            Some(iscc::bitstream_units(&bytes).unwrap())
+        );
 
         // Once ffmpeg is installed the same file is decoded, not recalled unread.
         let read = load_video(&path, tools::ffmpeg_path(), &|_| true, &memory).unwrap();
@@ -474,10 +537,10 @@ mod tests {
         let expected: serde_json::Value =
             serde_json::from_str(include_str!("../tests/fixtures/expected_text.json")).unwrap();
         let selection = UnitSelection {
-            meta: false,
             content: true,
             data: true,
             instance: true,
+            ..Default::default()
         };
         for (file, want) in expected.as_object().unwrap() {
             let path = fixture(file);
@@ -504,9 +567,14 @@ mod tests {
                 "{file} Meta-Code"
             );
             let bitstream = iscc::bitstream_units(&bytes).unwrap();
-            let units =
-                iscc::units_for(&bitstream, asset.content(), Default::default(), &selection)
-                    .unwrap();
+            let units = iscc::units_for(
+                &bitstream,
+                asset.content(),
+                Default::default(),
+                None,
+                &selection,
+            )
+            .unwrap();
             assert_eq!(units[0].iscc, want["text"], "{file} Content-Code Text");
             assert_eq!(units[1].iscc, want["data"], "{file} Data-Code");
             assert_eq!(units[2].iscc, want["instance"], "{file} Instance-Code");

@@ -1,7 +1,7 @@
 // Left column: preview (image, document cover or thumbnail, audio cover art, video frame), file
-// facts and the ISCC units computed from the file.
+// facts and the ISCC units computed from the file, with the progress of those still being computed.
 
-import type { AssetKind, Inspection, IsccUnit, MetaFields } from "../api";
+import type { AssetKind, Inspection, IsccUnit, MetaFields, UnitSlug } from "../api";
 import { esc, formatBytes, formatDuration, isccHtml } from "../util";
 
 /** Placeholder for a file without a picture: EPUBs lack a cover, audio lacks cover art, a video
@@ -74,16 +74,104 @@ const CONTENT_NAME: Record<AssetKind, string> = {
   video: "Content-Code Video",
 };
 
+/** Name of the Semantic-Code of an image or a text; audio and video have none. */
+export function semanticName(kind: AssetKind): string {
+  return kind === "image" ? "Semantic-Code Image" : "Semantic-Code Text";
+}
+
+/** Units in the order of their MainType, as the backend lists them. */
+const ORDER: UnitSlug[] = ["meta", "semantic", "content", "data", "instance"];
+
+/** The background pass that computes a file's slow units, as far as the unit list shows it. */
+export interface Analysis {
+  /** Share done of each slow unit that reports it (a video's `content`, a text's `semantic`); null while unknown. */
+  progress: Partial<Record<UnitSlug, number | null>>;
+  /** True once the user stopped it. */
+  stopped: boolean;
+}
+
+/** What the unit list needs besides the inspection. */
+export interface UnitListView {
+  /** Which bytes the units were computed from. */
+  hint: string;
+  analysis: Analysis | null;
+  /** Download size of the semantic models when they are not installed, for the offer to install them; null when
+   * they are installed or their status is unknown. */
+  modelsToInstall: number | null;
+}
+
+/** Name of the unit `slug` for this file. */
+function unitName(slug: UnitSlug, inspection: Inspection): string {
+  const names: Record<UnitSlug, string> = {
+    meta: "Meta-Code",
+    semantic: semanticName(inspection.kind),
+    content: CONTENT_NAME[inspection.kind],
+    data: "Data-Code",
+    instance: "Instance-Code",
+  };
+  return names[slug];
+}
+
+/** Why the unit `slug` is missing; null when there is no reason (a Semantic-Code of audio or video). */
+function unitError(slug: UnitSlug, inspection: Inspection): string | null {
+  if (slug === "meta") return inspection.meta_error;
+  if (slug === "semantic") return inspection.semantic_error;
+  return slug === "content" ? inspection.content_error : null;
+}
+
+/** A unit's name, tagged experimental for the Semantic-Code. */
+function nameHtml(unit: UnitSlug, name: string): string {
+  return `${esc(name)}${unit === "semantic" ? ` <span class="hint">experimental</span>` : ""}`;
+}
+
 /** Row for a unit that could not be computed, with the reason and, for the Meta-Code, the inputs
  * it was tried on. */
-function missingUnitRow(unit: IsccUnit["unit"], name: string, error: string, from: string): string {
+function missingUnitRow(unit: UnitSlug, name: string, error: string, from: string): string {
   return `
       <div class="unit">
         <span class="bar" data-unit="${unit}"></span>
         <div>
-          <div class="name">${esc(name)}</div>
+          <div class="name">${nameHtml(unit, name)}</div>
           <div class="code" style="color:var(--muted)">not computed: ${esc(error)}</div>
           ${from ? `<div class="from">${esc(from)}</div>` : ""}
+        </div>
+      </div>`;
+}
+
+/** Whole percent of a share, or nothing while it is unknown. */
+function percentOf(fraction: number | null | undefined): string {
+  return typeof fraction === "number" ? ` ${Math.floor(fraction * 100)}%` : "";
+}
+
+/** Row of a unit the background pass still computes, with its progress; once the pass is stopped, a way to resume
+ * it. */
+function pendingRow(slug: UnitSlug, name: string, analysis: Analysis | null): string {
+  const fraction = analysis?.progress[slug];
+  const status = analysis?.stopped
+    ? `stopped · <button type="button" class="linkbtn" data-action="resume-analysis">Resume</button>`
+    : `<span data-pending-text="${slug}">computing…${percentOf(fraction)}</span>`;
+  const fill = typeof fraction === "number" ? `style="width:${(fraction * 100).toFixed(1)}%"` : `class="indeterminate"`;
+  const meter = analysis?.stopped ? "" : `<div class="meter" data-pending="${slug}"><span ${fill}></span></div>`;
+  return `
+      <div class="unit">
+        <span class="bar" data-unit="${slug}"></span>
+        <div>
+          <div class="name">${nameHtml(slug, name)}</div>
+          <div class="code" style="color:var(--muted)">${status}</div>
+          ${meter}
+        </div>
+      </div>`;
+}
+
+/** Row of a Semantic-Code that needs the models, with the offer to install them. */
+function installRow(name: string, bytes: number): string {
+  return `
+      <div class="unit">
+        <span class="bar" data-unit="semantic"></span>
+        <div>
+          <div class="name">${nameHtml("semantic", name)}</div>
+          <div class="code" style="color:var(--muted)">not computed: the semantic models are not installed</div>
+          <div class="from"><button type="button" class="linkbtn" data-action="offer-semantic">Install the models (${esc(formatBytes(bytes))})</button></div>
         </div>
       </div>`;
 }
@@ -97,7 +185,7 @@ function unitRow(u: IsccUnit, from: string): string {
       <div class="unit">
         <span class="bar" data-unit="${u.unit}"></span>
         <div>
-          <div class="name">${esc(u.name)}</div>
+          <div class="name">${nameHtml(u.unit, u.name)}</div>
           <div class="code">${isccHtml(u.iscc)}</div>
           ${from ? `<div class="from">${esc(from)}</div>` : ""}
         </div>
@@ -111,23 +199,42 @@ function unitFrom(u: IsccUnit, inspection: Inspection): string {
   return u.unit === "content" && inspection.content_from_source ? FROM_SOURCE : "";
 }
 
-/** List of the file's ISCC units with their unit colour; a Meta-Code or Content-Code that could
- * not be computed keeps its place and says why. A Meta-Code missing for the Content-Code's reason
- * was never tried (a video's tags unread without ffmpeg), so it names no inputs. */
-export function unitList(inspection: Inspection, hint: string): string {
-  const { meta_error, content_error } = inspection;
-  const rows = inspection.iscc.map((u) => unitRow(u, unitFrom(u, inspection)));
-  if (content_error) {
-    const row = missingUnitRow("content", CONTENT_NAME[inspection.kind], content_error, "");
-    rows.splice(meta_error ? 0 : 1, 0, row);
+/** The row of unit `slug`: the unit, its progress while a later pass computes it, or why it is missing; empty when
+ * the file has no such unit. A Meta-Code missing for the Content-Code's reason was never tried (a video's tags
+ * unread without ffmpeg), so it names no inputs. A Semantic-Code missing for want of the models offers them. */
+function row(slug: UnitSlug, inspection: Inspection, view: UnitListView): string {
+  const unit = inspection.iscc.find((u) => u.unit === slug);
+  if (unit) return unitRow(unit, unitFrom(unit, inspection));
+  const name = unitName(slug, inspection);
+  if (inspection.pending.includes(slug)) return pendingRow(slug, name, view.analysis);
+  const error = unitError(slug, inspection);
+  if (!error) return "";
+  if (slug === "semantic" && view.modelsToInstall !== null && error !== inspection.content_error) {
+    return installRow(name, view.modelsToInstall);
   }
-  if (meta_error) {
-    const from = meta_error === content_error ? "" : metaFrom(inspection.meta_fields);
-    rows.unshift(missingUnitRow("meta", "Meta-Code", meta_error, from));
-  }
+  const from = slug === "meta" && error !== inspection.content_error ? metaFrom(inspection.meta_fields) : "";
+  return missingUnitRow(slug, name, error, from);
+}
+
+/** List of the file's ISCC units with their unit colour; a unit that could not be computed keeps its place and says
+ * why, one still being computed shows its progress. */
+export function unitList(inspection: Inspection, view: UnitListView): string {
+  const rows = ORDER.map((slug) => row(slug, inspection, view)).join("");
+  const stop = view.analysis && !view.analysis.stopped ? `<button class="btn small quiet" data-action="stop-analysis">Stop</button>` : "";
   return `
     <section class="card">
-      <header><h2>ISCC of this file</h2><span class="grow"></span><span class="hint">${esc(hint)}</span></header>
-      <div class="units">${rows.join("")}</div>
+      <header><h2>ISCC of this file</h2><span class="grow"></span><span class="hint">${esc(view.hint)}</span>${stop}</header>
+      <div class="units">${rows}</div>
     </section>`;
+}
+
+/** Move the progress of the pending unit `slug` in place, so frequent reports need no full render. */
+export function patchPending(root: HTMLElement, slug: UnitSlug, fraction: number | null) {
+  const fill = root.querySelector<HTMLElement>(`[data-pending="${slug}"] span`);
+  const text = root.querySelector<HTMLElement>(`[data-pending-text="${slug}"]`);
+  if (fill && fraction !== null) {
+    fill.classList.remove("indeterminate");
+    fill.style.width = `${(fraction * 100).toFixed(1)}%`;
+  }
+  if (text) text.textContent = `computing…${percentOf(fraction)}`;
 }

@@ -1,5 +1,6 @@
 # Quality gates on every push to main and every pull request: the pre-commit hooks, clippy and
-# tsc on Linux, the Rust tests on Windows, macOS and Linux (with ffmpeg for the video tests).
+# tsc on Linux, the Rust tests on Windows, macOS and Linux (with ffmpeg for the video tests and the
+# semantic models for the Semantic-Code tests).
 name: ci
 
 on:
@@ -78,15 +79,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: uv run scripts/fetch_pdfium.py
-      # The video tests run the ffmpeg the app installs on first use (tools.rs) and install it
-      # when it is missing; keep it between runs instead of downloading 26 to 73 MB each time.
+      # The video and Semantic-Code tests run the ffmpeg and the models the app installs on first
+      # use (tools.rs) and install them when they are missing; keep them between runs instead of
+      # downloading 26 to 73 MB plus 242 MB each time. The key names both versions.
       - uses: actions/cache@v6
         with:
           path: |
             ~/.local/share/codes.iscc.c2pa-demo/tools
             ~/Library/Application Support/codes.iscc.c2pa-demo/tools
             ~/AppData/Local/codes.iscc.c2pa-demo/tools
-          key: ffmpeg-8.1-${{ runner.os }}
+          key: ffmpeg-8.1-models-v1-${{ runner.os }}
       # The macOS build of ffmpeg is x86_64; the arm64 runners need Rosetta 2 to run it.
       - name: Install Rosetta 2
         if: runner.os == 'macOS' && runner.arch == 'ARM64'

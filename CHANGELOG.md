@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Semantic-Codes (experimental): images and documents can get a Semantic-Code Image or
+  Semantic-Code Text, which match what a picture shows or what a text says across crops,
+  recolouring, overlays, translations and paraphrases. They come from compressed copies of the
+  iscc-sci and iscc-sct models, run on this computer by rten, and stay within a few bits of the
+  codes iscc-sci and iscc-sct make (the test files: at most 3 of 256 bits). The models are a
+  242 MB download the app offers with a link in the unit list and the Sign tab, never on its own;
+  the CLI installs them with `c2pa-iscc tools install semantic`. Once installed, the Sign tab
+  embeds the Semantic-Code by default and the soft-binding card compares it. A long text is
+  embedded on every processor core at once.
+- A file shows at once; the units that take long are computed afterwards, each with its own
+  progress bar in the unit list: a video's Content-Code, Data-Code and Instance-Code, and the
+  Semantic-Code. A video's tags, Meta-Code, duration and preview frame no longer wait for its
+  frames. Stop ends the analysis and Resume starts it again; the Sign button waits for it.
+- The start screen shows which kinds of media get a Semantic-Code.
+
 ## 0.2.0 - 2026-10-04
 
 - PDF: inspect and sign PDF files. Text and metadata come from pdfium, the library iscc-sdk

@@ -15,6 +15,7 @@ pub mod opus;
 pub mod pdf;
 pub mod plain;
 pub mod resample;
+pub mod semantic;
 pub mod sign;
 pub mod svg;
 pub mod thumbnail;
@@ -112,14 +113,15 @@ fn meta_code(
     .map_err(|e| format!("{e:#}"))
 }
 
-/// How far a video analysis got, for the progress bar.
+/// How far a slow unit got, for the progress bars.
 #[derive(Serialize, Clone)]
 struct Progress<S> {
-    /// `inspect` (the opened file), or the [`sign::Stage`] of a signing: `source` (the file
-    /// being signed), `write` (the signed copy is about to be written, which cannot be stopped)
-    /// or `output` (the signed copy, checked after signing).
+    /// The unit of an inspection: `content` (a video decoding) or `semantic` (a text being
+    /// embedded); or the [`sign::Stage`] of a signing: `source` (the file being signed),
+    /// `write` (the signed copy is about to be written, which cannot be stopped) or `output`
+    /// (the signed copy, checked after signing).
     stage: S,
-    /// Share of the duration decoded; `None` when the duration is unknown.
+    /// Share done; `None` when unknown (a video's duration).
     fraction: Option<f64>,
 }
 
@@ -139,29 +141,32 @@ fn still_wanted(generation: u64) -> bool {
     TASKS.load(Ordering::SeqCst) == generation
 }
 
-/// Stop the video analyses and downloads that run now.
+/// Stop the analyses and downloads that run now.
 #[tauri::command]
 fn cancel_tasks() {
     TASKS.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Inspect the file at `path`, reporting the progress of a video analysis; stopped by
-/// [`cancel_tasks`].
+/// Inspect the file at `path`: at a glance, its slow units pending, or in `full`, reporting the
+/// progress of each slow unit; stopped by [`cancel_tasks`].
 #[tauri::command]
 async fn inspect_asset(
     path: String,
+    full: bool,
     on_progress: Channel<Progress<&'static str>>,
 ) -> Result<inspect::Inspection, String> {
     let generation = TASKS.load(Ordering::SeqCst);
+    let depth = if full {
+        inspect::Depth::FULL
+    } else {
+        inspect::Depth::GLANCE
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        let progress = |fraction| {
-            let _ = on_progress.send(Progress {
-                stage: "inspect",
-                fraction,
-            });
+        let progress = |stage, fraction| {
+            let _ = on_progress.send(Progress { stage, fraction });
             still_wanted(generation)
         };
-        inspect::inspect_with(&PathBuf::from(path), &progress).map_err(|e| format!("{e:#}"))
+        inspect::inspect_with(&PathBuf::from(path), depth, &progress).map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -208,20 +213,54 @@ fn ffmpeg_status() -> tools::Status {
 async fn install_ffmpeg(on_progress: Channel<Download>) -> Result<tools::Status, String> {
     let generation = TASKS.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        // Reads arrive in pieces of a few KB; half a megabyte apart is enough for the bar.
-        let mut sent = 0;
-        tools::install_ffmpeg(&mut |received, total| {
-            if received == total || received - sent >= 1 << 19 {
-                sent = received;
-                let _ = on_progress.send(Download { received, total });
-            }
-            still_wanted(generation)
-        })
-        .map_err(|e| format!("{e:#}"))?;
+        install_reporting(&on_progress, generation, |p| {
+            tools::install_ffmpeg(p).map(drop)
+        })?;
         Ok(tools::ffmpeg_status())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Whether the semantic models, which the Semantic-Codes need, are installed, and what
+/// installing them means.
+#[tauri::command]
+fn semantic_status() -> tools::Status {
+    tools::semantic_status()
+}
+
+/// Download and install the semantic models, reporting the bytes received; returns their new
+/// status.
+#[tauri::command]
+async fn install_semantic(on_progress: Channel<Download>) -> Result<tools::Status, String> {
+    let generation = TASKS.load(Ordering::SeqCst);
+    tauri::async_runtime::spawn_blocking(move || {
+        install_reporting(&on_progress, generation, |p| {
+            tools::install_semantic(p).map(drop)
+        })?;
+        Ok(tools::semantic_status())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Run `install`, sending the bytes received to `on_progress`; the download stops once
+/// [`cancel_tasks`] ends `generation`.
+fn install_reporting(
+    on_progress: &Channel<Download>,
+    generation: u64,
+    install: impl FnOnce(&mut dyn FnMut(u64, u64) -> bool) -> anyhow::Result<()>,
+) -> Result<(), String> {
+    // Reads arrive in pieces of a few KB; half a megabyte apart is enough for the bar.
+    let mut sent = 0;
+    install(&mut |received, total| {
+        if received == total || received.saturating_sub(sent) >= 1 << 19 {
+            sent = received;
+            let _ = on_progress.send(Download { received, total });
+        }
+        still_wanted(generation)
+    })
+    .map_err(|e| format!("{e:#}"))
 }
 
 /// Size that fits into `room`: each side of `want` capped at the room available.
@@ -290,7 +329,9 @@ pub fn run() {
             cancel_tasks,
             needs_ffmpeg,
             ffmpeg_status,
-            install_ffmpeg
+            install_ffmpeg,
+            semantic_status,
+            install_semantic
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

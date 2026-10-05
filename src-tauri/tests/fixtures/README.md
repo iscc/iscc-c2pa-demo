@@ -32,6 +32,7 @@ Reference values:
 | `expected_pdf.json` | `expected_pdf.py` | iscc-sdk with pypdfium2 5.14.0b1 (pdfium 8076) and Tika: PDF metadata, Meta-Code, Content-Code Text, Data-Code, Instance-Code |
 | `expected_audio.json` | `expected_audio.py` | iscc-sdk with fpcalc and TagLib: audio tags, duration, Meta-Code, Content-Code Audio, Data-Code, Instance-Code; also for `no-video.mp4`, `no-video.mov` and `no-video-opus.mp4`, which the app reads like an M4A (not for `no-video-ac3.mp4`, which the app cannot decode) |
 | `expected_video.json` | `expected_video.py` | iscc-sdk with ffmpeg 8.1: video tags, Meta-Code, Content-Code Video, Data-Code, Instance-Code; frame count and first frame of `demo.mp4.mp7sig` |
+| `expected_semantic.json` | `expected_semantic.py` | iscc-sci 0.3.0 and iscc-sct 0.2.2 with their fp32 models: the model input and Semantic-Code Image of every raster image; chunks and Semantic-Code Text of short texts, of iscc-sct's synthetic chunking cases (built in the script and in the test) and of the text fixtures as this crate extracts them |
 
 The hygiene hooks rewrite text files on commit (line endings, final newline, trailing
 whitespace). Text fixtures must already be clean when their reference is generated, or the
@@ -55,8 +56,10 @@ uv run --with iscc-sdk expected_text.py [DUMP_DIR]            # expected_text.js
 uv run --with iscc-sdk expected_audio.py                      # expected_audio.json
 uv run --with iscc-sdk expected_video.py                      # expected_video.json, demo.mp4.mp7sig
 uv run --with iscc-sdk --with pypdfium2==5.14.0b1 expected_pdf.py  # expected_pdf.json
+uv run --with "iscc-sci[cpu]==0.3.0" --with "iscc-sct[cpu]==0.2.2" --with semantic-text-splitter==0.33.0 --with blake3 expected_semantic.py DUMP_DIR  # expected_semantic.json
 ```
 
 To compare the texts this crate extracts with Tika's, run
 `DUMP_TEXT_DIR=/some/dir cargo test --lib dump_texts -- --ignored` in `src-tauri` and diff the
-two folders.
+two folders. `expected_semantic.py` reads the same dump: the Semantic-Code Text depends on
+whitespace, where this crate's texts and Tika's differ.

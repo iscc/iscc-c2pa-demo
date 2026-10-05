@@ -20,6 +20,7 @@ const STATE_TEXT: Record<string, string> = {
   Trusted: "Valid, signer on a trust list",
   Valid: "Valid, signer not on a trust list",
   Invalid: "Invalid",
+  Pending: "Checking…",
 };
 
 /** Name and explanation of each bundled signer trust list, keyed by its `trust_uri` in `context.rs`. */
@@ -159,7 +160,7 @@ function statusCard(m: ManifestSummary): string {
           <dt>Claim generator</dt><dd>${esc(m.claim_generator ?? "—")}</dd>
           <dt>Signer</dt><dd>${esc(signer)}</dd>
           <dt>Signature</dt><dd>${esc(s?.alg?.toUpperCase() ?? "—")}</dd>
-          ${timestampRow(s?.timestamp)}
+          ${m.validation_state === "Pending" ? "" : timestampRow(s?.timestamp)}
           ${sidecarRow(m.sidecar)}
           <dt>Manifest label</dt><dd class="mono">${esc(m.label)}</dd>
         </dl>
@@ -204,18 +205,19 @@ function softBindingCard(m: ManifestSummary, inspection: Inspection): string {
           .map((mt) => {
             const u = mt.embedded;
             const neutral = beforeSigning && (u.unit === "data" || u.unit === "instance");
+            const pending = mt.similarity === null && inspection.pending.includes(u.unit);
             return `
             <tr>
               <td class="unit-name"><span class="swatch" data-unit="${u.unit}"></span>${esc(u.name)}</td>
               <td><span class="mono">${isccHtml(u.iscc)}</span></td>
-              <td class="num">${verdict(mt, neutral)}</td>
+              <td class="num">${pending ? `<span class="hint">computing…</span>` : verdict(mt, neutral)}</td>
             </tr>`;
           })
           .join("");
         return `
         <section class="card">
           <header><h2>Soft binding</h2><span class="grow"></span><span class="hint mono">${esc(sb.alg)}</span></header>
-          ${preservationBlock(sb.preservation, inspection)}
+          ${sb.preservation ? preservationBlock(sb.preservation, inspection) : hashingBlock(m, inspection)}
           <table>
             <thead><tr><th>Unit</th><th>Embedded in manifest</th><th style="text-align:right">Match with this file</th></tr></thead>
             <tbody>${rows}</tbody>
@@ -277,9 +279,18 @@ function preservationText(p: Preservation, inspection: Inspection): [string, str
   }
 }
 
+/** While the file is still being hashed, the preservation verdict waits for its Instance-Code. */
+function hashingBlock(m: ManifestSummary, inspection: Inspection): string {
+  if (!m.source_view || !inspection.pending.includes("instance")) return "";
+  return `
+          <div class="preservation">
+            <p>Checking source preservation</p>
+            <p class="detail">The file is still being hashed; its Instance-Code decides whether it is the file that was signed.</p>
+          </div>`;
+}
+
 /** Whether the file is source-preserving (IEP-0020), in one line with its reason. */
-function preservationBlock(p: Preservation | null, inspection: Inspection): string {
-  if (!p) return "";
+function preservationBlock(p: Preservation, inspection: Inspection): string {
   const [title, text] = preservationText(p, inspection);
   const state = p === "preserved" ? "preserved" : p === "changed" || p === "resigned" ? "not_preserved" : "not_verifiable";
   return `
@@ -314,6 +325,7 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
     if (has("content")) parts.push(contentNote(inspection));
     if (has("data") || has("instance")) parts.push(`Data-Code and Instance-Code are recomputed from ${bitstreamSource(m)}.`);
   }
+  if (has("semantic")) parts.push(semanticNote(sb.preservation === "preserved", inspection));
   if (has("data") || has("instance")) {
     parts.push("Data-Code tolerates small byte changes; Instance-Code is exact and either matches or not.");
   }
@@ -323,6 +335,14 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
     );
   }
   return parts.join(" ");
+}
+
+/** What the Semantic-Code in the match column was computed from, or why it was not compared. Codes made elsewhere
+ * may differ a little, because this app's models are compressed. */
+function semanticNote(preserved: boolean, inspection: Inspection): string {
+  if (inspection.semantic_error) return `Semantic-Code is not compared: ${inspection.semantic_error}.`;
+  const from = preserved ? "" : `Semantic-Code is recomputed from this file's ${contentSource(inspection)}. `;
+  return `${from}This app's semantic models are compressed, so a Semantic-Code made by iscc-sci or iscc-sct may differ by a few bits.`;
 }
 
 /** What the Content-Code in the match column was computed from. */
@@ -501,7 +521,7 @@ function validationCard(m: ManifestSummary): string {
   return `
     <section class="card">
       <header><h2>Validation</h2><span class="grow"></span><span class="hint">${esc(m.validation?.specVersion ? `spec ${m.validation.specVersion}` : "")}</span></header>
-      ${sections || `<div class="note">No validation details available.</div>`}
+      ${sections || `<div class="note">${m.validation_state === "Pending" ? "Checked once the file is hashed." : "No validation details available."}</div>`}
     </section>`;
 }
 

@@ -13,18 +13,22 @@ import {
   initialPath,
   inspectAsset,
   installFfmpeg,
+  installSemantic,
   metaCode,
   needsFfmpeg,
   type Progress,
+  semanticStatus,
   signAsset,
   type ToolStatus,
+  type UnitSlug,
 } from "./api";
 import logoUrl from "./assets/iscc-logo-black-coral.svg";
 import { copyText, esc, json, listJoin, splitPath } from "./util";
-import { assetCard, unitList } from "./views/asset";
+import { type Analysis, assetCard, patchPending, unitList } from "./views/asset";
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
 import { type Busy, busyOverlay, downloadProgress, patchProgress, type ToolPrompt, toolOverlay } from "./views/overlay";
 import {
+  dropFailedUnits,
   metaPreviewHint,
   newSignForm,
   type SignForm,
@@ -34,6 +38,7 @@ import {
   signTab,
   type TimestampChoice,
   toRequest,
+  WAITING,
 } from "./views/sign";
 import { startScreen } from "./views/start";
 
@@ -45,8 +50,13 @@ interface State {
   form: SignForm | null;
   tab: Tab;
   busy: Busy | null;
-  /** The offer to download ffmpeg before a video is opened, and that download. */
+  /** The background pass computing the open file's slow units (a video's frames and hashes, the Semantic-Code);
+   * null when none runs. It stays, marked stopped, when the user stops it or it fails. */
+  analysis: Analysis | null;
+  /** The offer to download a tool (ffmpeg before a video is opened, the semantic models), and that download. */
   tool: ToolPrompt | null;
+  /** Whether the semantic models are installed; null until known. */
+  semantic: ToolStatus | null;
   error: string | null;
   banner: { text: string; path?: string; note?: string } | null;
   dragging: boolean;
@@ -58,7 +68,9 @@ const state: State = {
   form: null,
   tab: "credentials",
   busy: null,
+  analysis: null,
   tool: null,
+  semantic: null,
   error: null,
   banner: null,
   dragging: false,
@@ -68,10 +80,12 @@ const appElement = document.getElementById("app");
 if (!appElement) throw new Error("index.html has no #app element");
 const app: HTMLElement = appElement;
 
-/** Full render. Forms keep their values in `state.form`, so re-rendering is safe. */
+/** Full render. Forms keep their values in `state.form`, so re-rendering is safe; the focused control keeps the
+ * focus and its caret, so a render the user did not cause (a background pass finishing) does not interrupt typing. */
 function render() {
   const { info, inspection } = state;
   const scroll = [...app.querySelectorAll<HTMLElement>(".column")].map((c) => c.scrollTop);
+  const focus = focusedControl();
   const fileHtml = inspection
     ? `<div class="file"><span class="name" title="${esc(inspection.path)}">${esc(inspection.file_name)}</span><button class="btn small quiet" data-action="close">Close</button></div>`
     : "";
@@ -88,7 +102,7 @@ function render() {
       <span class="version mono">${info ? `v${esc(info.version)} · c2pa ${esc(info.c2pa_version)}` : ""}</span>
     </header>
     <main>
-      ${inspection ? workspace(inspection) : startScreen(info, state.error)}
+      ${inspection ? workspace(inspection) : startScreen(info, state.error, modelsToInstall())}
       <div class="dropoverlay ${state.dragging ? "active" : ""}"><div class="ring">Drop to inspect</div></div>
       ${state.busy ? busyOverlay(state.busy) : ""}
       ${state.tool ? toolOverlay(state.tool) : ""}
@@ -96,6 +110,33 @@ function render() {
   app.querySelectorAll<HTMLElement>(".column").forEach((c, i) => {
     c.scrollTop = scroll[i] ?? 0;
   });
+  restoreFocus(focus);
+}
+
+/** A form control found again after a render: by name, and by value for one of several checkboxes or radio buttons;
+ * the caret of a text field. */
+interface Focus {
+  selector: string;
+  start: number | null;
+  end: number | null;
+}
+
+/** The named form control in the app that has the focus, if any. */
+function focusedControl(): Focus | null {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLSelectElement) || !el.name || !app.contains(el)) return null;
+  const checkable = el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio");
+  const selector = `[name="${CSS.escape(el.name)}"]${checkable ? `[value="${CSS.escape(el.value)}"]` : ""}`;
+  const text = el instanceof HTMLInputElement && !checkable;
+  return { selector, start: text ? el.selectionStart : null, end: text ? el.selectionEnd : null };
+}
+
+/** Give the focus, and the caret, back to the control `focus` names when the render kept it. */
+function restoreFocus(focus: Focus | null) {
+  const el = focus && app.querySelector<HTMLInputElement | HTMLSelectElement>(focus.selector);
+  if (!focus || !el) return;
+  el.focus({ preventScroll: true });
+  if (el instanceof HTMLInputElement && focus.start !== null) el.setSelectionRange(focus.start, focus.end);
 }
 
 /** Says which bytes the left-hand units were computed from: always the whole file, as any ISCC tool computes them.
@@ -103,6 +144,16 @@ function render() {
 function unitListHint(inspection: Inspection): string {
   const embedded = inspection.manifest ? !inspection.manifest.sidecar : Boolean(inspection.manifest_error);
   return embedded ? "computed now, credentials included" : "computed now, 256 bit";
+}
+
+/** Download size of the semantic models while they are not installed; null when they are or it is unknown. */
+function modelsToInstall(): number | null {
+  return state.semantic && !state.semantic.installed ? (state.semantic.bytes ?? 0) : null;
+}
+
+/** True while the background pass runs, which signing waits for. */
+function analysing(): boolean {
+  return Boolean(state.analysis && !state.analysis.stopped);
 }
 
 function workspace(inspection: Inspection): string {
@@ -114,7 +165,7 @@ function workspace(inspection: Inspection): string {
   let panel: string;
   switch (state.tab) {
     case "sign":
-      panel = state.form ? signTab(state.form, inspection, state.info) : "";
+      panel = state.form ? signTab(state.form, inspection, state.info, { analysing: analysing(), modelsToInstall: modelsToInstall() }) : "";
       break;
     case "raw":
       panel = inspection.manifest_json
@@ -134,7 +185,7 @@ function workspace(inspection: Inspection): string {
     <div class="workspace">
       <div class="column">
         ${assetCard(inspection)}
-        ${unitList(inspection, unitListHint(inspection))}
+        ${unitList(inspection, { hint: unitListHint(inspection), analysis: state.analysis, modelsToInstall: modelsToInstall() })}
       </div>
       <div class="column">
         ${banner}${error}
@@ -152,10 +203,9 @@ function workspace(inspection: Inspection): string {
 let loadSeq = 0;
 let signSeq = 0;
 
-/** What each stage of a video analysis is called on its progress card. */
-const STAGE_LABEL: Record<Progress["stage"], string> = {
-  inspect: "Fingerprinting the video",
-  source: "Fingerprinting the video to sign",
+/** What each stage of a signing is called on its progress card. */
+const STAGE_LABEL: Partial<Record<Progress["stage"], string>> = {
+  source: "Analysing the file to sign",
   write: "Writing the signed copy",
   output: "Checking the signed copy",
 };
@@ -165,19 +215,19 @@ function spinner(label: string): Busy {
   return { label, fraction: null, reporting: false, cancellable: false };
 }
 
-/** Show the progress of the video analysis that `busy` waits for: the first report of a stage renders its progress
- * card, later ones move the bar in place. A report arriving once another task has taken over the overlay is dropped.
- * Only an analysis that leaves no output behind offers Cancel: writing the signed copy and checking it do not. A
- * signing without a progress card keeps its spinner while the copy is written. */
+/** Show the progress of the signing that `busy` waits for: the first report of a stage renders its progress card,
+ * later ones move the bar in place. A report arriving once another task has taken over the overlay is dropped. Only
+ * the analysis of the source, which leaves no output behind, offers Cancel: writing the signed copy and checking it
+ * do not. A signing without a progress card keeps its spinner while the copy is written. */
 function showProgress(busy: Busy, p: Progress) {
-  if (state.busy !== busy || (p.stage === "write" && !busy.reporting)) return;
   const label = STAGE_LABEL[p.stage];
+  if (state.busy !== busy || !label || (p.stage === "write" && !busy.reporting)) return;
   busy.fraction = p.fraction;
   if (busy.reporting && busy.label === label) {
     patchProgress(app, p.fraction);
     return;
   }
-  Object.assign(busy, { label, reporting: true, cancellable: p.stage === "inspect" || p.stage === "source" });
+  Object.assign(busy, { label, reporting: true, cancellable: p.stage === "source" });
   render();
 }
 
@@ -190,27 +240,85 @@ async function missingFfmpeg(path: string): Promise<ToolStatus | null> {
   return status?.available && !status.installed ? status : null;
 }
 
-/** Download ffmpeg as agreed, then open the video that needed it. */
+/** Download the tool as agreed: ffmpeg, then open the video that needed it; or the semantic models, then compute
+ * the Semantic-Code of the file open now. */
 async function installTool() {
   const prompt = state.tool;
   if (!prompt) return;
   prompt.download = { received: 0, total: prompt.status.bytes ?? 0 };
   render();
+  const install = prompt.tool === "ffmpeg" ? installFfmpeg : installSemantic;
   try {
-    await installFfmpeg((d) => {
+    const status = await install((d) => {
       if (state.tool !== prompt) return;
       prompt.download = d;
       patchProgress(app, ...downloadProgress(d));
     });
     if (state.tool !== prompt) return;
     state.tool = null;
-    await load(prompt.path);
+    if (prompt.path) return await load(prompt.path);
+    state.semantic = status;
+    modelsInstalled();
   } catch (e) {
     if (state.tool !== prompt) return;
     state.tool = null;
-    state.error = `ffmpeg could not be installed: ${e}`;
+    state.error = `${prompt.tool === "ffmpeg" ? "ffmpeg" : "The semantic models"} could not be installed: ${e}`;
     render();
   }
+}
+
+/** Offer the semantic models for the file open now, with their size and source. */
+async function offerSemantic() {
+  const status = await semanticStatus().catch(() => state.semantic);
+  if (!status || status.installed) {
+    state.semantic = status;
+    return modelsInstalled();
+  }
+  state.tool = { tool: "semantic", path: null, status, download: null };
+  render();
+}
+
+/** Once the models are there, the open file's Semantic-Code is computed in the background and ticked in the sign
+ * form. A document without text keeps its reason. */
+function modelsInstalled() {
+  const inspection = state.inspection;
+  const error = inspection?.semantic_error;
+  if (!inspection || !error || error === inspection.content_error) return render();
+  syncForm();
+  inspection.semantic_error = null;
+  inspection.pending = [...inspection.pending, "semantic"];
+  state.form?.units.add("semantic");
+  void analyse(inspection.path);
+}
+
+/** Compute the slow units of the file open now in the background: the inspection shows at once, each pending unit
+ * shows its progress, and the full result replaces the inspection, keeping the tab, the scroll offsets and the sign
+ * form. A newer load or Close drops the result; Stop or a failure keeps the pass, marked stopped, so it can be
+ * resumed. */
+async function analyse(path: string) {
+  const seq = loadSeq;
+  const analysis: Analysis = { progress: {}, stopped: false };
+  state.analysis = analysis;
+  render();
+  try {
+    const full = await inspectAsset(path, true, (p) => {
+      if (state.analysis !== analysis) return;
+      analysis.progress[p.stage as UnitSlug] = p.fraction;
+      patchPending(app, p.stage as UnitSlug, p.fraction);
+    });
+    if (seq !== loadSeq || state.analysis !== analysis) return;
+    syncForm();
+    state.inspection = full;
+    state.analysis = null;
+    if (state.form) dropFailedUnits(state.form, full);
+  } catch (e) {
+    if (seq !== loadSeq || state.analysis !== analysis) return;
+    if (!analysis.stopped) {
+      analysis.stopped = true;
+      state.error = `The analysis failed: ${e}`;
+    }
+  }
+  render();
 }
 
 /** Load and inspect a file path. A video with frames needs ffmpeg for its Meta-Code and Content-Code; when it is
@@ -229,33 +337,38 @@ async function load(path: string, offerFfmpeg = true) {
   // Taken before the first wait, so that a file opened later, or Close, overtakes this load wherever it is.
   const seq = ++loadSeq;
   const missing = offerFfmpeg ? await missingFfmpeg(path) : null;
-  // A video still being analysed for the previous file stops first; awaited, so the
+  // An analysis still running for the previous file stops first; awaited, so the
   // cancellation cannot reach the inspection started next.
-  if (seq === loadSeq && state.busy) await cancelTasks().catch((e) => console.error(e));
+  if (seq === loadSeq && (state.busy || analysing())) await cancelTasks().catch((e) => console.error(e));
   if (seq !== loadSeq) return;
+  state.analysis = null;
   // A signing still running is given up with the file it belongs to.
   signSeq++;
   state.error = null;
   if (missing) {
     state.busy = null;
-    state.tool = { path, status: missing, download: null };
+    state.tool = { tool: "ffmpeg", path, status: missing, download: null };
     return render();
   }
-  const busy = spinner("Inspecting");
-  state.busy = busy;
+  if (await glance(seq, path)) void analyse(path);
+}
+
+/** Show the file at `path` at a glance, its slow units pending; true when the load `seq` is still the latest and
+ * units are pending, for the background pass. */
+async function glance(seq: number, path: string): Promise<boolean> {
+  state.busy = spinner("Inspecting");
   render();
   try {
-    const inspection = await inspectAsset(path, (p) => {
-      if (seq === loadSeq) showProgress(busy, p);
-    });
-    if (seq !== loadSeq) return;
+    const inspection = await inspectAsset(path, false, () => {});
+    if (seq !== loadSeq) return false;
     state.inspection = inspection;
     state.tab = "credentials";
     state.banner = null;
     await resetSignForm(inspection);
+    return inspection.pending.length > 0 && seq === loadSeq;
   } catch (e) {
-    if (seq !== loadSeq) return;
-    state.error = String(e);
+    if (seq === loadSeq) state.error = String(e);
+    return false;
   } finally {
     if (seq === loadSeq) {
       state.busy = null;
@@ -350,7 +463,7 @@ async function submitSign() {
   const inspection = state.inspection;
   if (!form || !inspection) return;
   const msg = app.querySelector<HTMLElement>("#sign-msg");
-  const problems = signProblems(form, inspection);
+  const problems = analysing() ? [WAITING] : signProblems(form, inspection);
   if (problems.length > 0) {
     if (msg) {
       msg.textContent = problems.join(" ");
@@ -369,6 +482,7 @@ async function submitSign() {
     });
     if (seq !== signSeq) return;
     state.inspection = result.inspection;
+    state.analysis = null;
     state.tab = "credentials";
     const { text, note } = signedMessages(result);
     state.banner = { text, path: result.output, note: note ?? undefined };
@@ -381,6 +495,9 @@ async function submitSign() {
       render();
     }
   }
+  // A Semantic-Code left out at signing is computed for the copy as for any file opened.
+  const copy = state.inspection;
+  if (seq === signSeq && copy?.pending.length) void analyse(copy.path);
 }
 
 /** Read every form control into `state.form` so a re-render restores it. */
@@ -449,15 +566,31 @@ function cancelRunning() {
   loadSeq++;
   signSeq++;
   state.busy = null;
+  state.analysis = null;
   state.tool = null;
 }
 
-/** Top-bar, banner and overlay actions: open a file, close it, dismiss the messages, download
- * ffmpeg or open the video without it, cancel. */
+/** Stop the background pass; its pending units say so and offer to resume it. */
+function stopAnalysis() {
+  if (!state.analysis) return;
+  state.analysis.stopped = true;
+  void cancelTasks().catch((e) => console.error(e));
+  render();
+}
+
+/** Top-bar, banner, unit list and overlay actions: open a file, close it, dismiss the messages,
+ * download a tool, open a video without ffmpeg, stop or resume the background pass, cancel. */
 function onAction(action: string) {
   if (action === "open") return void pickFile();
   if (action === "install-tool") return void installTool();
-  if (action === "skip-tool" && state.tool) return void load(state.tool.path, false);
+  if (action === "skip-tool" && state.tool?.path) return void load(state.tool.path, false);
+  if (action === "offer-semantic") return void offerSemantic();
+  if (action === "stop-analysis") return stopAnalysis();
+  if (action === "resume-analysis" && state.inspection) return void analyse(state.inspection.path);
+  if (action === "dismiss-tool") {
+    state.tool = null;
+    return render();
+  }
   if (action === "cancel-task" || action === "cancel-tool") {
     cancelRunning();
     return render();
@@ -565,6 +698,7 @@ async function main() {
   wireEvents();
   render();
   state.info = await appInfo().catch(() => null);
+  state.semantic = await semanticStatus().catch(() => null);
   render();
   await wireDragDrop();
   const path = await initialPath().catch(() => null);

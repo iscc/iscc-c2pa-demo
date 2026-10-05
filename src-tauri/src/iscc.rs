@@ -1,9 +1,10 @@
 //! ISCC units for image, text, audio and video assets and the ISCC-SEQ soft-binding value
-//! defined by IEP-0020.
+//! defined by IEP-0020. The Semantic-Codes come from `semantic`; this module only places them.
 //!
 //! Image preprocessing mirrors `iscc_sdk.image_normalize` (EXIF transpose, white fill for
 //! transparency, uniform border trim, ITU-R 601-2 luma, bicubic 32x32 resize) so that codes
-//! agree with the Python reference implementation.
+//! agree with the Python reference implementation. The same Pillow resize, with the bilinear
+//! filter, prepares the Semantic-Code Image.
 
 use std::io::{Cursor, Read};
 
@@ -30,6 +31,8 @@ pub struct IsccUnit {
 #[derive(Clone, Debug, Default)]
 pub struct UnitSelection {
     pub meta: bool,
+    /// Semantic-Code of an image or a text document.
+    pub semantic: bool,
     /// Content-Code of the asset's media type (image, text, audio or video).
     pub content: bool,
     pub data: bool,
@@ -43,6 +46,7 @@ impl UnitSelection {
         let has = |s: &str| slugs.iter().any(|x| x == s);
         Self {
             meta: has("meta"),
+            semantic: has("semantic"),
             content: has("image") || has("text") || has("audio") || has("video"),
             data: has("data"),
             instance: has("instance"),
@@ -70,6 +74,8 @@ pub fn describe_unit(iscc: &str) -> Result<IsccUnit> {
     let (mt, st, _vs, _len, _body) = iscc_lib::iscc_decode(iscc)?;
     let (unit, name) = match (mt, st) {
         (0, _) => ("meta", "Meta-Code"),
+        (1, 0) => ("semantic", "Semantic-Code Text"),
+        (1, 1) => ("semantic", "Semantic-Code Image"),
         (1, _) => ("semantic", "Semantic-Code"),
         (2, 0) => ("content", "Content-Code Text"),
         (2, 1) => ("content", "Content-Code Image"),
@@ -122,17 +128,23 @@ pub fn meta_unit(meta: MetaInput<'_>) -> Result<IsccUnit> {
     describe_unit(&code.iscc)
 }
 
-/// The selected units of an asset: the Meta-Code over `meta`, the Content-Code over `content`,
-/// and the Data-Code and Instance-Code from `bitstream`, those of the asset's bytes.
+/// The selected units of an asset, in the order of their MainType: the Meta-Code over `meta`,
+/// the Semantic-Code computed by the caller (`semantic`, which keeps the models out of this
+/// module), the Content-Code over `content`, and the Data-Code and Instance-Code from
+/// `bitstream`, those of the asset's bytes.
 pub fn units_for(
     bitstream: &[IsccUnit; 2],
     content: Content<'_>,
     meta: MetaInput<'_>,
+    semantic: Option<IsccUnit>,
     selection: &UnitSelection,
 ) -> Result<Vec<IsccUnit>> {
     let mut units = Vec::new();
     if selection.meta {
         units.push(meta_unit(meta)?);
+    }
+    if selection.semantic {
+        units.push(semantic.ok_or_else(|| anyhow!("the Semantic-Code is not available"))?);
     }
     if selection.content {
         units.push(content_unit(content)?);
@@ -209,39 +221,81 @@ pub fn content_unit(content: Content<'_>) -> Result<IsccUnit> {
 /// Reduce a decoded image to the 1024 grayscale samples expected by `gen_image_code_v0`.
 pub fn image_pixels(rgb: &RgbImage) -> Vec<u8> {
     let gray = to_luma(&trim_border(rgb));
-    resize_bicubic(&gray, 32, 32)
+    resize_pillow(
+        gray.as_raw(),
+        1,
+        gray.dimensions(),
+        (32, 32),
+        Filter::Bicubic,
+    )
 }
 
 /// Fixed-point precision of Pillow's 8-bit resampling coefficients (32 - 8 - 2).
 const PRECISION_BITS: u32 = 22;
 
-/// Pillow's `Image.resize(size, BICUBIC)` for 8-bit grayscale, bit for bit: a horizontal pass
-/// followed by a vertical pass, each rounding to 8 bit, using 22-bit fixed-point coefficients.
-/// A pass whose size already matches is skipped, as Pillow does. Returns row-major samples.
-fn resize_bicubic(img: &GrayImage, out_w: u32, out_h: u32) -> Vec<u8> {
-    let (in_w, in_h) = img.dimensions();
-    let mut data = img.as_raw().clone();
-    let mut w = in_w as usize;
+/// Pillow's resampling filters, as far as this app resizes with them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Filter {
+    /// Triangle filter, support 1 (the Semantic-Code Image).
+    Bilinear,
+    /// Cubic convolution with a = -0.5, support 2 (the Content-Code Image).
+    Bicubic,
+}
+
+impl Filter {
+    /// Half-width of the kernel at scale 1.
+    fn support(self) -> f64 {
+        match self {
+            Filter::Bilinear => 1.0,
+            Filter::Bicubic => 2.0,
+        }
+    }
+
+    /// Weight of a sample at distance `x`.
+    fn kernel(self, x: f64) -> f64 {
+        match self {
+            Filter::Bilinear => (1.0 - x.abs()).max(0.0),
+            Filter::Bicubic => bicubic_kernel(x),
+        }
+    }
+}
+
+/// Pillow's `Image.resize(size, filter)` for 8-bit images, bit for bit: `data` holds rows of
+/// `channels` interleaved samples per pixel at `in_size`; a horizontal pass, then a vertical
+/// pass, each rounding to 8 bit, using 22-bit fixed-point coefficients. A pass whose size
+/// already matches is skipped, as Pillow does. Returns the samples at `out_size`, row-major.
+pub(crate) fn resize_pillow(
+    data: &[u8],
+    channels: usize,
+    (in_w, in_h): (u32, u32),
+    (out_w, out_h): (u32, u32),
+    filter: Filter,
+) -> Vec<u8> {
+    let mut data = data.to_vec();
+    let mut row_len = in_w as usize * channels;
     if in_w != out_w {
-        let coeffs = bicubic_coeffs(in_w, out_w);
-        let mut out = vec![0u8; out_w as usize * in_h as usize];
+        let coeffs = resample_coeffs(filter, in_w, out_w);
+        let out_len = out_w as usize * channels;
+        let mut out = vec![0u8; out_len * in_h as usize];
         for y in 0..in_h as usize {
-            let row = &data[y * w..(y + 1) * w];
+            let row = &data[y * row_len..(y + 1) * row_len];
             for (x, (first, k)) in coeffs.iter().enumerate() {
-                out[y * out_w as usize + x] =
-                    weighted_sample(row[*first..*first + k.len()].iter().copied(), k);
+                for c in 0..channels {
+                    let samples = (0..k.len()).map(|i| row[(first + i) * channels + c]);
+                    out[y * out_len + x * channels + c] = weighted_sample(samples, k);
+                }
             }
         }
         data = out;
-        w = out_w as usize;
+        row_len = out_len;
     }
     if in_h != out_h {
-        let coeffs = bicubic_coeffs(in_h, out_h);
-        let mut out = vec![0u8; w * out_h as usize];
+        let coeffs = resample_coeffs(filter, in_h, out_h);
+        let mut out = vec![0u8; row_len * out_h as usize];
         for (y, (first, k)) in coeffs.iter().enumerate() {
-            for x in 0..w {
-                let column = (0..k.len()).map(|i| data[(first + i) * w + x]);
-                out[y * w + x] = weighted_sample(column, k);
+            for x in 0..row_len {
+                let column = (0..k.len()).map(|i| data[(first + i) * row_len + x]);
+                out[y * row_len + x] = weighted_sample(column, k);
             }
         }
         data = out;
@@ -262,12 +316,12 @@ fn bicubic_kernel(x: f64) -> f64 {
     }
 }
 
-/// Per output sample along one axis: first input index and the normalised fixed-point weights,
-/// mirroring Pillow's `precompute_coeffs` and `normalize_coeffs_8bpc`.
-fn bicubic_coeffs(in_size: u32, out_size: u32) -> Vec<(usize, Vec<i32>)> {
+/// Per output sample along one axis: first input index and the normalised fixed-point weights
+/// of `filter`, mirroring Pillow's `precompute_coeffs` and `normalize_coeffs_8bpc`.
+fn resample_coeffs(filter: Filter, in_size: u32, out_size: u32) -> Vec<(usize, Vec<i32>)> {
     let scale = in_size as f64 / out_size as f64;
     let filterscale = scale.max(1.0);
-    let support = 2.0 * filterscale;
+    let support = filter.support() * filterscale;
     let ss = 1.0 / filterscale;
     (0..out_size)
         .map(|xx| {
@@ -275,7 +329,7 @@ fn bicubic_coeffs(in_size: u32, out_size: u32) -> Vec<(usize, Vec<i32>)> {
             let first = ((center - support + 0.5) as i64).max(0) as usize;
             let last = ((center + support + 0.5) as i64).min(in_size as i64) as usize;
             let weights: Vec<f64> = (first..last)
-                .map(|x| bicubic_kernel((x as f64 - center + 0.5) * ss))
+                .map(|x| filter.kernel((x as f64 - center + 0.5) * ss))
                 .collect();
             let total: f64 = weights.iter().sum();
             let fixed = weights
@@ -358,7 +412,7 @@ pub fn flatten_on_white(rgba: &RgbaImage) -> RgbImage {
 }
 
 /// Crop a uniform border whose colour is taken from the top-left pixel.
-fn trim_border(img: &RgbImage) -> RgbImage {
+pub(crate) fn trim_border(img: &RgbImage) -> RgbImage {
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
         return img.clone();
@@ -480,6 +534,55 @@ mod tests {
                 "Instance-Code"
             ]
         );
+        // Semantic-Codes of the iscc-sct README and of iscc-samples' demo.bmp.
+        let text = describe_unit("ISCC:CADV3GG6JH3XEVRNSVYGCLJ7AAV3BOT5J7EHEZKPFXEGRJ2CTWACGZI");
+        let image = describe_unit("ISCC:CEDQ2WTPK2QPZTK47HLOYUUTO3TCA35K5UQZODFMMY42S6O6RDQWFEA");
+        assert_eq!(text.unwrap().name, "Semantic-Code Text");
+        assert_eq!(image.unwrap().name, "Semantic-Code Image");
+    }
+
+    #[test]
+    fn selection_takes_the_semantic_unit_from_the_caller() {
+        let slugs = ["meta", "semantic", "image", "data", "instance"].map(String::from);
+        let selection = UnitSelection::from_slugs(&slugs);
+        assert!(selection.meta && selection.semantic && selection.content);
+        let bitstream = bitstream_units(b"some bytes").unwrap();
+        let semantic =
+            describe_unit("ISCC:CEDQ2WTPK2QPZTK47HLOYUUTO3TCA35K5UQZODFMMY42S6O6RDQWFEA").unwrap();
+        let rgb = RgbImage::from_pixel(8, 8, image::Rgb([200, 30, 30]));
+        let meta = MetaInput {
+            name: Some("A title"),
+            ..Default::default()
+        };
+        let units = units_for(
+            &bitstream,
+            Content::Image(&rgb),
+            meta,
+            Some(semantic.clone()),
+            &selection,
+        )
+        .unwrap();
+        let order: Vec<&str> = units.iter().map(|u| u.unit).collect();
+        assert_eq!(order, ["meta", "semantic", "content", "data", "instance"]);
+        assert_eq!(units[1], semantic);
+        let missing = units_for(&bitstream, Content::Image(&rgb), meta, None, &selection);
+        assert!(missing.unwrap_err().to_string().contains("not available"));
+    }
+
+    #[test]
+    fn bilinear_resize_follows_pillow() {
+        // Pillow 12.3: Image.frombytes("RGB", (4, 1), bytes([0,0,0, 255,0,0, 0,255,0, 0,0,255]))
+        // .resize((2, 1), BILINEAR) and the 1x2 upscale of a two-pixel gray column.
+        let row = [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255];
+        let down = resize_pillow(&row, 3, (4, 1), (2, 1), Filter::Bilinear);
+        assert_eq!(down, [109, 36, 0, 36, 109, 109]);
+        let up = resize_pillow(&[0, 255], 1, (1, 2), (1, 4), Filter::Bilinear);
+        assert_eq!(up, [0, 64, 191, 255]);
+        // Sizes that match pass the samples through.
+        assert_eq!(
+            resize_pillow(&row, 3, (4, 1), (4, 1), Filter::Bilinear),
+            row
+        );
     }
 
     #[test]
@@ -494,10 +597,10 @@ mod tests {
         let expected: serde_json::Value =
             serde_json::from_str(include_str!("../tests/fixtures/expected_iscc.json")).unwrap();
         let selection = UnitSelection {
-            meta: false,
             content: true,
             data: true,
             instance: true,
+            ..Default::default()
         };
         for (file, codes) in expected.as_object().unwrap() {
             let path = format!("{}/tests/fixtures/{file}", env!("CARGO_MANIFEST_DIR"));
@@ -508,6 +611,7 @@ mod tests {
                 &bitstream,
                 Content::Image(&rgb),
                 Default::default(),
+                None,
                 &selection,
             )
             .unwrap();

@@ -1,10 +1,10 @@
 // Start screen: the drop zone with the supported formats and the ISCC units each kind of media
-// gets, all four carried by one C2PA soft binding.
+// gets, all of them carried by one C2PA soft binding.
 
 import type { AppInfo, AssetKind, KindInfo } from "../api";
 import crLogoUrl from "../assets/content_credentials_logo.svg";
 import { CONTENT_FROM } from "../formats";
-import { esc } from "../util";
+import { esc, formatBytes } from "../util";
 
 /** Line icons for each kind of media, drawn with the current text colour. */
 const ICONS: Record<AssetKind, string> = {
@@ -14,10 +14,13 @@ const ICONS: Record<AssetKind, string> = {
   video: `<rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 10l5-3v10l-5-3z"/>`,
 };
 
-/** The units of each row, as [unit, what it is computed from]; the Content-Code varies by kind. */
+/** The units of each row, as [unit, what it is computed from]; the Content-Code varies by kind, and only images and
+ * documents have a Semantic-Code (empty for the others). */
 function units(kind: AssetKind): [string, string][] {
+  const semantic = kind === "image" || kind === "text" ? "meaning" : "";
   return [
     ["meta", "metadata"],
+    ["semantic", semantic],
     ["content", CONTENT_FROM[kind]],
     ["data", "bytes"],
     ["instance", "checksum"],
@@ -29,20 +32,29 @@ function kindRow(k: KindInfo): string {
   const icon = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k.kind]}</svg>`;
   const chips = k.formats.map((f) => `<span class="format">${esc(f)}</span>`).join("");
   const cells = units(k.kind)
-    .map(([unit, from]) => `<span class="cell"><span data-unit="${unit}">${esc(from)}</span></span>`)
+    .map(([unit, from]) => `<span class="cell">${from ? `<span data-unit="${unit}">${esc(from)}</span>` : ""}</span>`)
     .join("");
   return `<div class="media">${icon}${esc(k.label)}</div><div class="chips">${chips}</div>${cells}`;
 }
 
-/** Table of supported formats, with a bracket under the units that one soft binding carries. */
-function formatsTable(kinds: KindInfo[]): string {
+/** Table of supported formats, with a bracket under the units that one soft binding carries. The Semantic-Code is
+ * experimental; while its models are not installed, a line says that they are an optional download of
+ * `modelsToInstall` bytes. */
+function formatsTable(kinds: KindInfo[], modelsToInstall: number | null): string {
   if (!kinds.length) return "";
-  const head = ["Media", "Formats", "Meta", "Content", "Data", "Instance"].map((h) => `<span class="head">${h}</span>`).join("");
+  const head = ["Media", "Formats", "Meta", "Semantic", "Content", "Data", "Instance"]
+    .map((h) => `<span class="head">${h}</span>`)
+    .join("");
+  const models =
+    modelsToInstall === null
+      ? ""
+      : `<div class="models">Semantic-Codes are experimental; their two models are an optional download (${esc(formatBytes(modelsToInstall))}).</div>`;
   return `
     <div class="kinds">
       ${head}
       ${kinds.map(kindRow).join("")}
       <div class="binding"><span class="bracket"></span>one C2PA soft binding</div>
+      ${models}
     </div>`;
 }
 
@@ -57,15 +69,16 @@ function footer(info: AppInfo | null): string {
     </footer>`;
 }
 
-/** The start screen shown while no file is open; `error` is the last failure to open one. */
-export function startScreen(info: AppInfo | null, error: string | null): string {
+/** The start screen shown while no file is open; `error` is the last failure to open one, `modelsToInstall` the
+ * download size of the semantic models while they are not installed. */
+export function startScreen(info: AppInfo | null, error: string | null, modelsToInstall: number | null): string {
   return `
     <div class="empty">
       <div class="dropzone" data-action="open" role="button" tabindex="0">
         <div class="ring"><div class="dot"></div></div>
         <h1>Drop an image, a document, an audio or a video file</h1>
         <p>See its Content Credentials and ISCC, or sign it with an ISCC soft binding.</p>
-        ${formatsTable(info?.kinds ?? [])}
+        ${formatsTable(info?.kinds ?? [], modelsToInstall)}
         ${error ? `<p class="banner error">${esc(error)}</p>` : ""}
       </div>
       ${footer(info)}

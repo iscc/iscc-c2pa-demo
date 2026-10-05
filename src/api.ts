@@ -113,7 +113,8 @@ export interface ManifestSummary {
   title: string | null;
   claim_generator: string | null;
   manifest_count: number;
-  validation_state: "Trusted" | "Valid" | "Invalid" | string;
+  /** `Pending` while a video at a glance waits for the check that hashes it. */
+  validation_state: "Trusted" | "Valid" | "Invalid" | "Pending" | string;
   /** Why the manifest is invalid; set exactly when `validation_state` is `Invalid`. */
   invalid_reason: InvalidReason | null;
   /** URI of the trust list the active manifest's signer chains to; null when untrusted. */
@@ -172,10 +173,16 @@ export interface Inspection {
   duration_secs: number | null;
   /** Creator named in the file's own metadata; display only. */
   creator: string | null;
+  /** Meta, Semantic, Content, Data and Instance units of the whole file. */
   iscc: IsccUnit[];
+  /** Units a later pass still computes: `semantic`, and a video's `content`, `data` and `instance` at a glance. */
+  pending: UnitSlug[];
   meta_fields: MetaFields;
   /** Why the Meta-Code could not be computed, or why the file's own tags could not be read (a video without ffmpeg); `iscc` then lacks it. */
   meta_error: string | null;
+  /** Why an image or a text has no Semantic-Code (the models are not installed, a document without text); `iscc` then
+   * lacks it. Null for audio and video, which have none. */
+  semantic_error: string | null;
   /** Why the Content-Code could not be computed (audio too short, a document without text, a video without frames or without ffmpeg); `iscc` then lacks it. */
   content_error: string | null;
   /** The Content-Code is that of the source just signed, whose compressed video this signed copy carries unchanged; false when it was computed from this file's own frames. */
@@ -249,11 +256,12 @@ export interface SignResult {
   inspection: Inspection;
 }
 
-/** How far a video analysis got: the opened file, the file being signed, or the signed copy; `write` says that
- * the signed copy is about to be written, which cannot be stopped. */
+/** How far a slow unit got. An inspection names the unit: `content` while a video decodes, `semantic` while a text is
+ * embedded. A signing names its stage: the file being signed, `write` when the signed copy is about to be written
+ * (which cannot be stopped), or the signed copy being checked. */
 export interface Progress {
-  stage: "inspect" | "source" | "write" | "output";
-  /** Share of the duration decoded; null when the duration is unknown. */
+  stage: "content" | "semantic" | "source" | "write" | "output";
+  /** Share done; null when unknown (a video's duration). */
   fraction: number | null;
 }
 
@@ -263,14 +271,15 @@ export interface Download {
   total: number;
 }
 
-/** Whether ffmpeg, which videos need, is installed, and what installing it means. */
+/** Whether a tool is installed, and what installing it means: ffmpeg, which videos need, or the semantic models,
+ * which the Semantic-Codes need. */
 export interface ToolStatus {
   name: string;
   version: string | null;
   /** Whether this platform has a build to install. */
   available: boolean;
   installed: boolean;
-  /** The installed program, or where it will be installed. */
+  /** The installed program, or where it will be installed (the tools folder, for the semantic models). */
   path: string | null;
   url: string | null;
   /** Size of the download in bytes. */
@@ -291,13 +300,14 @@ export const appInfo = () => invoke<AppInfo>("app_info");
 
 export const initialPath = () => invoke<string | null>("initial_path");
 
-export const inspectAsset = (path: string, onProgress: (p: Progress) => void) =>
-  invoke<Inspection>("inspect_asset", { path, onProgress: channel(onProgress) });
+/** Inspect `path`: at a glance, its slow units pending, or in `full`, reporting their progress. */
+export const inspectAsset = (path: string, full: boolean, onProgress: (p: Progress) => void) =>
+  invoke<Inspection>("inspect_asset", { path, full, onProgress: channel(onProgress) });
 
 export const signAsset = (request: SignRequest, onProgress: (p: Progress) => void) =>
   invoke<SignResult>("sign_asset", { request, onProgress: channel(onProgress) });
 
-/** Stop the video analyses and downloads that run now. */
+/** Stop the analyses and downloads that run now. */
 export const cancelTasks = () => invoke<void>("cancel_tasks");
 
 /** Whether opening `path` needs ffmpeg: a video does, unless it carries sound only. */
@@ -307,6 +317,11 @@ export const ffmpegStatus = () => invoke<ToolStatus>("ffmpeg_status");
 
 export const installFfmpeg = (onProgress: (d: Download) => void) =>
   invoke<ToolStatus>("install_ffmpeg", { onProgress: channel(onProgress) });
+
+export const semanticStatus = () => invoke<ToolStatus>("semantic_status");
+
+export const installSemantic = (onProgress: (d: Download) => void) =>
+  invoke<ToolStatus>("install_semantic", { onProgress: channel(onProgress) });
 
 export const metaCode = (title: string, description?: string, meta?: string) =>
   invoke<IsccUnit>("meta_code", { title, description: description || null, meta: meta || null });

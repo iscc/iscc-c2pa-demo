@@ -118,8 +118,15 @@ so the download page shows you how to open them the first time.
   Linux, 25 MB on macOS) and checks it before it runs. Without it, a video still shows its
   Content Credentials, Data-Code and Instance-Code. ffmpeg is GPL software and runs as a separate
   program; nothing else in the app needs it.
-- **Your files stay on your computer.** Inspecting works offline, once ffmpeg is there for video.
-  When you sign, only a hash of the signature goes to a timestamp service.
+- **Semantic-Codes are experimental and optional.** Images and documents can also get a
+  Semantic-Code, which matches what a picture shows or what a text says, across crops,
+  recolouring, translations and paraphrases. Two neural networks compute it on your computer:
+  compressed copies of the iscc-sci and iscc-sct models, a 242 MB download the app offers with a
+  link, never on its own. Their codes may differ from iscc-sci's and iscc-sct's by a few bits.
+- **Large files show at once.** A video's frames, the hashes of a large file and the
+  Semantic-Code are computed after the file is shown, each with its own progress bar.
+- **Your files stay on your computer.** Inspecting works offline, once ffmpeg and the semantic
+  models are there. When you sign, only a hash of the signature goes to a timestamp service.
 
 ## For developers
 
@@ -127,9 +134,10 @@ The core is Rust, and the app runs on [Tauri 2](https://tauri.app). It uses
 [c2pa-rs](https://crates.io/crates/c2pa) 0.91 with Rust native crypto (no OpenSSL),
 [iscc-lib](https://crates.io/crates/iscc-lib) for the ISCC units, pure Rust readers for every
 other format, the [pdfium](https://pdfium.googlesource.com/pdfium/) library bundled with the
-app for PDF, and ffmpeg for video, which the app downloads on first use. You need no other tools
-and no Python. The tests check every ISCC unit against
-iscc-core, the ISCC reference implementation, and iscc-sdk.
+app for PDF, ffmpeg for video, and [rten](https://github.com/robertknight/rten) with compressed
+iscc-sci and iscc-sct models for the Semantic-Codes; the app downloads ffmpeg and the models on
+first use. You need no other tools and no Python. The tests check every ISCC unit against
+iscc-core, the ISCC reference implementation, iscc-sdk, iscc-sci and iscc-sct.
 
 The same core builds as `c2pa-iscc`, a command-line tool that prints JSON.
 

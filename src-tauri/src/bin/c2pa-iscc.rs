@@ -1,15 +1,16 @@
 //! Command-line interface to the same core as the desktop app: inspect and sign files, compute a
-//! Meta-Code, list the supported formats, install ffmpeg for video. Prints the JSON the UI
-//! consumes; errors go to stderr as one line with exit code 1 (usage errors exit with 2).
+//! Meta-Code, list the supported formats, install ffmpeg for video and the semantic models for
+//! the Semantic-Codes. Prints the JSON the UI consumes; errors go to stderr as one line with exit
+//! code 1 (usage errors exit with 2).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use iscc_c2pa_demo_lib::formats::{self, Kind};
-use iscc_c2pa_demo_lib::inspect::{self, Inspection};
+use iscc_c2pa_demo_lib::inspect::{self, Depth, Inspection};
 use iscc_c2pa_demo_lib::iscc::{self, MetaInput};
 use iscc_c2pa_demo_lib::sign::{self, Credentials, SignRequest, TimestampOutcome, TrainingEntry};
 use iscc_c2pa_demo_lib::{timestamp, tools};
@@ -53,7 +54,8 @@ enum Command {
     },
     /// List the supported file formats.
     Formats,
-    /// Manage ffmpeg, which video files need; it is downloaded once, on request.
+    /// Manage ffmpeg, which video files need, and the semantic models, which the Semantic-Codes
+    /// need; each is downloaded once, on request.
     Tools {
         #[command(subcommand)]
         action: ToolsAction,
@@ -62,10 +64,29 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ToolsAction {
-    /// Show whether ffmpeg is installed, where, and what installing it downloads.
+    /// Show whether ffmpeg and the semantic models are installed, where, and what installing them
+    /// downloads.
     Status,
-    /// Download ffmpeg (GPL) from iscc-binaries, check it and install it for the app and the CLI.
-    Install,
+    /// Download a tool, check it and install it for the app and the CLI: ffmpeg (GPL) from
+    /// iscc-binaries, or the semantic models (MIT and Apache-2.0) from this app's model release.
+    Install {
+        #[arg(value_enum, default_value_t = Tool::Ffmpeg)]
+        tool: Tool,
+    },
+}
+
+/// A tool `tools install` installs.
+#[derive(Clone, Copy, ValueEnum)]
+enum Tool {
+    Ffmpeg,
+    Semantic,
+}
+
+/// What `tools status` prints.
+#[derive(Serialize)]
+struct ToolsStatus {
+    ffmpeg: tools::Status,
+    semantic: tools::Status,
 }
 
 #[derive(Args)]
@@ -82,9 +103,9 @@ struct SignArgs {
     /// Description for the Meta-Code [default: the one the title came with].
     #[arg(long)]
     description: Option<String>,
-    /// ISCC units to embed: meta, image, text, audio or video, data, instance [default: all four,
-    /// without meta or the Content-Code when it cannot be computed].
-    #[arg(long, value_delimiter = ',', value_parser = ["meta", "image", "text", "audio", "video", "data", "instance"])]
+    /// ISCC units to embed: meta, semantic, image, text, audio or video, data, instance [default:
+    /// all of them, without a unit that cannot be computed].
+    #[arg(long, value_delimiter = ',', value_parser = ["meta", "semantic", "image", "text", "audio", "video", "data", "instance"])]
     units: Option<Vec<String>>,
     /// Digital source type URI, recorded on the parent ingredient when the file has no Content
     /// Credentials yet [default: none recorded].
@@ -134,11 +155,33 @@ fn ffmpeg_note(kind: Kind, installed: bool) -> Option<String> {
     ))
 }
 
-/// Print [`ffmpeg_note`] for `inspection` on stderr.
-fn note_missing_ffmpeg(inspection: &Inspection) {
-    if let Some(note) = ffmpeg_note(inspection.kind, tools::ffmpeg_status().installed) {
+/// How to get the Semantic-Code of an image or a text of `kind`; `None` for audio and video, or
+/// when the models are `installed`.
+fn semantic_note(kind: Kind, installed: bool) -> Option<String> {
+    (matches!(kind, Kind::Image | Kind::Text) && !installed).then(|| {
+        format!(
+            "the Semantic-Code needs the semantic models ({} download); run `c2pa-iscc tools \
+            install semantic`",
+            megabytes(tools::semantic_status().bytes.unwrap_or_default())
+        )
+    })
+}
+
+/// Print [`ffmpeg_note`] and [`semantic_note`] for `inspection` on stderr.
+fn note_missing_tools(inspection: &Inspection) {
+    let ffmpeg = ffmpeg_note(inspection.kind, tools::ffmpeg_status().installed);
+    let semantic = semantic_note(inspection.kind, tools::semantic_status().installed);
+    for note in ffmpeg.into_iter().chain(semantic) {
         eprintln!("note: {note}");
     }
+}
+
+/// `error` with the command that installs the semantic models when they are what is missing.
+fn with_install_hint(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<tools::Missing>() == Some(&tools::Missing::SemanticModels) {
+        return anyhow!("{error}; run `c2pa-iscc tools install semantic`");
+    }
+    error
 }
 
 /// A byte count in megabytes (MiB, as the app counts them), as "69 MB".
@@ -150,13 +193,13 @@ fn megabytes(bytes: u64) -> String {
 fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Inspect { file } => {
-            let mut inspection = inspect::inspect(file)?;
-            note_missing_ffmpeg(&inspection);
+            let mut inspection = inspect::inspect_with(file, Depth::FULL, &|_, _| true)?;
+            note_missing_tools(&inspection);
             strip_preview(&mut inspection, cli.no_preview);
             print(&inspection, cli.compact)
         }
         Command::Sign(args) => {
-            let mut result = sign::sign(&sign_request(args)?)?;
+            let mut result = sign::sign(&sign_request(args)?).map_err(with_install_hint)?;
             if let TimestampOutcome::Failed { url, reason } = &result.timestamp {
                 eprintln!("note: signed without a timestamp: {url} failed ({reason})");
             }
@@ -176,13 +219,55 @@ fn run(cli: &Cli) -> Result<()> {
             cli.compact,
         ),
         Command::Formats => print(&formats::FORMATS, cli.compact),
-        Command::Tools { action } => {
-            if let ToolsAction::Install = action {
+        Command::Tools { action } => match action {
+            ToolsAction::Status => print(
+                &ToolsStatus {
+                    ffmpeg: tools::ffmpeg_status(),
+                    semantic: tools::semantic_status(),
+                },
+                cli.compact,
+            ),
+            ToolsAction::Install { tool: Tool::Ffmpeg } => {
                 install_ffmpeg()?;
+                print(&tools::ffmpeg_status(), cli.compact)
             }
-            print(&tools::ffmpeg_status(), cli.compact)
-        }
+            ToolsAction::Install {
+                tool: Tool::Semantic,
+            } => {
+                install_semantic()?;
+                print(&tools::semantic_status(), cli.compact)
+            }
+        },
     }
+}
+
+/// A progress line on stderr every tenth of a download.
+fn tenths() -> impl FnMut(u64, u64) -> bool {
+    let mut shown = 0;
+    move |received, total| {
+        let tenth = received * 10 / total.max(1);
+        if tenth > shown {
+            shown = tenth;
+            eprintln!("{}%", tenth * 10);
+        }
+        true
+    }
+}
+
+/// Install the semantic models unless they are there, with progress lines on stderr.
+fn install_semantic() -> Result<()> {
+    let status = tools::semantic_status();
+    if status.installed {
+        return Ok(());
+    }
+    eprintln!(
+        "downloading the semantic models ({}, {}) from {}",
+        megabytes(status.bytes.unwrap_or_default()),
+        status.licence,
+        status.url.unwrap_or_default()
+    );
+    tools::install_semantic(&mut tenths())?;
+    Ok(())
 }
 
 /// Install ffmpeg unless it is there, with a progress line on stderr every tenth of the download.
@@ -199,15 +284,7 @@ fn install_ffmpeg() -> Result<()> {
             tool.url
         );
     }
-    let mut shown = 0;
-    tools::install_ffmpeg(&mut |received, total| {
-        let tenth = received * 10 / total.max(1);
-        if tenth > shown {
-            shown = tenth;
-            eprintln!("{}%", tenth * 10);
-        }
-        true
-    })?;
+    tools::install_ffmpeg(&mut tenths())?;
     Ok(())
 }
 
@@ -233,8 +310,8 @@ fn strip_preview(inspection: &mut Inspection, strip: bool) {
 /// prefills its form. A file that cannot be signed is an error; what signing does to it that
 /// its owner may not want is a note.
 fn sign_request(args: &SignArgs) -> Result<SignRequest> {
-    let source = inspect::inspect(&args.file)?;
-    note_missing_ffmpeg(&source);
+    let source = inspect::inspect_with(&args.file, Depth::FULL, &|_, _| true)?;
+    note_missing_tools(&source);
     if let Some(block) = source.sign_block {
         bail!("{block}");
     }
@@ -273,10 +350,11 @@ fn sign_request(args: &SignArgs) -> Result<SignRequest> {
     })
 }
 
-/// All four units for the asset's kind; the Meta-Code only when it can be computed from the
-/// title, description and the file's ISCC metadata, and, when the inspection computed none (a
-/// video's tags unread without ffmpeg), only for a title `given`; the Content-Code only when
-/// the inspection computed it (audio can be too short); each with a note on stderr otherwise.
+/// Every unit for the asset's kind; the Meta-Code only when it can be computed from the title,
+/// description and the file's ISCC metadata, and, when the inspection computed none (a video's
+/// tags unread without ffmpeg), only for a title `given`; the Semantic-Code and the Content-Code
+/// only when the inspection computed them (audio can be too short, the models missing); each
+/// with a note on stderr otherwise, unless [`note_missing_tools`] told already.
 fn default_units(
     source: &Inspection,
     given: bool,
@@ -291,14 +369,22 @@ fn default_units(
             meta: source.meta_fields.meta.as_deref(),
         }),
     };
-    let mut units = vec!["meta", source.kind.slug(), "data", "instance"];
+    let content = source.kind.slug();
+    let mut units = vec!["meta", "semantic", content, "data", "instance"];
+    if !source.iscc.iter().any(|u| u.unit == "semantic") {
+        units.retain(|u| *u != "semantic");
+        let missing = tools::Missing::SemanticModels.reason();
+        if let Some(e) = source.semantic_error.as_deref().filter(|e| *e != missing) {
+            eprintln!("note: Semantic-Code left out: {e}");
+        }
+    }
     if let Some(e) = &source.content_error {
         eprintln!("note: Content-Code left out: {e}");
-        units.remove(1);
+        units.retain(|u| *u != content);
     }
     if let Err(e) = meta {
         eprintln!("note: Meta-Code left out: {e:#}");
-        units.remove(0);
+        units.retain(|u| *u != "meta");
     }
     units.into_iter().map(str::to_owned).collect()
 }
@@ -359,5 +445,24 @@ mod tests {
         assert_eq!(ffmpeg_note(Kind::Video, true), None);
         assert_eq!(ffmpeg_note(Kind::Audio, false), None);
         assert_eq!(megabytes(72_252_640), "69 MB");
+    }
+
+    #[test]
+    fn missing_models_say_how_to_install_them() {
+        let note = semantic_note(Kind::Text, false).unwrap();
+        assert!(
+            note.ends_with("run `c2pa-iscc tools install semantic`"),
+            "{note}"
+        );
+        assert!(note.contains("(242 MB download)"), "{note}");
+        assert!(semantic_note(Kind::Image, false).is_some());
+        assert_eq!(semantic_note(Kind::Image, true), None);
+        assert_eq!(semantic_note(Kind::Video, false), None);
+        let hinted = with_install_hint(tools::Missing::SemanticModels.into());
+        assert!(hinted
+            .to_string()
+            .ends_with("run `c2pa-iscc tools install semantic`"));
+        let other = with_install_hint(anyhow!("something else"));
+        assert_eq!(other.to_string(), "something else");
     }
 }
