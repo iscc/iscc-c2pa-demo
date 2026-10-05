@@ -18,10 +18,11 @@ use crate::asset::{self, Asset};
 use crate::context::{self, base_settings, ISCC_SOFT_BINDING_ALG};
 use crate::inspect::{self, Depth, Inspection, Semantic, TRAINING_MINING_LABEL};
 use crate::iscc::{self, IsccUnit, MetaInput, UnitSelection};
+use crate::metadata;
+use crate::semantic::{self, SemanticKind, SemanticKinds};
 use crate::thumbnail::{self, THUMBNAIL_EDGE, THUMBNAIL_MIME, THUMBNAIL_QUALITY};
 use crate::timestamp::{BestEffortTsa, FailureSlot};
-use crate::tools::Cancelled;
-use crate::{metadata, semantic};
+use crate::tools::{self, Cancelled};
 
 /// Signing request as sent by the UI.
 #[derive(Deserialize, Debug)]
@@ -109,9 +110,9 @@ pub enum Stage {
     Output,
 }
 
-/// Sign `request.source` into `request.output`.
+/// Sign `request.source` into `request.output`, with either kind of Semantic-Code.
 pub fn sign(request: &SignRequest) -> Result<SignResult> {
-    sign_with(request, &|_, _| true)
+    sign_with(request, SemanticKinds::ALL, &|_, _| true)
 }
 
 /// [`sign`], with `progress` following the slow units of the source and of its signed copy: the
@@ -121,8 +122,11 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
 /// of `semantic`.
 /// Between the two, `progress` hears [`Stage::Write`] for every format: stopped there or before,
 /// the run leaves no output; after it the output is written and stays.
+/// `kinds` are the kinds of Semantic-Code this run may compute: a request for one of another
+/// kind fails before anything is computed, and the signed copy's inspection leaves them out.
 pub fn sign_with(
     request: &SignRequest,
+    kinds: SemanticKinds,
     progress: &dyn Fn(Stage, Option<f64>) -> bool,
 ) -> Result<SignResult> {
     let source = Path::new(&request.source);
@@ -136,6 +140,11 @@ pub fn sign_with(
     // IEP-0020: every unit is generated from the source as a whole, including any Content
     // Credentials it already carries.
     let selection = UnitSelection::from_slugs(&request.units);
+    if let Some(kind) =
+        SemanticKind::of(format.kind).filter(|k| selection.semantic && !kinds.has(*k))
+    {
+        bail!("{}", semantic_off(kind));
+    }
     let loaded = asset::load(source, format, &|f| progress(Stage::Source, f))?;
     let asset = &loaded.asset;
     if let Some(block) = asset.sign_block {
@@ -211,7 +220,8 @@ pub fn sign_with(
     let copy_format = inspect::asset_format(output)?;
     let copy =
         asset::load_signed_copy(output, copy_format, asset, &|f| progress(Stage::Output, f))?;
-    // A Semantic-Code left out at signing is left to a later pass, as for any file just opened.
+    // A Semantic-Code left out at signing is left to a later pass, as for any file just opened,
+    // unless its kind is off.
     let depth = Depth {
         decode_video: true,
         semantic: if selection.semantic {
@@ -219,6 +229,7 @@ pub fn sign_with(
         } else {
             Semantic::Later
         },
+        semantic_kinds: kinds,
     };
     let output_progress = |_, f| progress(Stage::Output, f);
     let inspection = inspect::inspect_loaded(output, copy_format, copy, depth, &output_progress)?;
@@ -229,6 +240,20 @@ pub fn sign_with(
         timestamp: timestamp_outcome(tsa_url, tsa_failure),
         inspection,
     })
+}
+
+/// Why a Semantic-Code of `kind` cannot be signed: it is off, usually because its model went
+/// missing after the file was opened.
+fn semantic_off(kind: SemanticKind) -> String {
+    let why = if tools::semantic_installed(kind) {
+        ""
+    } else {
+        ": its model is not installed"
+    };
+    format!(
+        "{} is off{why}. Switch it on in Settings, or untick it.",
+        kind.unit_name()
+    )
 }
 
 /// The requested timestamp service URL, which must be http or https.
@@ -483,6 +508,36 @@ mod tests {
         // Left out at signing, the copy's Semantic-Code is left to a later pass.
         let result = sign_no_manifest("iscc-c2pa-demo-test-semantic-later");
         assert_eq!(result.inspection.pending, ["semantic"]);
+    }
+
+    #[test]
+    fn a_copy_signed_with_semantic_codes_off_leaves_them_out() {
+        crate::tools::tests::ensure_semantic();
+        let dir = tempfile::tempdir().unwrap();
+        let req = request("no_manifest.jpg", &dir.path().join("off-signed.jpg"));
+        let result = sign_with(&req, SemanticKinds::NONE, &|_, _| true).unwrap();
+        assert!(result.inspection.pending.is_empty());
+        assert_eq!(result.inspection.semantic_error, None);
+        assert_eq!(result.inspection.iscc.len(), 4);
+    }
+
+    #[test]
+    fn a_semantic_code_that_is_off_is_refused_before_anything_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("refused-signed.txt");
+        let mut req = request("demo.txt", &output);
+        req.units = ["meta", "semantic", "text", "data", "instance"]
+            .map(String::from)
+            .to_vec();
+        let image_only = SemanticKinds::NONE.with(SemanticKind::Image, true);
+        let error = sign_with(&req, image_only, &|_, _| panic!("nothing computed")).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.starts_with("Semantic-Code Text is off")
+                && message.ends_with("Switch it on in Settings, or untick it."),
+            "{message}"
+        );
+        assert!(!output.exists(), "nothing written");
     }
 
     #[test]
@@ -1125,7 +1180,7 @@ mod tests {
             let mut req = request(file, &output);
             req.units = vec!["video".into(), "data".into(), "instance".into()];
             let copy_reports = std::cell::Cell::new(0);
-            let result = sign_with(&req, &|stage, _| {
+            let result = sign_with(&req, SemanticKinds::ALL, &|stage, _| {
                 if stage == Stage::Output {
                     copy_reports.set(copy_reports.get() + 1);
                 }
@@ -1154,7 +1209,7 @@ mod tests {
         req.source = source.to_string_lossy().into_owned();
         req.units = vec!["video".into(), "data".into(), "instance".into()];
         // Analysed as demo.mp4, written from rotated.mp4.
-        let result = sign_with(&req, &|stage, _| {
+        let result = sign_with(&req, SemanticKinds::ALL, &|stage, _| {
             if stage == Stage::Write {
                 std::fs::copy(fixture("rotated.mp4"), &source).unwrap();
             }
@@ -1186,10 +1241,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let output = dir.join("no_manifest-signed.jpg");
         let stages = std::cell::RefCell::new(Vec::new());
-        let error = sign_with(&request("no_manifest.jpg", &output), &|stage, _| {
-            stages.borrow_mut().push(stage);
-            stage != Stage::Write
-        })
+        let error = sign_with(
+            &request("no_manifest.jpg", &output),
+            SemanticKinds::ALL,
+            &|stage, _| {
+                stages.borrow_mut().push(stage);
+                stage != Stage::Write
+            },
+        )
         .unwrap_err();
         assert!(error.downcast_ref::<Cancelled>().is_some(), "{error:#}");
         assert_eq!(stages.into_inner(), [Stage::Write]);

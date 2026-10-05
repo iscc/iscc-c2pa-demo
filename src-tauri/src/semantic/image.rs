@@ -2,6 +2,8 @@
 //! flattened on white, as for the Content-Code), its uniform border trimmed, squashed to 512x512
 //! with Pillow's bilinear filter, scaled to [-1, 1] and embedded by the ISC21 descriptor model.
 
+use std::path::Path;
+
 use anyhow::Result;
 use image::RgbImage;
 use rten::Model;
@@ -9,7 +11,6 @@ use rten_tensor::prelude::*;
 use rten_tensor::{NdTensor, Tensor};
 
 use crate::iscc::{resize_pillow, trim_border, Filter};
-use crate::tools::SemanticPaths;
 
 /// Side of the square model input.
 const SIDE: u32 = 512;
@@ -24,9 +25,9 @@ pub(super) fn key(rgb: &RgbImage) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// The 256-d embedding of the picture.
-pub(super) fn embedding(models: &SemanticPaths, rgb: &RgbImage) -> Result<Vec<f32>> {
-    let model = Model::load_file(&models.image_model)?;
+/// The 256-d embedding of the picture by the image model at `model`.
+pub(super) fn embedding(model: &Path, rgb: &RgbImage) -> Result<Vec<f32>> {
+    let model = Model::load_file(model)?;
     let input = NdTensor::from_data([1, 3, SIDE as usize, SIDE as usize], preprocess(rgb));
     let (input_id, output_id) = (model.node_id("input_0")?, model.node_id("output_0")?);
     let mut outputs = model.run(vec![(input_id, input.into())], &[output_id], None)?;

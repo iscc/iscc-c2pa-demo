@@ -6,6 +6,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import {
   type AppInfo,
+  type AssetKind,
   appInfo,
   cancelTasks,
   ffmpegStatus,
@@ -13,11 +14,13 @@ import {
   initialPath,
   inspectAsset,
   installFfmpeg,
-  installSemantic,
   metaCode,
   needsFfmpeg,
   type Progress,
-  semanticStatus,
+  type SemanticKind,
+  type SemanticSettings,
+  semanticSettings,
+  setSemantic,
   signAsset,
   type ToolStatus,
   type UnitSlug,
@@ -27,6 +30,7 @@ import { copyText, esc, json, listJoin, splitPath } from "./util";
 import { type Analysis, assetCard, patchPending, unitList } from "./views/asset";
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
 import { type Busy, busyOverlay, downloadProgress, patchProgress, type ToolPrompt, toolOverlay } from "./views/overlay";
+import { patchSettingsDownload, type SettingsDialog, type SettingsOperation, settingsOverlay } from "./views/settings";
 import {
   dropFailedUnits,
   metaPreviewHint,
@@ -53,10 +57,12 @@ interface State {
   /** The background pass computing the open file's slow units (a video's frames and hashes, the Semantic-Code);
    * null when none runs. It stays, marked stopped, when the user stops it or it fails. */
   analysis: Analysis | null;
-  /** The offer to download a tool (ffmpeg before a video is opened, the semantic models), and that download. */
+  /** The offer to download ffmpeg before a video is opened, and that download. */
   tool: ToolPrompt | null;
-  /** Whether the semantic models are installed; null until known. */
-  semantic: ToolStatus | null;
+  /** Which Semantic-Codes are on; null until known, which counts as off. */
+  semantic: SemanticSettings | null;
+  /** The Settings dialog while it is open. */
+  settings: SettingsDialog | null;
   error: string | null;
   banner: { text: string; path?: string; note?: string } | null;
   dragging: boolean;
@@ -71,6 +77,7 @@ const state: State = {
   analysis: null,
   tool: null,
   semantic: null,
+  settings: null,
   error: null,
   banner: null,
   dragging: false,
@@ -86,9 +93,12 @@ function render() {
   const { info, inspection } = state;
   const scroll = [...app.querySelectorAll<HTMLElement>(".column")].map((c) => c.scrollTop);
   const focus = focusedControl();
+  // While a switch is being changed, nothing else may start or stop a task: see `switchSemantic`.
+  const locked = state.settings?.operation ? "disabled" : "";
   const fileHtml = inspection
-    ? `<div class="file"><span class="name" title="${esc(inspection.path)}">${esc(inspection.file_name)}</span><button class="btn small quiet" data-action="close">Close</button></div>`
+    ? `<div class="file"><span class="name" title="${esc(inspection.path)}">${esc(inspection.file_name)}</span><button class="btn small quiet" data-action="close" ${locked}>Close</button></div>`
     : "";
+  const settingsOff = state.busy || state.tool || state.settings ? "disabled" : "";
   app.innerHTML = `
     <header class="topbar">
       <div class="brand">
@@ -98,14 +108,16 @@ function render() {
       </div>
       <span class="spacer"></span>
       ${fileHtml}
-      <button class="btn small" data-action="open">Open file</button>
+      <button class="btn small quiet" data-action="settings" ${settingsOff}>Settings</button>
+      <button class="btn small" data-action="open" ${locked}>Open file</button>
       <span class="version mono">${info ? `v${esc(info.version)} · c2pa ${esc(info.c2pa_version)}` : ""}</span>
     </header>
     <main>
-      ${inspection ? workspace(inspection) : startScreen(info, state.error, modelsToInstall())}
+      ${inspection ? workspace(inspection) : startScreen(info, state.error, !(semanticOn("image") || semanticOn("text")))}
       <div class="dropoverlay ${state.dragging ? "active" : ""}"><div class="ring">Drop to inspect</div></div>
       ${state.busy ? busyOverlay(state.busy) : ""}
       ${state.tool ? toolOverlay(state.tool) : ""}
+      ${state.settings ? settingsOverlay(state.settings, state.semantic) : ""}
     </main>`;
   app.querySelectorAll<HTMLElement>(".column").forEach((c, i) => {
     c.scrollTop = scroll[i] ?? 0;
@@ -146,9 +158,18 @@ function unitListHint(inspection: Inspection): string {
   return embedded ? "computed now, credentials included" : "computed now, 256 bit";
 }
 
-/** Download size of the semantic models while they are not installed; null when they are or it is unknown. */
-function modelsToInstall(): number | null {
-  return state.semantic && !state.semantic.installed ? (state.semantic.bytes ?? 0) : null;
+/** Whether the Semantic-Code of files of `kind` is on; unknown counts as off, and audio and video have none. */
+function semanticOn(kind: AssetKind): boolean {
+  return (kind === "image" || kind === "text") && Boolean(state.semantic?.[kind].on);
+}
+
+/** Whether the views show the open file's Semantic-Code: only when its kind is on and the inspection mentions the
+ * unit (computed, pending, or with a reason). The switch hides what an inspection made before it was turned off; the
+ * inspection hides what the backend left out while the switch here is stale (a model deleted by hand). */
+function semanticShown(inspection: Inspection): boolean {
+  const mentioned =
+    inspection.iscc.some((u) => u.unit === "semantic") || inspection.pending.includes("semantic") || Boolean(inspection.semantic_error);
+  return mentioned && semanticOn(inspection.kind);
 }
 
 /** True while the background pass runs, which signing waits for. */
@@ -162,10 +183,11 @@ function workspace(inspection: Inspection): string {
     ["sign", "Sign", needsIsccBinding(inspection) ? "This file has no ISCC soft binding yet" : ""],
     ["raw", "Manifest JSON", ""],
   ];
+  const semantic = semanticShown(inspection);
   let panel: string;
   switch (state.tab) {
     case "sign":
-      panel = state.form ? signTab(state.form, inspection, state.info, { analysing: analysing(), modelsToInstall: modelsToInstall() }) : "";
+      panel = state.form ? signTab(state.form, inspection, state.info, { analysing: analysing(), semantic }) : "";
       break;
     case "raw":
       panel = inspection.manifest_json
@@ -173,7 +195,7 @@ function workspace(inspection: Inspection): string {
         : `<section class="card"><div class="center"><h3>No manifest store</h3><p>This file has no C2PA data to show.</p></div></section>`;
       break;
     default:
-      panel = credentialsTab(inspection);
+      panel = credentialsTab(inspection, semantic);
   }
   const banner = state.banner
     ? `<div class="banner"><span class="grow">${esc(state.banner.text)}</span>${state.banner.path ? `<button class="btn small" data-reveal="${esc(state.banner.path)}">Show in folder</button>` : ""}<button class="btn small quiet" data-action="dismiss">Dismiss</button></div>${state.banner.note ? `<div class="banner warn"><span class="grow">${esc(state.banner.note)}</span></div>` : ""}`
@@ -185,7 +207,7 @@ function workspace(inspection: Inspection): string {
     <div class="workspace">
       <div class="column">
         ${assetCard(inspection)}
-        ${unitList(inspection, { hint: unitListHint(inspection), analysis: state.analysis, modelsToInstall: modelsToInstall() })}
+        ${unitList(inspection, { hint: unitListHint(inspection), analysis: state.analysis, semantic })}
       </div>
       <div class="column">
         ${banner}${error}
@@ -240,55 +262,122 @@ async function missingFfmpeg(path: string): Promise<ToolStatus | null> {
   return status?.available && !status.installed ? status : null;
 }
 
-/** Download the tool as agreed: ffmpeg, then open the video that needed it; or the semantic models, then compute
- * the Semantic-Code of the file open now. */
+/** Download ffmpeg as agreed, then open the video that needed it. */
 async function installTool() {
   const prompt = state.tool;
   if (!prompt) return;
   prompt.download = { received: 0, total: prompt.status.bytes ?? 0 };
   render();
-  const install = prompt.tool === "ffmpeg" ? installFfmpeg : installSemantic;
   try {
-    const status = await install((d) => {
+    await installFfmpeg((d) => {
       if (state.tool !== prompt) return;
       prompt.download = d;
       patchProgress(app, ...downloadProgress(d));
     });
     if (state.tool !== prompt) return;
     state.tool = null;
-    if (prompt.path) return await load(prompt.path);
-    state.semantic = status;
-    modelsInstalled();
+    await load(prompt.path);
   } catch (e) {
     if (state.tool !== prompt) return;
     state.tool = null;
-    state.error = `${prompt.tool === "ffmpeg" ? "ffmpeg" : "The semantic models"} could not be installed: ${e}`;
+    state.error = `ffmpeg could not be installed: ${e}`;
     render();
   }
 }
 
-/** Offer the semantic models for the file open now, with their size and source. */
-async function offerSemantic() {
-  const status = await semanticStatus().catch(() => state.semantic);
-  if (!status || status.installed) {
-    state.semantic = status;
-    return modelsInstalled();
+/** Open the Settings dialog and read the switches afresh, so a model deleted by hand shows as off. */
+async function openSettings() {
+  const open: SettingsDialog = { operation: null, errors: {}, error: null };
+  state.settings = open;
+  render();
+  try {
+    state.semantic = await semanticSettings();
+  } catch (e) {
+    open.error = `The settings could not be read: ${e}`;
   }
-  state.tool = { tool: "semantic", path: null, status, download: null };
+  if (state.settings === open) render();
+}
+
+/** Close the Settings dialog, unless a switch is still being changed. */
+function closeSettings() {
+  if (!state.settings || state.settings.operation) return;
+  state.settings = null;
   render();
 }
 
-/** Once the models are there, the open file's Semantic-Code is computed in the background and ticked in the sign
- * form. A document without text keeps its reason. */
-function modelsInstalled() {
+/** Switch the Semantic-Code `kind` on or off and let the open file follow. Switching on downloads its model first
+ * when it is missing. One change at a time: there is one task generation, which every download captures when it
+ * starts, so a second change, Close or a switch-off that stops a pass would cancel the download too. */
+async function switchSemantic(kind: SemanticKind, on: boolean) {
+  const open = state.settings;
+  if (!open || open.operation) return;
+  const known = state.semantic?.[kind];
+  const download = on && known && !known.installed ? { received: 0, total: known.bytes } : null;
+  const operation: SettingsOperation = { kind, on, download, cancelled: false };
+  open.operation = operation;
+  delete open.errors[kind];
+  render();
+  try {
+    state.semantic = await setSemantic(kind, on, (d) => {
+      if (open.operation !== operation) return;
+      const first = !operation.download;
+      operation.download = d;
+      if (first) render();
+      else patchSettingsDownload(app, d);
+    });
+    open.operation = null;
+    semanticChanged(kind);
+  } catch (e) {
+    open.operation = null;
+    if (!operation.cancelled) open.errors[kind] = String(e);
+  }
+  render();
+}
+
+/** Stop the model's download. The one task generation stops a background pass too, which then shows as stopped,
+ * with Resume. */
+function cancelSettings() {
+  const operation = state.settings?.operation;
+  if (!operation?.download) return;
+  operation.cancelled = true;
+  if (state.analysis) state.analysis.stopped = true;
+  void cancelTasks().catch((e) => console.error(e));
+  render();
+}
+
+/** Let the open file follow a switch of the Semantic-Code `kind`, if it is of that kind. */
+function semanticChanged(kind: SemanticKind) {
   const inspection = state.inspection;
-  const error = inspection?.semantic_error;
-  if (!inspection || !error || error === inspection.content_error) return render();
+  if (!inspection || inspection.kind !== kind) return;
   syncForm();
+  if (semanticOn(kind)) semanticSwitchedOn(inspection);
+  else semanticSwitchedOff(inspection);
+}
+
+/** The Semantic-Code switched on: computed in the background and ticked in the sign form. A document without text
+ * has none, for the reason it has no Content-Code. */
+function semanticSwitchedOn(inspection: Inspection) {
+  if (inspection.content_error) {
+    inspection.semantic_error = inspection.content_error;
+    return;
+  }
   inspection.semantic_error = null;
-  inspection.pending = [...inspection.pending, "semantic"];
+  if (!inspection.pending.includes("semantic")) inspection.pending = [...inspection.pending, "semantic"];
   state.form?.units.add("semantic");
   void analyse(inspection.path);
+}
+
+/** The Semantic-Code switched off: gone at once from the unit list and the sign form, without recomputing anything.
+ * A background pass that only computed it stops; one that computes more finishes, and the views hide the
+ * Semantic-Code it brings back. */
+function semanticSwitchedOff(inspection: Inspection) {
+  inspection.iscc = inspection.iscc.filter((u) => u.unit !== "semantic");
+  inspection.pending = inspection.pending.filter((u) => u !== "semantic");
+  inspection.semantic_error = null;
+  state.form?.units.delete("semantic");
+  if (!state.analysis || inspection.pending.length > 0) return;
+  if (!state.analysis.stopped) void cancelTasks().catch((e) => console.error(e));
+  state.analysis = null;
 }
 
 /** Compute the slow units of the file open now in the background: the inspection shows at once, each pending unit
@@ -323,10 +412,13 @@ async function analyse(path: string) {
 
 /** Load and inspect a file path. A video with frames needs ffmpeg for its Meta-Code and Content-Code; when it is
  * missing, the user is offered the download first, unless `offerFfmpeg` is false. The file opened last wins: it
- * replaces whatever load or signing still runs. */
+ * replaces whatever load or signing still runs. Nothing opens while a tool downloads or a switch in Settings is
+ * being changed, since opening cancels the tasks that run. Opening closes the ffmpeg offer and Settings: a switch
+ * flipped while the file is read would act on the file open before it. */
 async function load(path: string, offerFfmpeg = true) {
-  if (state.tool?.download) return;
+  if (state.tool?.download || state.settings?.operation) return;
   state.tool = null;
+  state.settings = null;
   const ext = splitPath(path).ext.slice(1).toLowerCase();
   if (state.info && !state.info.extensions.includes(ext)) {
     const kinds = listJoin(state.info.kinds.map((k) => `${k.label.toLowerCase()} (${k.extensions.join(", ")})`));
@@ -347,7 +439,7 @@ async function load(path: string, offerFfmpeg = true) {
   state.error = null;
   if (missing) {
     state.busy = null;
-    state.tool = { tool: "ffmpeg", path, status: missing, download: null };
+    state.tool = { path, status: missing, download: null };
     return render();
   }
   if (await glance(seq, path)) void analyse(path);
@@ -359,6 +451,8 @@ async function glance(seq: number, path: string): Promise<boolean> {
   state.busy = spinner("Inspecting");
   render();
   try {
+    // The switches as the backend applies them now: a model may have come or gone since they were read.
+    state.semantic = await semanticSettings().catch(() => state.semantic);
     const inspection = await inspectAsset(path, false, () => {});
     if (seq !== loadSeq) return false;
     state.inspection = inspection;
@@ -477,7 +571,7 @@ async function submitSign() {
   state.error = null;
   render();
   try {
-    const result = await signAsset(toRequest(form, inspection), (p) => {
+    const result = await signAsset(toRequest(form, inspection, semanticShown(inspection)), (p) => {
       if (seq === signSeq) showProgress(busy, p);
     });
     if (seq !== signSeq) return;
@@ -488,7 +582,12 @@ async function submitSign() {
     state.banner = { text, path: result.output, note: note ?? undefined };
     await resetSignForm(result.inspection);
   } catch (e) {
-    if (seq === signSeq) state.error = `Signing failed: ${e}`;
+    if (seq === signSeq) {
+      state.error = `Signing failed: ${e}`;
+      // A model deleted by hand turns its Semantic-Code off: read the switches again, so the form drops the unit
+      // and the next Sign works.
+      state.semantic = await semanticSettings().catch(() => state.semantic);
+    }
   } finally {
     if (seq === signSeq) {
       state.busy = null;
@@ -578,19 +677,17 @@ function stopAnalysis() {
   render();
 }
 
-/** Top-bar, banner, unit list and overlay actions: open a file, close it, dismiss the messages,
- * download a tool, open a video without ffmpeg, stop or resume the background pass, cancel. */
+/** Top-bar, banner, unit list and overlay actions: open a file, close it, dismiss the messages, download ffmpeg, open
+ * a video without it, stop or resume the background pass, open and close Settings, cancel. */
 function onAction(action: string) {
   if (action === "open") return void pickFile();
   if (action === "install-tool") return void installTool();
-  if (action === "skip-tool" && state.tool?.path) return void load(state.tool.path, false);
-  if (action === "offer-semantic") return void offerSemantic();
+  if (action === "skip-tool" && state.tool) return void load(state.tool.path, false);
   if (action === "stop-analysis") return stopAnalysis();
   if (action === "resume-analysis" && state.inspection) return void analyse(state.inspection.path);
-  if (action === "dismiss-tool") {
-    state.tool = null;
-    return render();
-  }
+  if (action === "settings") return void openSettings();
+  if (action === "close-settings") return closeSettings();
+  if (action === "cancel-settings") return cancelSettings();
   if (action === "cancel-task" || action === "cancel-tool") {
     cancelRunning();
     return render();
@@ -649,6 +746,7 @@ function wireEvents() {
 
   app.addEventListener("change", (ev) => {
     const target = ev.target as HTMLInputElement;
+    if (target.name === "semantic") return void switchSemantic(target.value as SemanticKind, target.checked);
     if (["cred", "alg", "ts_on", "ts_preset"].includes(target.name)) {
       syncForm();
       render();
@@ -667,6 +765,11 @@ function wireEvents() {
       ev.preventDefault();
       void pickFile();
     }
+  });
+
+  // Escape closes Settings, wherever the focus is; it waits like Done while a switch is being changed.
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && state.settings) closeSettings();
   });
 
   // Block the web view's default file navigation; Tauri delivers paths through its own event.
@@ -698,7 +801,7 @@ async function main() {
   wireEvents();
   render();
   state.info = await appInfo().catch(() => null);
-  state.semantic = await semanticStatus().catch(() => null);
+  state.semantic = await semanticSettings().catch(() => null);
   render();
   await wireDragDrop();
   const path = await initialPath().catch(() => null);

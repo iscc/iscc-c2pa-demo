@@ -2,6 +2,9 @@
 //! Meta-Code, list the supported formats, install ffmpeg for video and the semantic models for
 //! the Semantic-Codes. Prints the JSON the UI consumes; errors go to stderr as one line with exit
 //! code 1 (usage errors exit with 2).
+//!
+//! The experimental Semantic-Codes are left out unless `--semantic` asks for them (or `sign
+//! --units` names them), whatever the app has switched on: the CLI never reads its settings.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -12,6 +15,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use iscc_c2pa_demo_lib::formats::{self, Kind};
 use iscc_c2pa_demo_lib::inspect::{self, Depth, Inspection};
 use iscc_c2pa_demo_lib::iscc::{self, MetaInput};
+use iscc_c2pa_demo_lib::semantic::{SemanticKind, SemanticKinds};
 use iscc_c2pa_demo_lib::sign::{self, Credentials, SignRequest, TimestampOutcome, TrainingEntry};
 use iscc_c2pa_demo_lib::{timestamp, tools};
 use serde::Serialize;
@@ -39,6 +43,10 @@ enum Command {
     Inspect {
         /// File to inspect.
         file: PathBuf,
+        /// Also compute the experimental Semantic-Code of an image or a text, and compare an
+        /// embedded one; its model must be installed.
+        #[arg(long)]
+        semantic: bool,
     },
     /// Write a signed copy with an ISCC soft binding; defaults mirror the Sign tab.
     Sign(Box<SignArgs>),
@@ -68,7 +76,7 @@ enum ToolsAction {
     /// downloads.
     Status,
     /// Download a tool, check it and install it for the app and the CLI: ffmpeg (GPL) from
-    /// iscc-binaries, or the semantic models (MIT and Apache-2.0) from this app's model release.
+    /// iscc-binaries, or semantic models (MIT and Apache-2.0) from this app's model release.
     Install {
         #[arg(value_enum, default_value_t = Tool::Ffmpeg)]
         tool: Tool,
@@ -79,14 +87,36 @@ enum ToolsAction {
 #[derive(Clone, Copy, ValueEnum)]
 enum Tool {
     Ffmpeg,
+    /// The models of both Semantic-Codes.
     Semantic,
+    /// The model of the Semantic-Code Image.
+    SemanticImage,
+    /// The model and tokenizer of the Semantic-Code Text.
+    SemanticText,
+}
+
+/// The models of both Semantic-Codes, as `tools status` and `tools install semantic` print them.
+#[derive(Serialize)]
+struct SemanticStatus {
+    semantic_image: tools::Status,
+    semantic_text: tools::Status,
+}
+
+impl SemanticStatus {
+    fn now() -> Self {
+        SemanticStatus {
+            semantic_image: tools::semantic_status(SemanticKind::Image),
+            semantic_text: tools::semantic_status(SemanticKind::Text),
+        }
+    }
 }
 
 /// What `tools status` prints.
 #[derive(Serialize)]
 struct ToolsStatus {
     ffmpeg: tools::Status,
-    semantic: tools::Status,
+    #[serde(flatten)]
+    semantic: SemanticStatus,
 }
 
 #[derive(Args)]
@@ -104,9 +134,13 @@ struct SignArgs {
     #[arg(long)]
     description: Option<String>,
     /// ISCC units to embed: meta, semantic, image, text, audio or video, data, instance [default:
-    /// all of them, without a unit that cannot be computed].
+    /// all of them but the Semantic-Code, without a unit that cannot be computed].
     #[arg(long, value_delimiter = ',', value_parser = ["meta", "semantic", "image", "text", "audio", "video", "data", "instance"])]
     units: Option<Vec<String>>,
+    /// Also embed the experimental Semantic-Code of an image or a text; its model must be
+    /// installed. Naming `semantic` in --units does the same.
+    #[arg(long)]
+    semantic: bool,
     /// Digital source type URI, recorded on the parent ingredient when the file has no Content
     /// Credentials yet [default: none recorded].
     #[arg(long)]
@@ -155,33 +189,54 @@ fn ffmpeg_note(kind: Kind, installed: bool) -> Option<String> {
     ))
 }
 
-/// How to get the Semantic-Code of an image or a text of `kind`; `None` for audio and video, or
-/// when the models are `installed`.
-fn semantic_note(kind: Kind, installed: bool) -> Option<String> {
-    (matches!(kind, Kind::Image | Kind::Text) && !installed).then(|| {
+/// The `tools install` argument that installs the model of the Semantic-Code `kind`.
+fn install_name(kind: SemanticKind) -> &'static str {
+    match kind {
+        SemanticKind::Image => "semantic-image",
+        SemanticKind::Text => "semantic-text",
+    }
+}
+
+/// How to get the Semantic-Code `kind`; `None` when its model is `installed`.
+fn semantic_note(kind: SemanticKind, installed: bool) -> Option<String> {
+    (!installed).then(|| {
         format!(
-            "the Semantic-Code needs the semantic models ({} download); run `c2pa-iscc tools \
-            install semantic`",
-            megabytes(tools::semantic_status().bytes.unwrap_or_default())
+            "the {} needs its model ({} download); run `c2pa-iscc tools install {}`",
+            kind.unit_name(),
+            megabytes(tools::semantic_status(kind).bytes.unwrap_or_default()),
+            install_name(kind)
         )
     })
 }
 
-/// Print [`ffmpeg_note`] and [`semantic_note`] for `inspection` on stderr.
-fn note_missing_tools(inspection: &Inspection) {
+/// Print [`ffmpeg_note`] for `inspection` on stderr, and [`semantic_note`] when the
+/// Semantic-Code was asked for (`semantic`).
+fn note_missing_tools(inspection: &Inspection, semantic: bool) {
     let ffmpeg = ffmpeg_note(inspection.kind, tools::ffmpeg_status().installed);
-    let semantic = semantic_note(inspection.kind, tools::semantic_status().installed);
+    let semantic = SemanticKind::of(inspection.kind)
+        .filter(|_| semantic)
+        .and_then(|kind| semantic_note(kind, tools::semantic_installed(kind)));
     for note in ffmpeg.into_iter().chain(semantic) {
         eprintln!("note: {note}");
     }
 }
 
-/// `error` with the command that installs the semantic models when they are what is missing.
+/// `error` with the command that installs a semantic model when it is what is missing.
 fn with_install_hint(error: anyhow::Error) -> anyhow::Error {
-    if error.downcast_ref::<tools::Missing>() == Some(&tools::Missing::SemanticModels) {
-        return anyhow!("{error}; run `c2pa-iscc tools install semantic`");
+    if let Some(tools::Missing::SemanticModel(kind)) = error.downcast_ref::<tools::Missing>() {
+        let name = install_name(*kind);
+        return anyhow!("{error}; run `c2pa-iscc tools install {name}`");
     }
     error
+}
+
+/// The kinds of Semantic-Code a command computes: both when asked for, else none.
+fn semantic_kinds(asked: bool) -> SemanticKinds {
+    if asked {
+        SemanticKinds::ALL
+    } else {
+        SemanticKinds::NONE
+    }
 }
 
 /// A byte count in megabytes (MiB, as the app counts them), as "69 MB".
@@ -192,14 +247,22 @@ fn megabytes(bytes: u64) -> String {
 /// Execute the parsed command and print its JSON.
 fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
-        Command::Inspect { file } => {
-            let mut inspection = inspect::inspect_with(file, Depth::FULL, &|_, _| true)?;
-            note_missing_tools(&inspection);
+        Command::Inspect { file, semantic } => {
+            let depth = Depth::FULL.with_semantic_kinds(semantic_kinds(*semantic));
+            let mut inspection = inspect::inspect_with(file, depth, &|_, _| true)?;
+            note_missing_tools(&inspection, *semantic);
             strip_preview(&mut inspection, cli.no_preview);
             print(&inspection, cli.compact)
         }
         Command::Sign(args) => {
-            let mut result = sign::sign(&sign_request(args)?).map_err(with_install_hint)?;
+            let named = args
+                .units
+                .as_ref()
+                .is_some_and(|u| u.iter().any(|u| u == "semantic"));
+            let kinds = semantic_kinds(args.semantic || named);
+            let request = sign_request(args, kinds)?;
+            let mut result =
+                sign::sign_with(&request, kinds, &|_, _| true).map_err(with_install_hint)?;
             if let TimestampOutcome::Failed { url, reason } = &result.timestamp {
                 eprintln!("note: signed without a timestamp: {url} failed ({reason})");
             }
@@ -223,22 +286,33 @@ fn run(cli: &Cli) -> Result<()> {
             ToolsAction::Status => print(
                 &ToolsStatus {
                     ffmpeg: tools::ffmpeg_status(),
-                    semantic: tools::semantic_status(),
+                    semantic: SemanticStatus::now(),
                 },
                 cli.compact,
             ),
-            ToolsAction::Install { tool: Tool::Ffmpeg } => {
-                install_ffmpeg()?;
-                print(&tools::ffmpeg_status(), cli.compact)
-            }
-            ToolsAction::Install {
-                tool: Tool::Semantic,
-            } => {
-                install_semantic()?;
-                print(&tools::semantic_status(), cli.compact)
-            }
+            ToolsAction::Install { tool } => install_tool(*tool, cli.compact),
         },
     }
+}
+
+/// Install `tool` unless it is there, and print its status.
+fn install_tool(tool: Tool, compact: bool) -> Result<()> {
+    let kind = match tool {
+        Tool::Ffmpeg => {
+            install_ffmpeg()?;
+            return print(&tools::ffmpeg_status(), compact);
+        }
+        Tool::Semantic => {
+            for kind in SemanticKind::ALL {
+                install_semantic(kind)?;
+            }
+            return print(&SemanticStatus::now(), compact);
+        }
+        Tool::SemanticImage => SemanticKind::Image,
+        Tool::SemanticText => SemanticKind::Text,
+    };
+    install_semantic(kind)?;
+    print(&tools::semantic_status(kind), compact)
 }
 
 /// A progress line on stderr every tenth of a download.
@@ -254,19 +328,21 @@ fn tenths() -> impl FnMut(u64, u64) -> bool {
     }
 }
 
-/// Install the semantic models unless they are there, with progress lines on stderr.
-fn install_semantic() -> Result<()> {
-    let status = tools::semantic_status();
+/// Install the model of the Semantic-Code `kind` unless it is there, with progress lines on
+/// stderr.
+fn install_semantic(kind: SemanticKind) -> Result<()> {
+    let status = tools::semantic_status(kind);
     if status.installed {
         return Ok(());
     }
     eprintln!(
-        "downloading the semantic models ({}, {}) from {}",
+        "downloading the model of the {} ({}, {}) from {}",
+        kind.unit_name(),
         megabytes(status.bytes.unwrap_or_default()),
         status.licence,
         status.url.unwrap_or_default()
     );
-    tools::install_semantic(&mut tenths())?;
+    tools::install_semantic(kind, &mut tenths())?;
     Ok(())
 }
 
@@ -307,11 +383,12 @@ fn strip_preview(inspection: &mut Inspection, strip: bool) {
 }
 
 /// The signing request, with every option the user left out filled in the way the Sign tab
-/// prefills its form. A file that cannot be signed is an error; what signing does to it that
-/// its owner may not want is a note.
-fn sign_request(args: &SignArgs) -> Result<SignRequest> {
-    let source = inspect::inspect_with(&args.file, Depth::FULL, &|_, _| true)?;
-    note_missing_tools(&source);
+/// prefills its form, the Semantic-Code of `kinds` only. A file that cannot be signed is an
+/// error; what signing does to it that its owner may not want is a note.
+fn sign_request(args: &SignArgs, kinds: SemanticKinds) -> Result<SignRequest> {
+    let depth = Depth::FULL.with_semantic_kinds(kinds);
+    let source = inspect::inspect_with(&args.file, depth, &|_, _| true)?;
+    note_missing_tools(&source, kinds != SemanticKinds::NONE);
     if let Some(block) = source.sign_block {
         bail!("{block}");
     }
@@ -353,8 +430,9 @@ fn sign_request(args: &SignArgs) -> Result<SignRequest> {
 /// Every unit for the asset's kind; the Meta-Code only when it can be computed from the title,
 /// description and the file's ISCC metadata, and, when the inspection computed none (a video's
 /// tags unread without ffmpeg), only for a title `given`; the Semantic-Code and the Content-Code
-/// only when the inspection computed them (audio can be too short, the models missing); each
-/// with a note on stderr otherwise, unless [`note_missing_tools`] told already.
+/// only when the inspection computed them (audio can be too short, the Semantic-Code not asked
+/// for or its model missing); each with a note on stderr otherwise, unless
+/// [`note_missing_tools`] told already or the Semantic-Code was not asked for.
 fn default_units(
     source: &Inspection,
     given: bool,
@@ -373,8 +451,13 @@ fn default_units(
     let mut units = vec!["meta", "semantic", content, "data", "instance"];
     if !source.iscc.iter().any(|u| u.unit == "semantic") {
         units.retain(|u| *u != "semantic");
-        let missing = tools::Missing::SemanticModels.reason();
-        if let Some(e) = source.semantic_error.as_deref().filter(|e| *e != missing) {
+        let missing =
+            SemanticKind::of(source.kind).map(|k| tools::Missing::SemanticModel(k).reason());
+        if let Some(e) = source
+            .semantic_error
+            .as_deref()
+            .filter(|e| Some(*e) != missing)
+        {
             eprintln!("note: Semantic-Code left out: {e}");
         }
     }
@@ -449,20 +532,24 @@ mod tests {
 
     #[test]
     fn missing_models_say_how_to_install_them() {
-        let note = semantic_note(Kind::Text, false).unwrap();
-        assert!(
-            note.ends_with("run `c2pa-iscc tools install semantic`"),
-            "{note}"
+        let note = semantic_note(SemanticKind::Text, false).unwrap();
+        assert_eq!(
+            note,
+            "the Semantic-Code Text needs its model (142 MB download); run `c2pa-iscc tools \
+            install semantic-text`"
         );
-        assert!(note.contains("(242 MB download)"), "{note}");
-        assert!(semantic_note(Kind::Image, false).is_some());
-        assert_eq!(semantic_note(Kind::Image, true), None);
-        assert_eq!(semantic_note(Kind::Video, false), None);
-        let hinted = with_install_hint(tools::Missing::SemanticModels.into());
+        let image = semantic_note(SemanticKind::Image, false).unwrap();
+        assert!(image.contains("(100 MB download)"), "{image}");
+        assert!(image.ends_with("install semantic-image`"), "{image}");
+        assert_eq!(semantic_note(SemanticKind::Image, true), None);
+        let missing = tools::Missing::SemanticModel(SemanticKind::Image);
+        let hinted = with_install_hint(missing.into());
         assert!(hinted
             .to_string()
-            .ends_with("run `c2pa-iscc tools install semantic`"));
+            .ends_with("run `c2pa-iscc tools install semantic-image`"));
         let other = with_install_hint(anyhow!("something else"));
         assert_eq!(other.to_string(), "something else");
+        assert_eq!(semantic_kinds(false), SemanticKinds::NONE);
+        assert_eq!(semantic_kinds(true), SemanticKinds::ALL);
     }
 }

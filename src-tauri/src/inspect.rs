@@ -17,6 +17,7 @@ use crate::context::{base_settings, ISCC_SOFT_BINDING_ALG};
 use crate::formats::{self, Format, Kind};
 use crate::iscc::{self, Content, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
+use crate::semantic::{SemanticKind, SemanticKinds};
 use crate::tools::{self, Cancelled};
 use crate::{audio, semantic, thumbnail};
 
@@ -66,8 +67,9 @@ pub struct Inspection {
     /// Why the Content-Code could not be computed (audio too short, a document without text, a
     /// video without frames or without ffmpeg); `iscc` then lacks it.
     pub content_error: Option<String>,
-    /// Why an image or a text has no Semantic-Code (the models are not installed, a document
-    /// without text); `iscc` then lacks it. `None` for audio and video, which have none.
+    /// Why an image or a text has no Semantic-Code (its model is not installed, a document
+    /// without text); `iscc` then lacks it. `None` for audio and video, which have none, and for a
+    /// kind of Semantic-Code left out ([`Depth::semantic_kinds`]).
     pub semantic_error: Option<String>,
     /// The Content-Code is that of the source just signed, whose compressed video this signed
     /// copy carries unchanged, so it decodes to the same frames; false when it was computed from
@@ -268,14 +270,17 @@ pub struct Depth {
     /// Content-Code, Data-Code and Instance-Code pending.
     pub decode_video: bool,
     pub semantic: Semantic,
+    /// The kinds of Semantic-Code `semantic` applies to; a file of another kind is inspected as
+    /// with [`Semantic::Never`].
+    pub semantic_kinds: SemanticKinds,
 }
 
 /// When the Semantic-Code of an image or a text is computed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Semantic {
-    /// Now: the unit, or why there is none (the models are not installed).
+    /// Now: the unit, or why there is none (its model is not installed).
     Now,
-    /// In a later pass: pending when the models are installed, else why there is none.
+    /// In a later pass: pending when its model is installed, else why there is none.
     Later,
     /// Not at all, and not mentioned.
     Never,
@@ -286,17 +291,37 @@ impl Depth {
     pub const GLANCE: Depth = Depth {
         decode_video: false,
         semantic: Semantic::Later,
+        semantic_kinds: SemanticKinds::ALL,
     };
     /// Every unit.
     pub const FULL: Depth = Depth {
         decode_video: true,
         semantic: Semantic::Now,
+        semantic_kinds: SemanticKinds::ALL,
     };
     /// Every unit but the Semantic-Code, which needs the models.
     pub const NO_SEMANTIC: Depth = Depth {
         decode_video: true,
         semantic: Semantic::Never,
+        semantic_kinds: SemanticKinds::ALL,
     };
+
+    /// This depth for the Semantic-Codes of `kinds` only.
+    pub fn with_semantic_kinds(self, kinds: SemanticKinds) -> Depth {
+        Depth {
+            semantic_kinds: kinds,
+            ..self
+        }
+    }
+
+    /// When the Semantic-Code of a file of `kind` is computed: never for a kind left out.
+    fn semantic_for(self, kind: Kind) -> Semantic {
+        if self.semantic_kinds.includes(kind) {
+            self.semantic
+        } else {
+            Semantic::Never
+        }
+    }
 }
 
 /// Hears how far a slow unit got: `content` while a video decodes, `semantic` while a text is
@@ -329,15 +354,15 @@ struct FileUnits {
     pending: Vec<&'static str>,
 }
 
-/// The units of `loaded` to `depth`. An unusable title or ISCC metadata costs only the
-/// Meta-Code, audio too short for a fingerprint only the Content-Code, missing models only the
-/// Semantic-Code, not the inspection. Unread tags give no Meta-Code: one from the fallbacks would
-/// differ from the file's own.
+/// The units of `loaded`, its Semantic-Code as `semantic` says. An unusable title or ISCC
+/// metadata costs only the Meta-Code, audio too short for a fingerprint only the Content-Code, a
+/// missing model only the Semantic-Code, not the inspection. Unread tags give no Meta-Code: one
+/// from the fallbacks would differ from the file's own.
 fn file_units(
     loaded: &Loaded,
     kind: Kind,
     meta_fields: &MetaFields,
-    depth: Depth,
+    semantic: Semantic,
     progress: Progress,
 ) -> Result<FileUnits> {
     let asset = &loaded.asset;
@@ -345,7 +370,7 @@ fn file_units(
         AssetContent::Unread(reason) => (None, Some((*reason).to_owned())),
         _ => unit_or_error(iscc::meta_unit(meta_input(meta_fields))),
     };
-    let semantic = semantic_unit(kind, asset, depth.semantic, progress)?;
+    let semantic = semantic_unit(kind, asset, semantic, progress)?;
     let undecoded = matches!(asset.content, AssetContent::Undecoded(_));
     let (content, content_error) = if undecoded {
         (None, None)
@@ -403,15 +428,15 @@ impl Slow {
 /// document without text has none for the reason it has no Content-Code. Only a cancelled run
 /// fails the inspection.
 fn semantic_unit(kind: Kind, asset: &Asset, when: Semantic, progress: Progress) -> Result<Slow> {
-    if when == Semantic::Never || !matches!(kind, Kind::Image | Kind::Text) {
+    let Some(semantic_kind) = SemanticKind::of(kind).filter(|_| when != Semantic::Never) else {
         return Ok(Slow::Absent);
-    }
+    };
     let content = asset.content();
     if let Content::Unavailable(reason) = content {
         return Ok(Slow::Failed(reason.to_owned()));
     }
     if when == Semantic::Later {
-        return Ok(match tools::semantic_paths() {
+        return Ok(match tools::semantic_paths(semantic_kind) {
             Ok(_) => Slow::Pending,
             Err(e) => Slow::Failed(e.to_string()),
         });
@@ -460,7 +485,10 @@ pub fn inspect_loaded(
             .and_then(Manifest::title),
     };
     let meta_fields = metadata::meta_fields(asset.metadata.clone(), manifest_meta, path);
-    let file = file_units(&loaded, format.kind, &meta_fields, depth, progress)?;
+    // A kind of Semantic-Code left out is never mentioned: no unit, nothing pending, no reason,
+    // and nothing to compare an embedded one with.
+    let semantic = depth.semantic_for(format.kind);
+    let file = file_units(&loaded, format.kind, &meta_fields, semantic, progress)?;
     let units = &file.units;
     let view = reader
         .as_ref()
@@ -471,7 +499,7 @@ pub fn inspect_loaded(
                 // Nothing to cut: the source view is the file itself.
                 Ok(SourceView::of_file(path, format, units))
             } else {
-                SourceView::new(path, format, ranges, units, depth.semantic)
+                SourceView::new(path, format, ranges, units, semantic)
             }
         })
         .transpose()?;
@@ -1845,6 +1873,66 @@ mod tests {
         assert_eq!(reports.last(), Some(&("semantic", Some(1.0))));
         let stopped = inspect_with(Path::new(&fixture("demo.md")), Depth::FULL, &|_, _| false);
         assert!(stopped.unwrap_err().downcast_ref::<Cancelled>().is_some());
+    }
+
+    #[test]
+    fn a_kind_of_semantic_code_left_out_is_never_mentioned() {
+        crate::tools::tests::ensure_semantic();
+        let image = fixture("no_manifest.jpg");
+        let text = fixture("demo.txt");
+        let image_only = SemanticKinds::NONE.with(SemanticKind::Image, true);
+        let glance = |path: &str, kinds| {
+            let depth = Depth::GLANCE.with_semantic_kinds(kinds);
+            inspect_with(Path::new(path), depth, &unstopped).unwrap()
+        };
+        for (path, kinds) in [(&image, SemanticKinds::NONE), (&text, image_only)] {
+            let inspection = glance(path, kinds);
+            assert!(inspection.pending.is_empty(), "{path}");
+            assert_eq!(inspection.semantic_error, None, "{path}");
+            assert!(inspection.iscc.iter().all(|u| u.unit != "semantic"));
+        }
+        assert_eq!(glance(&image, image_only).pending, ["semantic"]);
+        let depth = Depth::FULL.with_semantic_kinds(SemanticKinds::NONE);
+        let full = inspect_with(Path::new(&image), depth, &|unit, _| {
+            assert_ne!(unit, "semantic", "nothing embedded");
+            true
+        })
+        .unwrap();
+        assert_eq!(unit_names(&full).len(), 4);
+    }
+
+    #[test]
+    fn an_embedded_semantic_code_of_a_kind_left_out_is_not_compared() {
+        crate::tools::tests::ensure_semantic();
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("semantic-signed.jpg");
+        let request = crate::sign::SignRequest {
+            source: fixture("no_manifest.jpg"),
+            output: output.to_string_lossy().into_owned(),
+            title: "With a Semantic-Code".into(),
+            description: None,
+            meta: None,
+            source_type: None,
+            units: ["meta", "semantic", "image", "data", "instance"]
+                .map(String::from)
+                .to_vec(),
+            training: Default::default(),
+            credentials: crate::sign::Credentials::Demo,
+            tsa_url: None,
+        };
+        crate::sign::sign(&request).unwrap();
+        let depth = Depth::FULL.with_semantic_kinds(SemanticKinds::NONE);
+        let inspection = inspect_with(&output, depth, &unstopped).unwrap();
+        let sb = &inspection.manifest.unwrap().soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::Preserved));
+        for m in &sb.matches {
+            if m.embedded.unit == "semantic" {
+                assert_eq!((&m.computed, m.similarity), (&None, None));
+            } else {
+                assert_eq!(m.similarity, Some(1.0), "{}", m.embedded.name);
+            }
+        }
+        assert_eq!(sb.matches.len(), 5);
     }
 
     #[test]

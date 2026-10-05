@@ -4,6 +4,7 @@
 //! weights are smaller, so codes differ from iscc-sci and iscc-sct by a few bits at most (1 and 2
 //! of 256 measured on the test sets).
 //!
+//! Each kind has a model of its own, installed and switched on separately ([`SemanticKinds`]).
 //! Each computation loads its model, runs it and drops it, so the app holds no model while it
 //! idles. A small memo keyed by the model input remembers the units of the session: a file, its
 //! source view, its signed copy and that copy reopened usually decode to the same pixels or text,
@@ -17,7 +18,9 @@ use std::sync::Mutex;
 
 use anyhow::{bail, Result};
 use iscc_lib::codec::{self, MainType, SubType, Version};
+use serde::{Deserialize, Serialize};
 
+use crate::formats::Kind;
 use crate::iscc::{self, Content, IsccUnit, UNIT_BITS};
 use crate::tools;
 use crate::video::Progress;
@@ -30,6 +33,90 @@ const MEMO_CAPACITY: usize = 64;
 /// Units computed in this session, by the BLAKE3 hash of their model input.
 static MEMO: Mutex<Option<HashMap<[u8; 32], IsccUnit>>> = Mutex::new(None);
 
+/// A kind of Semantic-Code, each computed by a model of its own.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SemanticKind {
+    /// Semantic-Code Image, from the ISC21 descriptor model of iscc-sci.
+    Image,
+    /// Semantic-Code Text, from the multilingual MiniLM model of iscc-sct.
+    Text,
+}
+
+impl SemanticKind {
+    /// Both kinds, in display order.
+    pub const ALL: [SemanticKind; 2] = [SemanticKind::Image, SemanticKind::Text];
+
+    /// The kind of Semantic-Code an asset of `kind` has; audio and video have none.
+    pub fn of(kind: Kind) -> Option<SemanticKind> {
+        match kind {
+            Kind::Image => Some(SemanticKind::Image),
+            Kind::Text => Some(SemanticKind::Text),
+            Kind::Audio | Kind::Video => None,
+        }
+    }
+
+    /// Name of the unit, as the unit list shows it.
+    pub fn unit_name(self) -> &'static str {
+        match self {
+            SemanticKind::Image => "Semantic-Code Image",
+            SemanticKind::Text => "Semantic-Code Text",
+        }
+    }
+}
+
+/// Which kinds of Semantic-Code are switched on; both off by default, because the Semantic-Codes
+/// are experimental and each model is a large download.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct SemanticKinds {
+    pub image: bool,
+    pub text: bool,
+}
+
+impl SemanticKinds {
+    /// No Semantic-Code at all.
+    pub const NONE: SemanticKinds = SemanticKinds {
+        image: false,
+        text: false,
+    };
+    /// Both kinds.
+    pub const ALL: SemanticKinds = SemanticKinds {
+        image: true,
+        text: true,
+    };
+
+    /// Whether `kind` is switched on.
+    pub fn has(self, kind: SemanticKind) -> bool {
+        match kind {
+            SemanticKind::Image => self.image,
+            SemanticKind::Text => self.text,
+        }
+    }
+
+    /// Whether an asset of `kind` gets its Semantic-Code; audio and video never do.
+    pub fn includes(self, kind: Kind) -> bool {
+        SemanticKind::of(kind).is_some_and(|k| self.has(k))
+    }
+
+    /// These kinds with `kind` switched on or off.
+    pub fn with(self, kind: SemanticKind, on: bool) -> SemanticKinds {
+        match kind {
+            SemanticKind::Image => SemanticKinds { image: on, ..self },
+            SemanticKind::Text => SemanticKinds { text: on, ..self },
+        }
+    }
+
+    /// The kinds switched on here whose models are installed: what the app computes.
+    pub fn installed(self) -> SemanticKinds {
+        let on = |kind| self.has(kind) && tools::semantic_installed(kind);
+        SemanticKinds {
+            image: on(SemanticKind::Image),
+            text: on(SemanticKind::Text),
+        }
+    }
+}
+
 /// Whether `content` can have a Semantic-Code: an image or a text.
 pub fn applies(content: &Content<'_>) -> bool {
     matches!(content, Content::Image(_) | Content::Text(_))
@@ -37,22 +124,26 @@ pub fn applies(content: &Content<'_>) -> bool {
 
 /// The Semantic-Code of `content`: Semantic-Code Image of an image, Semantic-Code Text of a
 /// text. `progress` hears the share of a text's chunks embedded and stops the run by returning
-/// false. Without the models the error is [`tools::Missing::SemanticModels`]; content without
-/// text or of another kind has none.
+/// false. Without its kind's model the error is [`tools::Missing::SemanticModel`]; content
+/// without text or of another kind has none.
 pub fn unit(content: Content<'_>, progress: Progress) -> Result<IsccUnit> {
-    let key = match content {
-        Content::Image(rgb) => image::key(rgb),
-        Content::Text(text) => text::key(text),
+    let (kind, key) = match content {
+        Content::Image(rgb) => (SemanticKind::Image, image::key(rgb)),
+        Content::Text(text) => (SemanticKind::Text, text::key(text)),
         Content::Unavailable(reason) => bail!("{reason}"),
         Content::Audio(_) | Content::Video(_) => bail!("audio and video have no Semantic-Code"),
     };
-    let models = tools::semantic_paths()?;
+    // In the order of `tools::semantic_files`: the model, then the tokenizer of a text.
+    let files = tools::semantic_paths(kind)?;
     if let Some(unit) = recall(&key) {
         return Ok(unit);
     }
     let unit = match content {
-        Content::Image(rgb) => encode(SubType::Image, &image::embedding(&models, rgb)?)?,
-        Content::Text(text) => encode(SubType::TEXT, &text::embedding(&models, text, progress)?)?,
+        Content::Image(rgb) => encode(SubType::Image, &image::embedding(&files[0], rgb)?)?,
+        Content::Text(text) => encode(
+            SubType::TEXT,
+            &text::embedding(&files[0], &files[1], text, progress)?,
+        )?,
         _ => unreachable!("rejected above"),
     };
     keep(key, &unit);
@@ -98,6 +189,24 @@ fn keep(key: [u8; 32], unit: &IsccUnit) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_kinds_switch_each_kind_on_its_own() {
+        assert_eq!(SemanticKinds::default(), SemanticKinds::NONE);
+        let image = SemanticKinds::NONE.with(SemanticKind::Image, true);
+        assert!(image.includes(Kind::Image));
+        assert!(!image.includes(Kind::Text));
+        assert!(!SemanticKinds::ALL.includes(Kind::Audio));
+        assert!(!SemanticKinds::ALL.includes(Kind::Video));
+        assert_eq!(image.with(SemanticKind::Text, true), SemanticKinds::ALL);
+        let text = SemanticKinds::ALL.with(SemanticKind::Image, false);
+        assert!(!text.has(SemanticKind::Image) && text.has(SemanticKind::Text));
+        assert_eq!(SemanticKinds::NONE.installed(), SemanticKinds::NONE);
+        assert_eq!(SemanticKind::of(Kind::Text), Some(SemanticKind::Text));
+        assert_eq!(SemanticKind::of(Kind::Video), None);
+        let kind: SemanticKind = serde_json::from_str("\"image\"").unwrap();
+        assert_eq!(kind, SemanticKind::Image);
+    }
 
     #[test]
     fn binarize_takes_signs_msb_first() {
@@ -217,8 +326,9 @@ mod tests {
 
     /// The embedding tokenizer, from the installed models.
     fn encoder() -> tokenizers::Tokenizer {
-        let models = crate::tools::tests::ensure_semantic();
-        tokenizers::Tokenizer::from_file(models.tokenizer).unwrap()
+        crate::tools::tests::ensure_semantic();
+        let files = tools::semantic_paths(SemanticKind::Text).unwrap();
+        tokenizers::Tokenizer::from_file(&files[1]).unwrap()
     }
 
     /// Check the chunks of `text` against the reference entry `want`: code point offsets,

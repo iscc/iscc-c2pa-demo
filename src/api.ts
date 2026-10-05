@@ -180,8 +180,8 @@ export interface Inspection {
   meta_fields: MetaFields;
   /** Why the Meta-Code could not be computed, or why the file's own tags could not be read (a video without ffmpeg); `iscc` then lacks it. */
   meta_error: string | null;
-  /** Why an image or a text has no Semantic-Code (the models are not installed, a document without text); `iscc` then
-   * lacks it. Null for audio and video, which have none. */
+  /** Why an image or a text has no Semantic-Code (a document without text); `iscc` then lacks it. Null for audio and
+   * video, which have none, and while the Semantic-Code of the file's kind is off. */
   semantic_error: string | null;
   /** Why the Content-Code could not be computed (audio too short, a document without text, a video without frames or without ffmpeg); `iscc` then lacks it. */
   content_error: string | null;
@@ -271,15 +271,14 @@ export interface Download {
   total: number;
 }
 
-/** Whether a tool is installed, and what installing it means: ffmpeg, which videos need, or the semantic models,
- * which the Semantic-Codes need. */
+/** Whether ffmpeg, which videos need, is installed, and what installing it means. */
 export interface ToolStatus {
   name: string;
   version: string | null;
   /** Whether this platform has a build to install. */
   available: boolean;
   installed: boolean;
-  /** The installed program, or where it will be installed (the tools folder, for the semantic models). */
+  /** The installed program, or where it will be installed. */
   path: string | null;
   url: string | null;
   /** Size of the download in bytes. */
@@ -287,6 +286,30 @@ export interface ToolStatus {
   licence: string;
   /** Caveat for this platform (Rosetta 2 on Macs with Apple chips). */
   note: string | null;
+}
+
+/** A kind of Semantic-Code, each with a model of its own. */
+export type SemanticKind = "image" | "text";
+
+/** One kind of Semantic-Code in Settings. */
+export interface SemanticSwitch {
+  /** Switched on and its model installed: whether the app computes it. */
+  on: boolean;
+  installed: boolean;
+  /** Size of its download in bytes. */
+  bytes: number;
+  /** Name and version of its model. */
+  model: string;
+}
+
+/** The Semantic-Code switches and where their models come from. */
+export interface SemanticSettings {
+  image: SemanticSwitch;
+  text: SemanticSwitch;
+  /** The tools folder the models are stored in. */
+  folder: string | null;
+  url: string;
+  licence: string;
 }
 
 /** A channel that hands each message to `listener`. */
@@ -318,10 +341,12 @@ export const ffmpegStatus = () => invoke<ToolStatus>("ffmpeg_status");
 export const installFfmpeg = (onProgress: (d: Download) => void) =>
   invoke<ToolStatus>("install_ffmpeg", { onProgress: channel(onProgress) });
 
-export const semanticStatus = () => invoke<ToolStatus>("semantic_status");
+export const semanticSettings = () => invoke<SemanticSettings>("semantic_settings");
 
-export const installSemantic = (onProgress: (d: Download) => void) =>
-  invoke<ToolStatus>("install_semantic", { onProgress: channel(onProgress) });
+/** Switch the Semantic-Code `kind` on or off; switching on downloads its model first when it is missing, reporting the
+ * bytes received. Fails with "cancelled" when `cancelTasks` stops the download. */
+export const setSemantic = (kind: SemanticKind, on: boolean, onProgress: (d: Download) => void) =>
+  invoke<SemanticSettings>("set_semantic", { kind, on, onProgress: channel(onProgress) });
 
 export const metaCode = (title: string, description?: string, meta?: string) =>
   invoke<IsccUnit>("meta_code", { title, description: description || null, meta: meta || null });

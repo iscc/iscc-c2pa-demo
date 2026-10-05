@@ -95,9 +95,8 @@ export interface UnitListView {
   /** Which bytes the units were computed from. */
   hint: string;
   analysis: Analysis | null;
-  /** Download size of the semantic models when they are not installed, for the offer to install them; null when
-   * they are installed or their status is unknown. */
-  modelsToInstall: number | null;
+  /** Whether the file's Semantic-Code is shown: its kind is on and the inspection mentions it. */
+  semantic: boolean;
 }
 
 /** Name of the unit `slug` for this file. */
@@ -163,19 +162,6 @@ function pendingRow(slug: UnitSlug, name: string, analysis: Analysis | null): st
       </div>`;
 }
 
-/** Row of a Semantic-Code that needs the models, with the offer to install them. */
-function installRow(name: string, bytes: number): string {
-  return `
-      <div class="unit">
-        <span class="bar" data-unit="semantic"></span>
-        <div>
-          <div class="name">${nameHtml("semantic", name)}</div>
-          <div class="code" style="color:var(--muted)">not computed: the semantic models are not installed</div>
-          <div class="from"><button type="button" class="linkbtn" data-action="offer-semantic">Install the models (${esc(formatBytes(bytes))})</button></div>
-        </div>
-      </div>`;
-}
-
 /** Where a signed video copy's Content-Code came from. */
 const FROM_SOURCE = "From the file just signed, whose video this copy carries unchanged, packet for packet";
 
@@ -200,18 +186,16 @@ function unitFrom(u: IsccUnit, inspection: Inspection): string {
 }
 
 /** The row of unit `slug`: the unit, its progress while a later pass computes it, or why it is missing; empty when
- * the file has no such unit. A Meta-Code missing for the Content-Code's reason was never tried (a video's tags
- * unread without ffmpeg), so it names no inputs. A Semantic-Code missing for want of the models offers them. */
+ * the file has no such unit, or for a Semantic-Code that is not shown. A Meta-Code missing for the Content-Code's
+ * reason was never tried (a video's tags unread without ffmpeg), so it names no inputs. */
 function row(slug: UnitSlug, inspection: Inspection, view: UnitListView): string {
+  if (slug === "semantic" && !view.semantic) return "";
   const unit = inspection.iscc.find((u) => u.unit === slug);
   if (unit) return unitRow(unit, unitFrom(unit, inspection));
   const name = unitName(slug, inspection);
   if (inspection.pending.includes(slug)) return pendingRow(slug, name, view.analysis);
   const error = unitError(slug, inspection);
   if (!error) return "";
-  if (slug === "semantic" && view.modelsToInstall !== null && error !== inspection.content_error) {
-    return installRow(name, view.modelsToInstall);
-  }
   const from = slug === "meta" && error !== inspection.content_error ? metaFrom(inspection.meta_fields) : "";
   return missingUnitRow(slug, name, error, from);
 }

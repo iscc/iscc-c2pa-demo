@@ -15,6 +15,7 @@ import type {
 } from "../api";
 import { contentSource, embedding } from "../formats";
 import { esc, formatTime, fullStop, isccHtml, json, percent, shortUri } from "../util";
+import { semanticName } from "./asset";
 
 const STATE_TEXT: Record<string, string> = {
   Trusted: "Valid, signer on a trust list",
@@ -111,8 +112,8 @@ export function needsIsccBinding(inspection: Inspection): boolean {
   return !inspection.manifest_error && !(inspection.manifest && hasIsccBinding(inspection.manifest));
 }
 
-/** Whole tab. */
-export function credentialsTab(inspection: Inspection): string {
+/** Whole tab; `semantic` tells whether the file's Semantic-Code is shown, so an embedded one is compared. */
+export function credentialsTab(inspection: Inspection, semantic: boolean): string {
   if (inspection.manifest_error) {
     return `
       <section class="card"><div class="center">
@@ -131,7 +132,7 @@ export function credentialsTab(inspection: Inspection): string {
   }
   return [
     statusCard(m),
-    softBindingCard(m, inspection),
+    softBindingCard(m, inspection, semantic),
     thumbnailCard(m, inspection),
     trainingCard(m),
     actionsCard(m),
@@ -186,7 +187,9 @@ function invalidReason(r: InvalidReason | null): string {
       </div>`;
 }
 
-function softBindingCard(m: ManifestSummary, inspection: Inspection): string {
+/** The soft bindings with their units compared to this file's; an embedded Semantic-Code is not compared unless the
+ * file's Semantic-Code is shown (`semantic`), whatever the inspection computed before its kind was switched off. */
+function softBindingCard(m: ManifestSummary, inspection: Inspection, semantic: boolean): string {
   const missing = hasIsccBinding(m) ? "" : missingIsccCard();
   return (
     missing +
@@ -205,12 +208,14 @@ function softBindingCard(m: ManifestSummary, inspection: Inspection): string {
           .map((mt) => {
             const u = mt.embedded;
             const neutral = beforeSigning && (u.unit === "data" || u.unit === "instance");
-            const pending = mt.similarity === null && inspection.pending.includes(u.unit);
+            const hidden = u.unit === "semantic" && !semantic;
+            const pending = !hidden && mt.similarity === null && inspection.pending.includes(u.unit);
+            const shown = hidden ? NOT_COMPARED : verdict(mt, neutral);
             return `
             <tr>
               <td class="unit-name"><span class="swatch" data-unit="${u.unit}"></span>${esc(u.name)}</td>
               <td><span class="mono">${isccHtml(u.iscc)}</span></td>
-              <td class="num">${pending ? `<span class="hint">computing…</span>` : verdict(mt, neutral)}</td>
+              <td class="num">${pending ? `<span class="hint">computing…</span>` : shown}</td>
             </tr>`;
           })
           .join("");
@@ -222,7 +227,7 @@ function softBindingCard(m: ManifestSummary, inspection: Inspection): string {
             <thead><tr><th>Unit</th><th>Embedded in manifest</th><th style="text-align:right">Match with this file</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
-          <div class="note">${esc(matchNote(sb, m, inspection))}</div>
+          <div class="note">${matchNote(sb, m, inspection, semantic)}</div>
           ${bindingMetadata(sb.metadata)}
         </section>`;
       })
@@ -300,10 +305,13 @@ function preservationBlock(p: Preservation, inspection: Inspection): string {
           </div>`;
 }
 
+/** Match column of a unit that was not compared. */
+const NOT_COMPARED = `<span class="hint">not compared</span>`;
+
 /** Match column: yes or no for the exact Instance-Code, a similarity meter for the other units.
  * A `neutral` unit describes the file before signing, so its difference is no failed match. */
 function verdict(mt: UnitMatch, neutral: boolean): string {
-  if (mt.similarity === null) return `<span class="hint">not compared</span>`;
+  if (mt.similarity === null) return NOT_COMPARED;
   const tip = neutral ? ` data-neutral title="Describes the file as it was before signing, not this file"` : "";
   if (mt.embedded.unit === "instance") {
     const exact = mt.similarity === 1;
@@ -314,8 +322,8 @@ function verdict(mt: UnitMatch, neutral: boolean): string {
   return `<span class="similarity"${tip}><span class="meter"><i style="width:${pct}%"></i></span>${percent(mt.similarity)}</span>`;
 }
 
-/** Explains what each unit in the match column was recomputed from, for the units present. */
-function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspection): string {
+/** Explains what each unit in the match column was recomputed from, for the units present, as HTML. */
+function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspection, semantic: boolean): string {
   const has = (unit: string) => sb.matches.some((mt) => mt.embedded.unit === unit);
   const parts: string[] = [];
   if (sb.preservation === "preserved") {
@@ -325,24 +333,35 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
     if (has("content")) parts.push(contentNote(inspection));
     if (has("data") || has("instance")) parts.push(`Data-Code and Instance-Code are recomputed from ${bitstreamSource(m)}.`);
   }
-  if (has("semantic")) parts.push(semanticNote(sb.preservation === "preserved", inspection));
+  const html = parts.map(esc);
+  if (has("semantic")) html.push(semanticNote(sb.preservation === "preserved", inspection, semantic));
   if (has("data") || has("instance")) {
-    parts.push("Data-Code tolerates small byte changes; Instance-Code is exact and either matches or not.");
+    html.push(esc("Data-Code tolerates small byte changes; Instance-Code is exact and either matches or not."));
   }
   if (has("meta")) {
-    parts.push(
-      "Meta-Code is recomputed from this file's title and description: the file's own metadata first, then the title and description stored in the Content Credentials at signing, then the manifest title, then the file name. Changing an embedded title at signing therefore lowers the match.",
+    html.push(
+      esc(
+        "Meta-Code is recomputed from this file's title and description: the file's own metadata first, then the title and description stored in the Content Credentials at signing, then the manifest title, then the file name. Changing an embedded title at signing therefore lowers the match.",
+      ),
     );
   }
-  return parts.join(" ");
+  return html.join(" ");
 }
 
-/** What the Semantic-Code in the match column was computed from, or why it was not compared. Codes made elsewhere
- * may differ a little, because this app's models are compressed. */
-function semanticNote(preserved: boolean, inspection: Inspection): string {
-  if (inspection.semantic_error) return `Semantic-Code is not compared: ${inspection.semantic_error}.`;
+/** What the Semantic-Code in the match column was computed from, or why it was not compared, as HTML: its kind is
+ * off (with the way to Settings), or the reason the file has none. Codes made elsewhere may differ a little, because
+ * this app's models are compressed. */
+function semanticNote(preserved: boolean, inspection: Inspection, semantic: boolean): string {
+  if (!semantic && (inspection.kind === "audio" || inspection.kind === "video")) {
+    return esc("Semantic-Code is not compared: this app computes none for audio and video.");
+  }
+  if (!semantic) {
+    const settings = `<button type="button" class="linkbtn" data-action="settings">Turn it on in Settings</button>`;
+    return `${esc(`Semantic-Code is not compared: ${semanticName(inspection.kind)} is off.`)} ${settings}.`;
+  }
+  if (inspection.semantic_error) return esc(`Semantic-Code is not compared: ${inspection.semantic_error}.`);
   const from = preserved ? "" : `Semantic-Code is recomputed from this file's ${contentSource(inspection)}. `;
-  return `${from}This app's semantic models are compressed, so a Semantic-Code made by iscc-sci or iscc-sct may differ by a few bits.`;
+  return esc(`${from}This app's semantic models are compressed, so a Semantic-Code made by iscc-sci or iscc-sct may differ by a few bits.`);
 }
 
 /** What the Content-Code in the match column was computed from. */

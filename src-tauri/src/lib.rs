@@ -16,6 +16,7 @@ pub mod pdf;
 pub mod plain;
 pub mod resample;
 pub mod semantic;
+pub mod settings;
 pub mod sign;
 pub mod svg;
 pub mod thumbnail;
@@ -25,10 +26,14 @@ pub mod video;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{LogicalSize, Manager, WebviewWindow};
+use tauri::{AppHandle, LogicalSize, Manager, WebviewWindow};
+
+use semantic::{SemanticKind, SemanticKinds};
+use settings::{SemanticSettings, Settings};
 
 /// Static facts the UI needs once at startup.
 #[derive(Serialize)]
@@ -147,10 +152,24 @@ fn cancel_tasks() {
     TASKS.fetch_add(1, Ordering::SeqCst);
 }
 
+/// The settings as the app holds them: loaded at startup, written by [`set_semantic`].
+fn settings_of(app: &AppHandle) -> Settings {
+    *app.state::<Mutex<Settings>>()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+/// The kinds of Semantic-Code the app computes: switched on, and with their models installed.
+fn semantic_kinds(app: &AppHandle) -> SemanticKinds {
+    settings_of(app).semantic.installed()
+}
+
 /// Inspect the file at `path`: at a glance, its slow units pending, or in `full`, reporting the
-/// progress of each slow unit; stopped by [`cancel_tasks`].
+/// progress of each slow unit; stopped by [`cancel_tasks`]. Semantic-Codes only of the kinds
+/// switched on.
 #[tauri::command]
 async fn inspect_asset(
+    app: AppHandle,
     path: String,
     full: bool,
     on_progress: Channel<Progress<&'static str>>,
@@ -162,6 +181,7 @@ async fn inspect_asset(
         inspect::Depth::GLANCE
     };
     tauri::async_runtime::spawn_blocking(move || {
+        let depth = depth.with_semantic_kinds(semantic_kinds(&app));
         let progress = |stage, fraction| {
             let _ = on_progress.send(Progress { stage, fraction });
             still_wanted(generation)
@@ -173,9 +193,11 @@ async fn inspect_asset(
 }
 
 /// Sign as `request` says, reporting the stages and the progress of video analyses; stopped by
-/// [`cancel_tasks`] until the signed copy is written.
+/// [`cancel_tasks`] until the signed copy is written. A Semantic-Code of a kind that is off is
+/// refused.
 #[tauri::command]
 async fn sign_asset(
+    app: AppHandle,
     request: sign::SignRequest,
     on_progress: Channel<Progress<sign::Stage>>,
 ) -> Result<sign::SignResult, String> {
@@ -185,7 +207,7 @@ async fn sign_asset(
             let _ = on_progress.send(Progress { stage, fraction });
             still_wanted(generation)
         };
-        sign::sign_with(&request, &progress).map_err(|e| format!("{e:#}"))
+        sign::sign_with(&request, semantic_kinds(&app), &progress).map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -222,23 +244,40 @@ async fn install_ffmpeg(on_progress: Channel<Download>) -> Result<tools::Status,
     .map_err(|e| e.to_string())?
 }
 
-/// Whether the semantic models, which the Semantic-Codes need, are installed, and what
-/// installing them means.
+/// Which Semantic-Codes are on, and what switching each on downloads.
 #[tauri::command]
-fn semantic_status() -> tools::Status {
-    tools::semantic_status()
+fn semantic_settings(app: AppHandle) -> SemanticSettings {
+    settings::semantic_settings(&settings_of(&app))
 }
 
-/// Download and install the semantic models, reporting the bytes received; returns their new
-/// status.
+/// Switch the Semantic-Code `kind` on or off and save the choice; returns the switches as they
+/// are then. Switching on first downloads its model when it is missing, reporting the bytes
+/// received, stopped by [`cancel_tasks`]; the switch flips only once the model is there.
+/// Switching off keeps the model.
 #[tauri::command]
-async fn install_semantic(on_progress: Channel<Download>) -> Result<tools::Status, String> {
+async fn set_semantic(
+    app: AppHandle,
+    kind: SemanticKind,
+    on: bool,
+    on_progress: Channel<Download>,
+) -> Result<SemanticSettings, String> {
     let generation = TASKS.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        install_reporting(&on_progress, generation, |p| {
-            tools::install_semantic(p).map(drop)
-        })?;
-        Ok(tools::semantic_status())
+        if on {
+            install_reporting(&on_progress, generation, |p| {
+                tools::install_semantic(kind, p).map(drop)
+            })?;
+        }
+        let state = app.state::<Mutex<Settings>>();
+        let mut held = state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut next = *held;
+        next.semantic = next.semantic.with(kind, on);
+        // The file first: the app never holds a choice it could not save.
+        settings::path()
+            .and_then(|path| settings::save_to(&path, &next))
+            .map_err(|e| format!("{e:#}"))?;
+        *held = next;
+        Ok(settings::semantic_settings(&next))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -292,9 +331,13 @@ fn fit_to_screen(window: &WebviewWindow, min: Option<LogicalSize<f64>>) -> tauri
     window.center()
 }
 
-/// Point the PDF reader at the bundled pdfium, fit the main window (created hidden) to the
-/// screen, then show it.
+/// Load the settings, point the PDF reader at the bundled pdfium, fit the main window (created
+/// hidden) to the screen, then show it.
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = settings::path()
+        .map(|path| settings::load_from(&path))
+        .unwrap_or_default();
+    app.manage(Mutex::new(loaded));
     if let Ok(resources) = app.path().resource_dir() {
         pdf::set_library_dir(resources.join("pdfium"));
     }
@@ -330,8 +373,8 @@ pub fn run() {
             needs_ffmpeg,
             ffmpeg_status,
             install_ffmpeg,
-            semantic_status,
-            install_semantic
+            semantic_settings,
+            set_semantic
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

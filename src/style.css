@@ -479,6 +479,19 @@ input[readonly] { background: var(--paper); color: var(--muted); }
 @keyframes sweep { from { margin-left: 0; } to { margin-left: 70%; } }
 .progress-text { margin: 8px 0 0; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--muted); }
 
+/* Settings: one box per Semantic-Code, its download and any failure indented under its text. */
+.settings { display: flex; flex-direction: column; gap: 12px; }
+.settings p { margin: 0; }
+.settings .legend { font-weight: 500; display: flex; align-items: baseline; gap: 8px; }
+.settings .legend .hint { color: var(--muted); font-family: var(--font-mono); font-size: 11px; font-weight: 400; letter-spacing: 0.04em; }
+.settings .check input:disabled + .title { color: var(--muted); }
+.settings .switch .download, .settings .switch .failed { margin: 8px 0 0 23px; }
+.settings .download .row { display: flex; align-items: center; gap: 12px; }
+.settings .download .progress-text { flex: 1; margin: 0; }
+.settings .failed { font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }
+.settings .failed::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--coral); margin-right: 8px; }
+.settings .source { color: var(--muted); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+
 .center { text-align: center; padding: 48px 24px; color: var(--muted); }
 .center h3 { color: var(--ink); font-weight: 400; font-size: 20px; margin-bottom: 8px; }
 .center .btn { margin-top: 16px; }

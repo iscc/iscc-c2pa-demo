@@ -4,7 +4,7 @@
 import type { AppInfo, AssetKind, KindInfo } from "../api";
 import crLogoUrl from "../assets/content_credentials_logo.svg";
 import { CONTENT_FROM } from "../formats";
-import { esc, formatBytes } from "../util";
+import { esc } from "../util";
 
 /** Line icons for each kind of media, drawn with the current text colour. */
 const ICONS: Record<AssetKind, string> = {
@@ -38,17 +38,15 @@ function kindRow(k: KindInfo): string {
 }
 
 /** Table of supported formats, with a bracket under the units that one soft binding carries. The Semantic-Code is
- * experimental; while its models are not installed, a line says that they are an optional download of
- * `modelsToInstall` bytes. */
-function formatsTable(kinds: KindInfo[], modelsToInstall: number | null): string {
+ * experimental; while both kinds are off (`semanticOff`), a line points to Settings. */
+function formatsTable(kinds: KindInfo[], semanticOff: boolean): string {
   if (!kinds.length) return "";
   const head = ["Media", "Formats", "Meta", "Semantic", "Content", "Data", "Instance"]
     .map((h) => `<span class="head">${h}</span>`)
     .join("");
-  const models =
-    modelsToInstall === null
-      ? ""
-      : `<div class="models">Semantic-Codes are experimental; their two models are an optional download (${esc(formatBytes(modelsToInstall))}).</div>`;
+  const models = semanticOff
+    ? `<div class="models">Semantic-Codes are experimental and off. <button type="button" class="linkbtn" data-action="settings">Turn them on in Settings</button>.</div>`
+    : "";
   return `
     <div class="kinds">
       ${head}
@@ -69,16 +67,16 @@ function footer(info: AppInfo | null): string {
     </footer>`;
 }
 
-/** The start screen shown while no file is open; `error` is the last failure to open one, `modelsToInstall` the
- * download size of the semantic models while they are not installed. */
-export function startScreen(info: AppInfo | null, error: string | null, modelsToInstall: number | null): string {
+/** The start screen shown while no file is open; `error` is the last failure to open one, `semanticOff` whether both
+ * kinds of Semantic-Code are off. */
+export function startScreen(info: AppInfo | null, error: string | null, semanticOff: boolean): string {
   return `
     <div class="empty">
       <div class="dropzone" data-action="open" role="button" tabindex="0">
         <div class="ring"><div class="dot"></div></div>
         <h1>Drop an image, a document, an audio or a video file</h1>
         <p>See its Content Credentials and ISCC, or sign it with an ISCC soft binding.</p>
-        ${formatsTable(info?.kinds ?? [], modelsToInstall)}
+        ${formatsTable(info?.kinds ?? [], semanticOff)}
         ${error ? `<p class="banner error">${esc(error)}</p>` : ""}
       </div>
       ${footer(info)}

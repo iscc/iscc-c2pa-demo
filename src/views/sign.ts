@@ -3,7 +3,7 @@
 
 import type { AppInfo, Credentials, Inspection, IsccUnit, SignRequest, SignResult, TrainingEntry, TsaPreset } from "../api";
 import { contentSource, embedding } from "../formats";
-import { esc, formatBytes, fullStop, isccHtml, splitPath } from "../util";
+import { esc, fullStop, isccHtml, splitPath } from "../util";
 import { USE_CASES } from "./credentials";
 
 /** Digital source types offered for sources without Content Credentials (IPTC NewsCodes and C2PA
@@ -71,8 +71,8 @@ function semanticOption(inspection: Inspection): UnitOption[] {
 export interface SignContext {
   /** True while the background pass computes units of this file: signing waits for it. */
   analysing: boolean;
-  /** Download size of the semantic models when they are not installed; null when they are or it is unknown. */
-  modelsToInstall: number | null;
+  /** Whether the file's Semantic-Code is offered: its kind is on and the inspection mentions it. */
+  semantic: boolean;
 }
 
 /** The Content-Code offered for an asset: image, text, audio or video. */
@@ -121,8 +121,9 @@ function afterSigning(inspection: Inspection): string {
   return `After signing, Data-Code and Instance-Code identify this file, not the signed copy: ${e.kind === "changed" ? "signing " : ""}${e.why}.`;
 }
 
-/** Units offered for an asset, all computed from the file exactly as it is (IEP-0020). */
-function unitOptions(inspection: Inspection): UnitOption[] {
+/** Units offered for an asset, all computed from the file exactly as it is (IEP-0020); the Semantic-Code only when
+ * `semantic` says it is shown. */
+function unitOptions(inspection: Inspection, semantic: boolean): UnitOption[] {
   return [
     {
       slug: "meta",
@@ -130,7 +131,7 @@ function unitOptions(inspection: Inspection): UnitOption[] {
       title: "Meta-Code",
       desc: "Similarity hash of title and description, both stored in the Content Credentials (cawg.metadata). Needs a title.",
     },
-    ...semanticOption(inspection),
+    ...(semantic ? semanticOption(inspection) : []),
     contentOption(inspection),
     {
       slug: "data",
@@ -178,7 +179,7 @@ export function metaPreviewHint(form: SignForm): string {
 }
 
 /** Fresh form state for a newly loaded file; timestamps with the first preset. The Semantic-Code of an image or a
- * text starts ticked when it can be computed (the models installed). */
+ * text starts ticked when it is computed or on its way (its kind switched on). */
 export function newSignForm(inspection: Inspection, presets: TsaPreset[]): SignForm {
   const semantic = semanticOption(inspection).length > 0 && semanticAvailable(inspection);
   return {
@@ -268,8 +269,9 @@ export function signedMessages(result: SignResult): { text: string; note: string
   return { text, note };
 }
 
-/** Build the request the Rust side expects. */
-export function toRequest(form: SignForm, inspection: Inspection): SignRequest {
+/** Build the request the Rust side expects; without the Semantic-Code unless it is shown (`semantic`), whatever the
+ * form still holds. */
+export function toRequest(form: SignForm, inspection: Inspection, semantic: boolean): SignRequest {
   return {
     source: inspection.path,
     output: form.output,
@@ -277,7 +279,7 @@ export function toRequest(form: SignForm, inspection: Inspection): SignRequest {
     description: form.description.trim() || undefined,
     meta: inspection.meta_fields.meta ?? undefined,
     source_type: form.sourceType || undefined,
-    units: [...form.units],
+    units: [...form.units].filter((u) => semantic || u !== "semantic"),
     training: form.training,
     credentials: form.credentials,
     tsa_url: tsaUrl(form.timestamp),
@@ -318,8 +320,8 @@ function timestampFieldset(choice: TimestampChoice, info: AppInfo | null): strin
 }
 
 /** The code line under a unit option: the code, "computing…" while a later pass computes it, why the Semantic-Code
- * is not available (with the offer of the models), or the Meta-Code preview hint. */
-function optionCode(o: UnitOption, form: SignForm, inspection: Inspection, context: SignContext): string {
+ * is not available, or the Meta-Code preview hint. */
+function optionCode(o: UnitOption, form: SignForm, inspection: Inspection): string {
   const muted = (html: string, meta = false) =>
     `<span class="code"${meta ? ` data-meta-code="1"` : ""} style="color:var(--muted)">${html}</span>`;
   if (o.slug === "meta") {
@@ -330,10 +332,6 @@ function optionCode(o: UnitOption, form: SignForm, inspection: Inspection, conte
   if (unit) return `<span class="code">${isccHtml(unit.iscc)}</span>`;
   if (inspection.pending.includes(o.unit)) return muted("computing…");
   if (o.slug !== "semantic" || !inspection.semantic_error) return "";
-  if (context.modelsToInstall !== null && inspection.semantic_error !== inspection.content_error) {
-    const offer = `<button type="button" class="linkbtn" data-action="offer-semantic">Install the models (${esc(formatBytes(context.modelsToInstall))})</button>`;
-    return muted(`not available: the semantic models are not installed · ${offer}`);
-  }
   return muted(`not available: ${esc(inspection.semantic_error)}`);
 }
 
@@ -342,7 +340,7 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
   const hasManifest = Boolean(inspection.manifest);
   const custom = form.credentials.kind === "custom" ? form.credentials : null;
 
-  const unitChecks = unitOptions(inspection)
+  const unitChecks = unitOptions(inspection, context.semantic)
     .map((o) => {
       const unavailable = o.slug === "semantic" && !semanticAvailable(inspection);
       return `
@@ -350,7 +348,7 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
         <input type="checkbox" name="unit" value="${o.slug}" ${form.units.has(o.slug) && !unavailable ? "checked" : ""} ${unavailable ? "disabled" : ""} />
         <span class="title"><span class="swatch" data-unit="${o.unit}"></span>${esc(o.title)}</span>
         <span class="desc">${esc(o.desc)}</span>
-        ${optionCode(o, form, inspection, context)}
+        ${optionCode(o, form, inspection)}
       </label>`;
     })
     .join("");

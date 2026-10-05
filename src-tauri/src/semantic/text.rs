@@ -8,6 +8,7 @@
 //! cores. Every chunk's embedding is the same as one at a time, and the mean adds them in text
 //! order, so the code does not depend on the number of cores.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -19,7 +20,7 @@ use rten_tensor::{NdTensor, Tensor};
 use text_splitter::{ChunkConfig, ChunkSizer, TextSplitter};
 use tokenizers::Tokenizer;
 
-use crate::tools::{Cancelled, SemanticPaths};
+use crate::tools::Cancelled;
 use crate::video::Progress;
 
 /// Most tokens per chunk, as iscc-sct's `max_tokens`.
@@ -46,30 +47,33 @@ type Job<'t> = (usize, usize, &'t str);
 /// A chunk embedded by a worker: its index, the byte offset where it ends, its embedding.
 type Embedded = (usize, usize, Result<Vec<f32>>);
 
-/// The document embedding of `text`: the mean of its chunk embeddings, L2-normalised, with one
-/// worker per logical core. `progress` hears the share of the text embedded after each chunk
-/// and stops the run by returning false.
+/// The document embedding of `text` by the text model at `model` with the tokenizer at
+/// `tokenizer`: the mean of its chunk embeddings, L2-normalised, with one worker per logical
+/// core. `progress` hears the share of the text embedded after each chunk and stops the run by
+/// returning false.
 pub(super) fn embedding(
-    models: &SemanticPaths,
+    model: &Path,
+    tokenizer: &Path,
     text: &str,
     progress: Progress,
 ) -> Result<Vec<f32>> {
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-    embedding_with(models, text, workers, progress)
+    embedding_with(model, tokenizer, text, workers, progress)
 }
 
 /// [`embedding`] with `workers` chunks embedded at a time.
 fn embedding_with(
-    models: &SemanticPaths,
+    model: &Path,
+    tokenizer: &Path,
     text: &str,
     workers: usize,
     progress: Progress,
 ) -> Result<Vec<f32>> {
-    let encoder = Tokenizer::from_file(&models.tokenizer)
-        .map_err(|e| anyhow!("cannot load the tokenizer: {e}"))?;
+    let encoder =
+        Tokenizer::from_file(tokenizer).map_err(|e| anyhow!("cannot load the tokenizer: {e}"))?;
     let sizer = TokenSizer::new(&encoder, text, MAX_TOKENS)?;
     let config = chunk_config(&sizer, MAX_TOKENS, OVERLAP)?;
-    let model = Model::load_file(&models.text_model)?;
+    let model = Model::load_file(model)?;
     let vectors = embed_chunks(&model, &encoder, config, text, workers, progress)?;
     if vectors.is_empty() {
         bail!("no text to embed");
@@ -451,10 +455,11 @@ mod tests {
     #[test]
     fn the_number_of_workers_changes_nothing() {
         crate::tools::tests::ensure_semantic();
-        let models = crate::tools::semantic_paths().unwrap();
+        let files = crate::tools::semantic_paths(crate::semantic::SemanticKind::Text).unwrap();
+        let (model, tokenizer) = (&files[0], &files[1]);
         let text = include_str!("../../tests/fixtures/demo.txt");
         let shares = std::cell::RefCell::new(Vec::new());
-        let one = embedding_with(&models, text, 1, &|share| {
+        let one = embedding_with(model, tokenizer, text, 1, &|share| {
             shares.borrow_mut().push(share.unwrap());
             true
         })
@@ -465,7 +470,7 @@ mod tests {
             shares.is_sorted() && shares.last() == Some(&1.0),
             "{shares:?}"
         );
-        let many = embedding_with(&models, text, 5, &|_| true).unwrap();
+        let many = embedding_with(model, tokenizer, text, 5, &|_| true).unwrap();
         assert_eq!(one, many);
     }
 }

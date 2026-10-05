@@ -118,11 +118,13 @@ so the download page shows you how to open them the first time.
   Linux, 25 MB on macOS) and checks it before it runs. Without it, a video still shows its
   Content Credentials, Data-Code and Instance-Code. ffmpeg is GPL software and runs as a separate
   program; nothing else in the app needs it.
-- **Semantic-Codes are experimental and optional.** Images and documents can also get a
-  Semantic-Code, which matches what a picture shows or what a text says, across crops,
-  recolouring, translations and paraphrases. Two neural networks compute it on your computer:
-  compressed copies of the iscc-sci and iscc-sct models, a 242 MB download the app offers with a
-  link, never on its own. Their codes may differ from iscc-sci's and iscc-sct's by a few bits.
+- **Semantic-Codes are experimental and off until you switch them on.** Images and documents
+  can also get a Semantic-Code, which matches what a picture shows or what a text says, across
+  crops, recolouring, translations and paraphrases. Neural networks compute it on your computer:
+  compressed copies of the iscc-sci and iscc-sct models. Settings switches the Semantic-Code
+  Image and the Semantic-Code Text on separately; switching one on downloads its model once
+  (100 MB for images, 142 MB for text). Their codes may differ from iscc-sci's and iscc-sct's by
+  a few bits.
 - **Large files show at once.** A video's frames, the hashes of a large file and the
   Semantic-Code are computed after the file is shown, each with its own progress bar.
 - **Your files stay on your computer.** Inspecting works offline, once ffmpeg and the semantic

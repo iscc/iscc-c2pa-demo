@@ -15,8 +15,9 @@ Opening a file shows:
   iscc-sdk's output for every fixture. Documents of more than 500,000 characters are the exception:
   iscc-sdk extracts their text (PDF aside) through a Tika wrapper that silently stops there, while
   the app takes the whole text, so their Content-Code Text and Semantic-Code Text differ from
-  iscc-sdk's. The experimental Semantic-Codes come from compressed copies of the iscc-sci and
-  iscc-sct models and stay within a few bits of their codes (see [Semantic-Codes](#semantic-codes)).
+  iscc-sdk's. The experimental Semantic-Codes are off until switched on in Settings; they come
+  from compressed copies of the iscc-sci and iscc-sct models and stay within a few bits of their
+  codes (see [Semantic-Codes](#semantic-codes)).
   Units that take long (a video's frames and hashes, the Semantic-Code) are computed in the
   background after the file is shown, each with its own progress bar (see
   [Shown at once](#shown-at-once));
@@ -103,7 +104,8 @@ cargo run --features cli --bin c2pa-iscc -- sign ../report.docx --training cawg.
 cargo run --features cli --bin c2pa-iscc -- meta-code --title "A title" --description "Some text"
 cargo run --features cli --bin c2pa-iscc -- formats                                    # supported formats
 cargo run --features cli --bin c2pa-iscc -- tools install                              # ffmpeg, for video
-cargo run --features cli --bin c2pa-iscc -- tools install semantic                     # the semantic models (242 MB)
+cargo run --features cli --bin c2pa-iscc -- tools install semantic                     # both semantic models (242 MB)
+cargo run --features cli --bin c2pa-iscc -- inspect ../photo.jpg --semantic            # with the Semantic-Code Image
 cargo run --features cli --bin c2pa-iscc -- sign --help                                # every option
 ```
 
@@ -115,10 +117,13 @@ next to the source. `--tsa URL` picks another timestamp service, `--no-timestamp
 access. Errors print one line on stderr and exit with code 1. A video's Meta-Code and
 Content-Code need ffmpeg: without it, `inspect` and `sign` leave both out (`sign` keeps a
 Meta-Code you ask for with `--title`) and a note says to run `c2pa-iscc tools install`, which
-downloads it with a progress line on stderr. The Semantic-Code of an image or a document needs the
-semantic models: without them `inspect` and `sign` leave it out with a note to run
-`c2pa-iscc tools install semantic`, and `--units semantic` is an error with the same hint.
-`tools status` shows both tools and where they are.
+downloads it with a progress line on stderr. The experimental Semantic-Code of an image or a
+document is left out unless `--semantic` asks for it (`sign --units semantic` does too), whatever
+the app has switched on: the CLI never reads the app's settings, so its output does not depend on
+them. It needs its kind's model: with `--semantic` and the model missing, `inspect` and `sign`
+leave it out with a note to run `c2pa-iscc tools install semantic-image` (or `semantic-text`;
+`semantic` installs both), and `--units semantic` is an error with the same hint. `tools status`
+shows ffmpeg and each model (`semantic_image`, `semantic_text`) and where they are.
 
 ## Test
 
@@ -158,8 +163,8 @@ Sources and licences of the fixtures are listed in
 
 Signing asks a time stamping authority (TSA) to countersign the signature, so the manifest
 proves that it existed at a given time and stays verifiable after the signing certificate
-expires. Besides the one-time downloads of ffmpeg for video and of the semantic models, which
-the user starts, this is the only network access of the app: it sends a SHA-256 hash of the signature, nothing of the file. The default service is [Encypher](https://tsa.encypher.com), the only free
+expires. Besides the one-time downloads of ffmpeg for video and of a semantic model when its
+Semantic-Code is switched on, which the user starts, this is the only network access of the app: it sends a SHA-256 hash of the signature, nothing of the file. The default service is [Encypher](https://tsa.encypher.com), the only free
 service found whose timestamps are on the C2PA TSA trust list; the Sign tab also offers DigiCert
 and Sectigo (valid timestamps, but not on that list) and any other RFC 3161 URL. Timestamping is
 best effort: when the service fails, does not answer within 10 seconds, or returns a timestamp
@@ -427,7 +432,8 @@ signing needs the units, and a video signed afterwards is not decoded again (see
 [Video](#video)). The full pass repeats the cheap part of the glance (the manifest, the tags, an
 image's decoding, a document's text extraction). A signed copy is inspected in full, except a
 Semantic-Code that was left out at signing, which the background pass computes as for any file just
-opened. The CLI always inspects in full.
+opened. While both kinds of Semantic-Code are off (the default), images and documents have nothing
+pending and get no background pass. The CLI always inspects in full.
 
 ## Semantic-Codes
 
@@ -445,10 +451,28 @@ weight-compressed copies, published as release
 embeddings as int8 with a scale per row, other weights as fp16), with iscc-sct's
 `tokenizer.json`, 242 MB together. All maths stays fp32. `scripts/compress_models.py` rebuilds
 them from the originals. `tools.rs` downloads them like ffmpeg, as plain files checked by size and
-BLAKE3, into the same tools folder (`c2pa-iscc tools install semantic` in the CLI). The app never
-asks on its own: the Semantic-Code row and the Sign tab offer them with a link. Without them
-images and documents have no Semantic-Code, and the reason stands in its place. A changed model
-gets a new release (`models-v2`); published files are never replaced.
+BLAKE3, into the same tools folder, per kind (`tools::semantic_files`): the Semantic-Code Image
+needs only the image model (100 MB), the Semantic-Code Text the text model and the tokenizer
+(142 MB). In the CLI, `c2pa-iscc tools install semantic-image`, `semantic-text`, or `semantic`
+for both. A changed model gets a new release (`models-v2`); published files are never replaced.
+
+**Off by default, switched per kind in Settings.** A fresh install computes, offers and
+downloads no Semantic-Code. The Settings dialog (top bar) has one box per kind; ticking it agrees
+to the download of its model, which runs in the dialog with its progress and Cancel, and the
+switch flips only once the model is there. Unticking keeps the model, so switching on again is
+instant. One change runs at a time, and while it does the top bar's Open file, Close and Settings
+and drag and drop wait: the app stops tasks through one generation counter (`cancel_tasks`), so
+anything that cancels would stop the download too. The backend keeps the switches
+(`settings.rs`) in `settings.json` next to the tools folder (`%LOCALAPPDATA%\codes.iscc.c2pa-demo`,
+`~/Library/Application Support/...`, `~/.local/share/...`), so deleting that folder resets models
+and switches together; a missing or unreadable file means both off. The app computes a kind only
+when it is switched on and its model installed (`SemanticKinds::installed`), so a model deleted by
+hand reads as off. `inspect::Depth::semantic_kinds` carries that set, and an inspection treats a
+kind left out like no Semantic-Code at all: no unit, nothing pending, no reason, and an embedded
+one is not compared. The views go further and hide what an inspection made before the switch-off
+(`semanticShown` in `main.ts`), so switching off recomputes nothing. Signing refuses a
+Semantic-Code of a kind that is off before it computes or writes anything. A file that carries a
+Semantic-Code of a kind that is off says "not compared" for it, with a link to Settings.
 
 **Drift.** Measured on 2026-10-04 against the fp32 models: at most 1 of 256 bits on the image test
 set and 2 on the text set (AVX-512); on the fixtures 0 to 3 bits on x86_64 with AVX2 and AVX-512.

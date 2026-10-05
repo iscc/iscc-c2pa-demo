@@ -20,13 +20,14 @@ fn cli(args: &[&str]) -> Output {
         .expect("the CLI runs")
 }
 
-/// Install the semantic models for the tests whose units include the Semantic-Code; 254 MB on
-/// the first run on a machine, instant afterwards.
-fn ensure_semantic() {
+/// Install the model of the Semantic-Code Image for the tests that ask for it; 100 MB on the
+/// first run on a machine, instant afterwards.
+fn ensure_semantic_image() {
     static INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     INSTALLED.get_or_init(|| {
-        let status = json(&cli(&["tools", "install", "semantic"]));
+        let status = json(&cli(&["tools", "install", "semantic-image"]));
         assert_eq!(status["installed"], true);
+        assert_eq!(status["name"], "iscc-sci");
     });
 }
 
@@ -51,24 +52,35 @@ fn json(output: &Output) -> Value {
 
 #[test]
 fn inspect_prints_the_inspection() {
-    ensure_semantic();
     let path = fixture("no_manifest.jpg");
     let inspection = json(&cli(&["inspect", path.to_str().unwrap(), "--no-preview"]));
     assert_eq!(inspection["kind"], "image");
     assert_eq!(inspection["preview"], "");
     assert!(inspection["manifest"].is_null());
+    let quick = [
+        "Meta-Code",
+        "Content-Code Image",
+        "Data-Code",
+        "Instance-Code",
+    ];
     assert_eq!(
         names(&inspection["iscc"]),
-        [
-            "Meta-Code",
-            "Semantic-Code Image",
-            "Content-Code Image",
-            "Data-Code",
-            "Instance-Code"
-        ]
+        quick,
+        "no Semantic-Code unasked"
     );
+    assert!(inspection["semantic_error"].is_null());
     assert!(inspection["pending"].as_array().unwrap().is_empty());
     assert_eq!(inspection["meta_fields"]["name"], "no manifest");
+
+    ensure_semantic_image();
+    let semantic = json(&cli(&[
+        "inspect",
+        path.to_str().unwrap(),
+        "--semantic",
+        "--no-preview",
+    ]));
+    assert_eq!(names(&semantic["iscc"])[1], "Semantic-Code Image");
+    assert_eq!(names(&semantic["iscc"]).len(), 5);
 
     let compact = cli(&["--compact", "inspect", path.to_str().unwrap()]);
     let stdout = String::from_utf8(compact.stdout).unwrap();
@@ -81,7 +93,6 @@ fn inspect_prints_the_inspection() {
 
 #[test]
 fn sign_writes_a_trusted_copy_with_prefilled_fields() {
-    ensure_semantic();
     let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli");
     std::fs::create_dir_all(&dir).unwrap();
     let output = dir.join("cli-signed.jpg");
@@ -106,8 +117,20 @@ fn sign_writes_a_trusted_copy_with_prefilled_fields() {
         result["inspection"]["manifest"]["signature"]["timestamp"]["status"],
         "none"
     );
-    assert_eq!(result["units"].as_array().unwrap().len(), 5);
-    assert_eq!(result["units"][1]["name"], "Semantic-Code Image");
+    assert_eq!(
+        names(&result["units"]),
+        [
+            "Meta-Code",
+            "Content-Code Image",
+            "Data-Code",
+            "Instance-Code"
+        ],
+        "no Semantic-Code without --semantic"
+    );
+    assert!(result["inspection"]["pending"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let manifest = &result["inspection"]["manifest"];
     assert_eq!(manifest["validation_state"], "Trusted");
     assert_eq!(manifest["title"], "no manifest", "title from the file name");
@@ -293,14 +316,28 @@ fn sign_pdf_refuses_encryption_and_notes_a_digital_signature() {
 }
 
 #[test]
+fn tools_status_lists_ffmpeg_and_each_semantic_model() {
+    let all = json(&cli(&["tools", "status"]));
+    let names: Vec<&str> = all
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(names, ["ffmpeg", "semantic_image", "semantic_text"]);
+    assert_eq!(all["semantic_image"]["name"], "iscc-sci");
+    assert_eq!(all["semantic_text"]["name"], "iscc-sct");
+    assert_eq!(all["semantic_text"]["licence"], "MIT and Apache-2.0");
+    assert!(all["semantic_text"]["bytes"].as_u64().unwrap() > 140_000_000);
+}
+
+#[test]
 fn video_inspects_and_signs_once_ffmpeg_is_installed() {
     // Installs into the user's tools folder on the first run on a machine; instant afterwards.
     let status = json(&cli(&["tools", "install"]));
     assert_eq!(status["installed"], true);
     assert_eq!(status["licence"], "GPL-2.0-or-later");
-    let both = json(&cli(&["tools", "status"]));
-    assert_eq!(both["ffmpeg"], status);
-    assert_eq!(both["semantic"]["licence"], "MIT and Apache-2.0");
+    assert_eq!(json(&cli(&["tools", "status"]))["ffmpeg"], status);
 
     let path = fixture("demo.mp4");
     let inspection = json(&cli(&["inspect", path.to_str().unwrap(), "--no-preview"]));

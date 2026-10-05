@@ -11,7 +11,8 @@
 //!
 //! The semantic models are weight-compressed copies of the iscc-sci and iscc-sct models with
 //! iscc-sct's tokenizer, plain files in this repository's `models-v1` release, the same on every
-//! platform. Without them images and text documents have no Semantic-Code.
+//! platform. Each kind of Semantic-Code has its own files: Semantic-Code Image the image model,
+//! Semantic-Code Text the text model and the tokenizer.
 
 use std::fmt;
 use std::fs::{self, File};
@@ -23,6 +24,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use serde::Serialize;
+
+use crate::semantic::SemanticKind;
 
 /// Tauri app identifier; the tools folder lives in the app's local data folder.
 const APP_ID: &str = "codes.iscc.c2pa-demo";
@@ -139,8 +142,12 @@ pub const SCT_TOKENIZER: Tool = Tool {
     member: None,
     bytes: 9_081_590,
 };
-/// Everything the Semantic-Codes need, installed together.
+/// Everything the Semantic-Codes need.
 pub const SEMANTIC_MODELS: [&Tool; 3] = [&SCI_MODEL, &SCT_MODEL, &SCT_TOKENIZER];
+/// What Semantic-Code Image needs.
+const IMAGE_MODEL_FILES: [&Tool; 1] = [&SCI_MODEL];
+/// What Semantic-Code Text needs: the model, then the tokenizer.
+const TEXT_MODEL_FILES: [&Tool; 2] = [&SCT_MODEL, &SCT_TOKENIZER];
 /// The release that holds the semantic models, with their sources and licences.
 pub const MODELS_RELEASE: &str = "https://github.com/iscc/iscc-c2pa-demo/releases/tag/models-v1";
 /// Licences of the semantic models: the ISC21 descriptor is MIT, the rest Apache-2.0.
@@ -172,8 +179,8 @@ pub enum Missing {
     /// ffmpeg, which a video needs; `available` tells whether this platform has a build to
     /// install.
     Ffmpeg { available: bool },
-    /// The semantic models, which the Semantic-Codes need.
-    SemanticModels,
+    /// The model of a kind of Semantic-Code.
+    SemanticModel(SemanticKind),
 }
 
 impl Missing {
@@ -185,8 +192,11 @@ impl Missing {
             Missing::Ffmpeg { available: false } => {
                 "video needs ffmpeg, and there is no build of it for this platform"
             }
-            Missing::SemanticModels => {
-                "the Semantic-Code needs the semantic models, which are not installed yet"
+            Missing::SemanticModel(SemanticKind::Image) => {
+                "the Semantic-Code Image needs its model, which is not installed yet"
+            }
+            Missing::SemanticModel(SemanticKind::Text) => {
+                "the Semantic-Code Text needs its model, which is not installed yet"
             }
         }
     }
@@ -212,11 +222,16 @@ impl fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
-/// Folder the tools are installed in: the app's local data folder (Tauri's `app_local_data_dir`),
-/// shared by the app and the CLI. Local, not roaming, on Windows: no profile sync of 200 MB.
-pub fn tools_dir() -> Result<PathBuf> {
+/// The app's local data folder (Tauri's `app_local_data_dir`), which holds the tools and the
+/// settings. Local, not roaming, on Windows: no profile sync of 200 MB.
+pub fn app_dir() -> Result<PathBuf> {
     let base = dirs::data_local_dir().ok_or_else(|| anyhow!("no local data folder"))?;
-    Ok(base.join(APP_ID).join("tools"))
+    Ok(base.join(APP_ID))
+}
+
+/// Folder the tools are installed in, shared by the app and the CLI.
+pub fn tools_dir() -> Result<PathBuf> {
+    Ok(app_dir()?.join("tools"))
 }
 
 /// Path of `tool` in `dir`, if it is installed there.
@@ -243,47 +258,54 @@ pub fn install_ffmpeg(progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<Path
     install(tool, &tools_dir()?, progress)
 }
 
-/// Installed files of the semantic models.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticPaths {
-    pub image_model: PathBuf,
-    pub text_model: PathBuf,
-    pub tokenizer: PathBuf,
+/// The files the Semantic-Code `kind` needs: the image model, or the text model and its
+/// tokenizer.
+pub fn semantic_files(kind: SemanticKind) -> &'static [&'static Tool] {
+    match kind {
+        SemanticKind::Image => &IMAGE_MODEL_FILES,
+        SemanticKind::Text => &TEXT_MODEL_FILES,
+    }
 }
 
-/// The installed semantic models, or a [`Missing::SemanticModels`] error unless all of them are
-/// there.
-pub fn semantic_paths() -> Result<SemanticPaths> {
+/// The installed files of the Semantic-Code `kind`, in the order of [`semantic_files`], or a
+/// [`Missing::SemanticModel`] error unless all of them are there.
+pub fn semantic_paths(kind: SemanticKind) -> Result<Vec<PathBuf>> {
     let dir = tools_dir()?;
-    let path = |tool: &Tool| {
-        installed(tool, &dir).ok_or_else(|| anyhow::Error::new(Missing::SemanticModels))
-    };
-    Ok(SemanticPaths {
-        image_model: path(&SCI_MODEL)?,
-        text_model: path(&SCT_MODEL)?,
-        tokenizer: path(&SCT_TOKENIZER)?,
-    })
+    semantic_files(kind)
+        .iter()
+        .map(|tool| {
+            installed(tool, &dir).ok_or_else(|| anyhow::Error::new(Missing::SemanticModel(kind)))
+        })
+        .collect()
 }
 
-/// Install the semantic models that are not installed yet, one after the other, and return
-/// their paths. `progress` gets the bytes received of all three and their total size, and stops
-/// the download by returning false; files installed before stay.
-pub fn install_semantic(progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<SemanticPaths> {
+/// Whether every file of the Semantic-Code `kind` is installed.
+pub fn semantic_installed(kind: SemanticKind) -> bool {
+    semantic_paths(kind).is_ok()
+}
+
+/// Install the files of the Semantic-Code `kind` that are not installed yet, one after the
+/// other, and return their paths. `progress` gets the bytes received of all of them and their
+/// total size, and stops the download by returning false; files installed before stay.
+pub fn install_semantic(
+    kind: SemanticKind,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> Result<Vec<PathBuf>> {
     let dir = tools_dir()?;
-    let total = semantic_bytes();
+    let total = semantic_bytes(kind);
     let mut done = 0;
-    for tool in SEMANTIC_MODELS {
+    for tool in semantic_files(kind) {
         install(tool, &dir, &mut |received, _| {
             progress(done + received, total)
         })?;
         done += tool.bytes;
     }
-    semantic_paths()
+    semantic_paths(kind)
 }
 
-/// Size of the semantic models' downloads together.
-fn semantic_bytes() -> u64 {
-    SEMANTIC_MODELS.iter().map(|t| t.bytes).sum()
+/// Size of the downloads of the Semantic-Code `kind` together.
+fn semantic_bytes(kind: SemanticKind) -> u64 {
+    semantic_files(kind).iter().map(|t| t.bytes).sum()
 }
 
 /// What the UI and the CLI tell about a tool before and after installing it.
@@ -322,20 +344,18 @@ pub fn ffmpeg_status() -> Status {
     }
 }
 
-/// Whether the semantic models are installed, and what installing them means. `path` is the
-/// tools folder they go into.
-pub fn semantic_status() -> Status {
-    let dir = tools_dir().ok();
+/// Whether the model of the Semantic-Code `kind` is installed, and what installing it means.
+/// `path` is the tools folder it goes into.
+pub fn semantic_status(kind: SemanticKind) -> Status {
+    let model = semantic_files(kind)[0];
     Status {
-        name: "semantic models",
-        version: Some("models-v1"),
+        name: model.name,
+        version: Some(model.version),
         available: true,
-        installed: dir
-            .as_ref()
-            .is_some_and(|d| SEMANTIC_MODELS.iter().all(|t| installed(t, d).is_some())),
-        path: dir.map(|d| d.to_string_lossy().into_owned()),
+        installed: semantic_installed(kind),
+        path: tools_dir().ok().map(|d| d.to_string_lossy().into_owned()),
         url: Some(MODELS_RELEASE),
-        bytes: Some(semantic_bytes()),
+        bytes: Some(semantic_bytes(kind)),
         licence: MODELS_LICENCE,
         note: None,
     }
@@ -486,13 +506,15 @@ pub(crate) mod tests {
             .clone()
     }
 
-    /// Install the semantic models into the user's tools folder if they are missing, for the
-    /// tests that run them. The first run on a machine downloads them (254 MB).
-    pub(crate) fn ensure_semantic() -> SemanticPaths {
-        static ENSURED: std::sync::OnceLock<SemanticPaths> = std::sync::OnceLock::new();
-        ENSURED
-            .get_or_init(|| install_semantic(&mut |_, _| true).unwrap())
-            .clone()
+    /// Install the models of both Semantic-Codes into the user's tools folder if they are
+    /// missing, for the tests that run them. The first run on a machine downloads them (254 MB).
+    pub(crate) fn ensure_semantic() {
+        static ENSURED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        ENSURED.get_or_init(|| {
+            for kind in SemanticKind::ALL {
+                install_semantic(kind, &mut |_, _| true).unwrap();
+            }
+        });
     }
 
     /// A fresh, empty folder for one test.
@@ -703,11 +725,41 @@ pub(crate) mod tests {
         assert_eq!(SCI_MODEL.file_name(), "iscc-sci-v0.1.0-w16.onnx");
         assert_eq!(SCT_MODEL.file_name(), "iscc-sct-v0.1.0-emb8-w16.onnx");
         assert_eq!(SCT_TOKENIZER.file_name(), "iscc-sct-tokenizer-v0.2.2.json");
-        let status = semantic_status();
-        assert_eq!(status.bytes, Some(254_176_471));
-        assert!(status.available);
-        assert_eq!(status.licence, "MIT and Apache-2.0");
         assert!(MODELS_RELEASE.starts_with("https://github.com/iscc/iscc-c2pa-demo/"));
+    }
+
+    #[test]
+    fn each_semantic_code_has_its_own_files() {
+        assert_eq!(semantic_files(SemanticKind::Image), [&SCI_MODEL]);
+        assert_eq!(
+            semantic_files(SemanticKind::Text),
+            [&SCT_MODEL, &SCT_TOKENIZER]
+        );
+        let together: Vec<_> = SemanticKind::ALL
+            .iter()
+            .flat_map(|k| semantic_files(*k).iter().copied())
+            .collect();
+        assert_eq!(together, SEMANTIC_MODELS, "each file belongs to one kind");
+        let image = semantic_status(SemanticKind::Image);
+        assert_eq!(
+            (image.name, image.version),
+            ("iscc-sci", Some("v0.1.0-w16"))
+        );
+        assert_eq!(image.bytes, Some(104_790_555));
+        let text = semantic_status(SemanticKind::Text);
+        assert_eq!(text.name, "iscc-sct");
+        assert_eq!(text.bytes, Some(149_385_916));
+        assert!(text.available);
+        assert_eq!(text.licence, "MIT and Apache-2.0");
+        for kind in SemanticKind::ALL {
+            let status = semantic_status(kind);
+            assert_eq!(status.installed, semantic_paths(kind).is_ok());
+            assert_eq!(
+                status.path,
+                tools_dir().ok().map(|d| d.display().to_string())
+            );
+        }
+        assert_eq!(app_dir().unwrap().join("tools"), tools_dir().unwrap());
     }
 
     #[test]
@@ -720,9 +772,13 @@ pub(crate) mod tests {
         assert_eq!(missing.reason(), missing.to_string());
         let unavailable = Missing::Ffmpeg { available: false };
         assert!(unavailable.to_string().contains("no build"));
-        assert!(Missing::SemanticModels
-            .to_string()
-            .contains("needs the semantic models"));
+        assert_eq!(
+            Missing::SemanticModel(SemanticKind::Image).to_string(),
+            "the Semantic-Code Image needs its model, which is not installed yet"
+        );
+        assert!(Missing::SemanticModel(SemanticKind::Text)
+            .reason()
+            .starts_with("the Semantic-Code Text needs"));
         let error = anyhow::Error::new(missing).context("cannot read this MP4 file");
         assert_eq!(error.downcast_ref::<Missing>(), Some(&missing));
     }
