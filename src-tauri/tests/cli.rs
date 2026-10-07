@@ -316,6 +316,44 @@ fn sign_pdf_refuses_encryption_and_notes_a_digital_signature() {
 }
 
 #[test]
+fn ocr_reads_a_scan_only_when_asked() {
+    let scan = fixture("scan-demo.pdf");
+    let scan = scan.to_str().unwrap();
+    let off = json(&cli(&["inspect", scan, "--no-preview"]));
+    assert_eq!(
+        off["ocr"],
+        serde_json::json!({ "scanned": 1, "pages": 1, "on": false })
+    );
+    assert!(!names(&off["iscc"]).contains(&"Content-Code Text"));
+    let reason = off["content_error"].as_str().unwrap();
+    assert!(reason.ends_with("need OCR, which is off"), "{reason}");
+
+    let on = json(&cli(&["inspect", scan, "--ocr", "--no-preview"]));
+    assert_eq!(on["ocr"]["on"], true);
+    assert!(names(&on["iscc"]).contains(&"Content-Code Text"));
+    assert!(on["content_error"].is_null());
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("scan-signed.pdf");
+    let signed = json(&cli(&[
+        "sign",
+        scan,
+        "--ocr",
+        "--output",
+        output.to_str().unwrap(),
+        "--no-timestamp",
+        "--no-preview",
+    ]));
+    assert!(names(&signed["units"]).contains(&"Content-Code Text"));
+    let born_digital = json(&cli(&[
+        "inspect",
+        fixture("demo.pdf").to_str().unwrap(),
+        "--no-preview",
+    ]));
+    assert!(born_digital["ocr"].is_null());
+}
+
+#[test]
 fn tools_status_lists_ffmpeg_and_each_semantic_model() {
     let all = json(&cli(&["tools", "status"]));
     let names: Vec<&str> = all

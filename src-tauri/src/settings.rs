@@ -19,6 +19,16 @@ use crate::tools;
 pub struct Settings {
     /// The kinds of Semantic-Code switched on.
     pub semantic: SemanticKinds,
+    /// OCR of scanned PDF pages; off keeps the Content-Code of every PDF that of iscc-sdk.
+    pub ocr: bool,
+}
+
+impl Settings {
+    /// Nothing experimental: no Semantic-Code, no OCR.
+    pub const NONE: Settings = Settings {
+        semantic: SemanticKinds::NONE,
+        ocr: false,
+    };
 }
 
 /// Where the settings live: `settings.json` in the app's local data folder.
@@ -58,11 +68,13 @@ pub struct SemanticSwitch {
     pub model: String,
 }
 
-/// Everything the Settings dialog shows about the Semantic-Codes.
+/// Everything the Settings dialog shows: the Semantic-Codes and OCR.
 #[derive(Serialize, Debug, PartialEq, Eq)]
-pub struct SemanticSettings {
+pub struct Switches {
     pub image: SemanticSwitch,
     pub text: SemanticSwitch,
+    /// OCR of scanned PDF pages; its models are built in.
+    pub ocr: bool,
     /// The tools folder the models are stored in.
     pub folder: Option<String>,
     /// The release the models come from.
@@ -70,9 +82,9 @@ pub struct SemanticSettings {
     pub licence: &'static str,
 }
 
-/// The Semantic-Codes of `settings` as the Settings dialog shows them: a kind is on only while
-/// its model is installed, so a model deleted by hand reads as off.
-pub fn semantic_settings(settings: &Settings) -> SemanticSettings {
+/// `settings` as the Settings dialog shows them: a kind of Semantic-Code is on only while its
+/// model is installed, so a model deleted by hand reads as off.
+pub fn switches(settings: &Settings) -> Switches {
     let switch = |kind| {
         let status = tools::semantic_status(kind);
         SemanticSwitch {
@@ -82,9 +94,10 @@ pub fn semantic_settings(settings: &Settings) -> SemanticSettings {
             model: format!("{} {}", status.name, status.version.unwrap_or_default()),
         }
     };
-    SemanticSettings {
+    Switches {
         image: switch(SemanticKind::Image),
         text: switch(SemanticKind::Text),
+        ocr: settings.ocr,
         folder: tools::tools_dir()
             .ok()
             .map(|d| d.to_string_lossy().into_owned()),
@@ -102,7 +115,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = load_from(&dir.path().join("settings.json"));
         assert_eq!(settings, Settings::default());
+        assert_eq!(settings, Settings::NONE);
         assert_eq!(settings.semantic, SemanticKinds::NONE);
+        assert!(!settings.ocr);
     }
 
     #[test]
@@ -124,9 +139,16 @@ mod tests {
         let path = dir.path().join("app").join("settings.json");
         let settings = Settings {
             semantic: SemanticKinds::NONE.with(SemanticKind::Text, true),
+            ocr: false,
         };
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path), settings);
+        let ocr = Settings {
+            ocr: true,
+            ..settings
+        };
+        save_to(&path, &ocr).unwrap();
+        assert_eq!(load_from(&path), ocr);
         save_to(&path, &Settings::default()).unwrap();
         assert_eq!(load_from(&path), Settings::default());
         let files: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap().collect();
@@ -142,19 +164,22 @@ mod tests {
         let settings = load_from(&path);
         assert!(settings.semantic.image);
         assert!(!settings.semantic.text, "missing: off");
+        assert!(!settings.ocr, "a file written before OCR: off");
         fs::write(&path, "{}").unwrap();
         assert_eq!(load_from(&path), Settings::default());
     }
 
     #[test]
-    fn a_switch_is_on_only_with_its_model() {
-        let off = semantic_settings(&Settings::default());
-        assert!(!off.image.on && !off.text.on);
+    fn a_semantic_switch_is_on_only_with_its_model() {
+        let off = switches(&Settings::default());
+        assert!(!off.image.on && !off.text.on && !off.ocr);
         assert_eq!(off.image.model, "iscc-sci v0.1.0-w16");
         assert_eq!(off.text.bytes, 149_385_916);
-        let on = semantic_settings(&Settings {
+        let on = switches(&Settings {
             semantic: SemanticKinds::ALL,
+            ocr: true,
         });
+        assert!(on.ocr, "built in, so always as switched");
         for (kind, switch) in [
             (SemanticKind::Image, &on.image),
             (SemanticKind::Text, &on.text),

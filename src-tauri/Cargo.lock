@@ -3290,6 +3290,7 @@ dependencies = [
  "rbook",
  "resvg",
  "rten",
+ "rten-imageproc",
  "rten-tensor",
  "rusty-chromaprint",
  "rusty-opus",
@@ -4526,7 +4527,7 @@ dependencies = [
  "chrono",
  "console_error_panic_hook",
  "console_log",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "js-sys",
  "libloading",
  "log",
@@ -5586,6 +5587,15 @@ dependencies = [
  "rten-base",
  "rten-parallel",
  "rten-simd",
+ "rten-tensor",
+]
+
+[[package]]
+name = "rten-imageproc"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02c65191ffa2dd2669bd9b81b3c134979af7927db108ce70813dd74ce7c8a2a0"
+dependencies = [
  "rten-tensor",
 ]
 

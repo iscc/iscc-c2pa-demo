@@ -8,10 +8,13 @@ pub mod epub;
 pub mod formats;
 pub mod inspect;
 pub mod iscc;
+pub mod memo;
 pub mod metadata;
 pub mod numfmt;
+pub mod ocr;
 pub mod office;
 pub mod opus;
+pub mod parallel;
 pub mod pdf;
 pub mod plain;
 pub mod resample;
@@ -32,8 +35,8 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, LogicalSize, Manager, WebviewWindow};
 
-use semantic::{SemanticKind, SemanticKinds};
-use settings::{SemanticSettings, Settings};
+use semantic::SemanticKind;
+use settings::{Settings, Switches};
 
 /// Static facts the UI needs once at startup.
 #[derive(Serialize)]
@@ -121,8 +124,8 @@ fn meta_code(
 /// How far a slow unit got, for the progress bars.
 #[derive(Serialize, Clone)]
 struct Progress<S> {
-    /// The unit of an inspection: `content` (a video decoding) or `semantic` (a text being
-    /// embedded); or the [`sign::Stage`] of a signing: `source` (the file being signed),
+    /// The unit of an inspection: `content` (a video decoding or scanned pages being recognised)
+    /// or `semantic` (a text being embedded); or the [`sign::Stage`] of a signing: `source` (the file being signed),
     /// `write` (the signed copy is about to be written, which cannot be stopped) or `output`
     /// (the signed copy, checked after signing).
     stage: S,
@@ -152,21 +155,27 @@ fn cancel_tasks() {
     TASKS.fetch_add(1, Ordering::SeqCst);
 }
 
-/// The settings as the app holds them: loaded at startup, written by [`set_semantic`].
+/// The settings as the app holds them: loaded at startup, written by [`set_semantic`] and
+/// [`set_ocr`].
 fn settings_of(app: &AppHandle) -> Settings {
     *app.state::<Mutex<Settings>>()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
 }
 
-/// The kinds of Semantic-Code the app computes: switched on, and with their models installed.
-fn semantic_kinds(app: &AppHandle) -> SemanticKinds {
-    settings_of(app).semantic.installed()
+/// What the app computes: the kinds of Semantic-Code switched on whose models are installed,
+/// and OCR when it is switched on.
+fn computed(app: &AppHandle) -> Settings {
+    let settings = settings_of(app);
+    Settings {
+        semantic: settings.semantic.installed(),
+        ..settings
+    }
 }
 
 /// Inspect the file at `path`: at a glance, its slow units pending, or in `full`, reporting the
 /// progress of each slow unit; stopped by [`cancel_tasks`]. Semantic-Codes only of the kinds
-/// switched on.
+/// switched on, scanned PDF pages recognised only with OCR on.
 #[tauri::command]
 async fn inspect_asset(
     app: AppHandle,
@@ -181,7 +190,10 @@ async fn inspect_asset(
         inspect::Depth::GLANCE
     };
     tauri::async_runtime::spawn_blocking(move || {
-        let depth = depth.with_semantic_kinds(semantic_kinds(&app));
+        let computed = computed(&app);
+        let depth = depth
+            .with_semantic_kinds(computed.semantic)
+            .with_ocr(computed.ocr);
         let progress = |stage, fraction| {
             let _ = on_progress.send(Progress { stage, fraction });
             still_wanted(generation)
@@ -207,7 +219,7 @@ async fn sign_asset(
             let _ = on_progress.send(Progress { stage, fraction });
             still_wanted(generation)
         };
-        sign::sign_with(&request, semantic_kinds(&app), &progress).map_err(|e| format!("{e:#}"))
+        sign::sign_with(&request, computed(&app), &progress).map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -244,10 +256,10 @@ async fn install_ffmpeg(on_progress: Channel<Download>) -> Result<tools::Status,
     .map_err(|e| e.to_string())?
 }
 
-/// Which Semantic-Codes are on, and what switching each on downloads.
+/// Which Semantic-Codes are on and what switching each on downloads, and whether OCR is on.
 #[tauri::command]
-fn semantic_settings(app: AppHandle) -> SemanticSettings {
-    settings::semantic_settings(&settings_of(&app))
+fn switches(app: AppHandle) -> Switches {
+    settings::switches(&settings_of(&app))
 }
 
 /// Switch the Semantic-Code `kind` on or off and save the choice; returns the switches as they
@@ -260,7 +272,7 @@ async fn set_semantic(
     kind: SemanticKind,
     on: bool,
     on_progress: Channel<Download>,
-) -> Result<SemanticSettings, String> {
+) -> Result<Switches, String> {
     let generation = TASKS.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         if on {
@@ -268,19 +280,36 @@ async fn set_semantic(
                 tools::install_semantic(kind, p).map(drop)
             })?;
         }
-        let state = app.state::<Mutex<Settings>>();
-        let mut held = state.lock().unwrap_or_else(|p| p.into_inner());
-        let mut next = *held;
-        next.semantic = next.semantic.with(kind, on);
-        // The file first: the app never holds a choice it could not save.
-        settings::path()
-            .and_then(|path| settings::save_to(&path, &next))
-            .map_err(|e| format!("{e:#}"))?;
-        *held = next;
-        Ok(settings::semantic_settings(&next))
+        change_settings(&app, |s| Settings {
+            semantic: s.semantic.with(kind, on),
+            ..s
+        })
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Switch OCR of scanned PDF pages on or off and save the choice; returns the switches as they
+/// are then. Its models are built in, so nothing is downloaded.
+#[tauri::command]
+fn set_ocr(app: AppHandle, on: bool) -> Result<Switches, String> {
+    change_settings(&app, |s| Settings { ocr: on, ..s })
+}
+
+/// Save the settings `change` makes of the ones held and hold them; the switches as they are
+/// then. The file comes first: the app never holds a choice it could not save.
+fn change_settings(
+    app: &AppHandle,
+    change: impl FnOnce(Settings) -> Settings,
+) -> Result<Switches, String> {
+    let state = app.state::<Mutex<Settings>>();
+    let mut held = state.lock().unwrap_or_else(|p| p.into_inner());
+    let next = change(*held);
+    settings::path()
+        .and_then(|path| settings::save_to(&path, &next))
+        .map_err(|e| format!("{e:#}"))?;
+    *held = next;
+    Ok(settings::switches(&next))
 }
 
 /// Run `install`, sending the bytes received to `on_progress`; the download stops once
@@ -373,8 +402,9 @@ pub fn run() {
             needs_ffmpeg,
             ffmpeg_status,
             install_ffmpeg,
-            semantic_settings,
-            set_semantic
+            switches,
+            set_semantic,
+            set_ocr
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

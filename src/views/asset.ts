@@ -1,7 +1,7 @@
 // Left column: preview (image, document cover or thumbnail, audio cover art, video frame), file
 // facts and the ISCC units computed from the file, with the progress of those still being computed.
 
-import type { AssetKind, Inspection, IsccUnit, MetaFields, UnitSlug } from "../api";
+import type { AssetKind, Inspection, IsccUnit, MetaFields, OcrPages, UnitSlug } from "../api";
 import { esc, formatBytes, formatDuration, isccHtml } from "../util";
 
 /** Placeholder for a file without a picture: EPUBs lack a cover, audio lacks cover art, a video
@@ -84,7 +84,8 @@ const ORDER: UnitSlug[] = ["meta", "semantic", "content", "data", "instance"];
 
 /** The background pass that computes a file's slow units, as far as the unit list shows it. */
 export interface Analysis {
-  /** Share done of each slow unit that reports it (a video's `content`, a text's `semantic`); null while unknown. */
+  /** Share done of each slow unit that reports it (a video's or a scan's `content`, a text's `semantic`); null
+   * while unknown. */
   progress: Partial<Record<UnitSlug, number | null>>;
   /** True once the user stopped it. */
   stopped: boolean;
@@ -123,15 +124,15 @@ function nameHtml(unit: UnitSlug, name: string): string {
   return `${esc(name)}${unit === "semantic" ? ` <span class="hint">experimental</span>` : ""}`;
 }
 
-/** Row for a unit that could not be computed, with the reason and, for the Meta-Code, the inputs
- * it was tried on. */
-function missingUnitRow(unit: UnitSlug, name: string, error: string, from: string): string {
+/** Row for a unit that could not be computed, with the reason, a way to get it (`action`, HTML) and, for the
+ * Meta-Code, the inputs it was tried on. */
+function missingUnitRow(unit: UnitSlug, name: string, error: string, from: string, action = ""): string {
   return `
       <div class="unit">
         <span class="bar" data-unit="${unit}"></span>
         <div>
           <div class="name">${nameHtml(unit, name)}</div>
-          <div class="code" style="color:var(--muted)">not computed: ${esc(error)}</div>
+          <div class="code" style="color:var(--muted)">not computed: ${esc(error)}${action}</div>
           ${from ? `<div class="from">${esc(from)}</div>` : ""}
         </div>
       </div>`;
@@ -142,13 +143,20 @@ function percentOf(fraction: number | null | undefined): string {
   return typeof fraction === "number" ? ` ${Math.floor(fraction * 100)}%` : "";
 }
 
-/** Row of a unit the background pass still computes, with its progress; once the pass is stopped, a way to resume
- * it. */
-function pendingRow(slug: UnitSlug, name: string, analysis: Analysis | null): string {
+/** What a unit still being computed is waiting for: the recognition of a scan's pages, else just computing. */
+function pendingLabel(slug: UnitSlug, inspection: Inspection): string {
+  const ocr = inspection.ocr;
+  if (slug !== "content" || !ocr?.on) return "computing…";
+  return `recognising text on ${ocr.scanned} scanned ${ocr.scanned === 1 ? "page" : "pages"}…`;
+}
+
+/** Row of a unit the background pass still computes, with its progress (`label` says what it waits for); once the
+ * pass is stopped, a way to resume it. */
+function pendingRow(slug: UnitSlug, name: string, label: string, analysis: Analysis | null): string {
   const fraction = analysis?.progress[slug];
   const status = analysis?.stopped
     ? `stopped · <button type="button" class="linkbtn" data-action="resume-analysis">Resume</button>`
-    : `<span data-pending-text="${slug}">computing…${percentOf(fraction)}</span>`;
+    : `<span data-pending-text="${slug}" data-label="${esc(label)}">${esc(label)}${percentOf(fraction)}</span>`;
   const fill = typeof fraction === "number" ? `style="width:${(fraction * 100).toFixed(1)}%"` : `class="indeterminate"`;
   const meter = analysis?.stopped ? "" : `<div class="meter" data-pending="${slug}"><span ${fill}></span></div>`;
   return `
@@ -179,10 +187,24 @@ function unitRow(u: IsccUnit, from: string): string {
       </div>`;
 }
 
-/** Where a unit's inputs came from: the Meta-Code's title, a signed video copy's Content-Code. */
+/** Which pages of a scan OCR read for the Content-Code. */
+function ocrFrom(ocr: OcrPages): string {
+  if (ocr.scanned < ocr.pages) return `Text of ${ocr.scanned} of ${ocr.pages} pages recognised by OCR`;
+  return ocr.pages === 1 ? "Text recognised by OCR" : `Text of all ${ocr.pages} pages recognised by OCR`;
+}
+
+/** Where a unit's inputs came from: the Meta-Code's title, a signed video copy's Content-Code, a scan's text. */
 function unitFrom(u: IsccUnit, inspection: Inspection): string {
   if (u.unit === "meta") return metaFrom(inspection.meta_fields);
-  return u.unit === "content" && inspection.content_from_source ? FROM_SOURCE : "";
+  if (u.unit !== "content") return "";
+  if (inspection.ocr?.on) return ocrFrom(inspection.ocr);
+  return inspection.content_from_source ? FROM_SOURCE : "";
+}
+
+/** The way to a Content-Code that OCR would give: a scan without a text layer while OCR is off. */
+function ocrAction(slug: UnitSlug, inspection: Inspection): string {
+  if (slug !== "content" || !inspection.ocr || inspection.ocr.on) return "";
+  return ` · <button type="button" class="linkbtn" data-action="settings">Turn on OCR in Settings</button>`;
 }
 
 /** The row of unit `slug`: the unit, its progress while a later pass computes it, or why it is missing; empty when
@@ -193,11 +215,11 @@ function row(slug: UnitSlug, inspection: Inspection, view: UnitListView): string
   const unit = inspection.iscc.find((u) => u.unit === slug);
   if (unit) return unitRow(unit, unitFrom(unit, inspection));
   const name = unitName(slug, inspection);
-  if (inspection.pending.includes(slug)) return pendingRow(slug, name, view.analysis);
+  if (inspection.pending.includes(slug)) return pendingRow(slug, name, pendingLabel(slug, inspection), view.analysis);
   const error = unitError(slug, inspection);
   if (!error) return "";
   const from = slug === "meta" && error !== inspection.content_error ? metaFrom(inspection.meta_fields) : "";
-  return missingUnitRow(slug, name, error, from);
+  return missingUnitRow(slug, name, error, from, ocrAction(slug, inspection));
 }
 
 /** List of the file's ISCC units with their unit colour; a unit that could not be computed keeps its place and says
@@ -220,5 +242,5 @@ export function patchPending(root: HTMLElement, slug: UnitSlug, fraction: number
     fill.classList.remove("indeterminate");
     fill.style.width = `${(fraction * 100).toFixed(1)}%`;
   }
-  if (text) text.textContent = `computing…${percentOf(fraction)}`;
+  if (text) text.textContent = `${text.dataset.label ?? "computing…"}${percentOf(fraction)}`;
 }

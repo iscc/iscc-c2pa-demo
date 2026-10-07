@@ -175,7 +175,8 @@ export interface Inspection {
   creator: string | null;
   /** Meta, Semantic, Content, Data and Instance units of the whole file. */
   iscc: IsccUnit[];
-  /** Units a later pass still computes: `semantic`, and a video's `content`, `data` and `instance` at a glance. */
+  /** Units a later pass still computes: `semantic`, a video's `content`, `data` and `instance` at a glance, and a
+   * scan's `content` while OCR is on. */
   pending: UnitSlug[];
   meta_fields: MetaFields;
   /** Why the Meta-Code could not be computed, or why the file's own tags could not be read (a video without ffmpeg); `iscc` then lacks it. */
@@ -187,6 +188,8 @@ export interface Inspection {
   content_error: string | null;
   /** The Content-Code is that of the source just signed, whose compressed video this signed copy carries unchanged; false when it was computed from this file's own frames. */
   content_from_source: boolean;
+  /** How many pages of a PDF are scans and whether OCR reads them; null for a file without scanned pages. */
+  ocr: OcrPages | null;
   /** Why this file cannot be signed (an encrypted PDF); null when it can. */
   sign_block: string | null;
   /** What signing does to this file that its owner may not want (breaking a PDF's digital signature). */
@@ -197,6 +200,14 @@ export interface Inspection {
 }
 
 export type AssetKind = "image" | "text" | "audio" | "video";
+
+/** The scanned pages of a PDF: with OCR on, their recognised text stands in for their native text. */
+export interface OcrPages {
+  scanned: number;
+  pages: number;
+  /** Whether OCR is on, so their text is recognised. */
+  on: boolean;
+}
 
 /** Formats of one kind of asset, for the start screen and the file dialog. */
 export interface KindInfo {
@@ -256,8 +267,8 @@ export interface SignResult {
   inspection: Inspection;
 }
 
-/** How far a slow unit got. An inspection names the unit: `content` while a video decodes, `semantic` while a text is
- * embedded. A signing names its stage: the file being signed, `write` when the signed copy is about to be written
+/** How far a slow unit got. An inspection names the unit: `content` while a video decodes or scanned pages are
+ * recognised, `semantic` while a text is embedded. A signing names its stage: the file being signed, `write` when the signed copy is about to be written
  * (which cannot be stopped), or the signed copy being checked. */
 export interface Progress {
   stage: "content" | "semantic" | "source" | "write" | "output";
@@ -302,10 +313,12 @@ export interface SemanticSwitch {
   model: string;
 }
 
-/** The Semantic-Code switches and where their models come from. */
-export interface SemanticSettings {
+/** The switches of the Settings dialog: the Semantic-Codes, where their models come from, and OCR. */
+export interface Switches {
   image: SemanticSwitch;
   text: SemanticSwitch;
+  /** OCR of scanned PDF pages; its models are built in. */
+  ocr: boolean;
   /** The tools folder the models are stored in. */
   folder: string | null;
   url: string;
@@ -341,12 +354,15 @@ export const ffmpegStatus = () => invoke<ToolStatus>("ffmpeg_status");
 export const installFfmpeg = (onProgress: (d: Download) => void) =>
   invoke<ToolStatus>("install_ffmpeg", { onProgress: channel(onProgress) });
 
-export const semanticSettings = () => invoke<SemanticSettings>("semantic_settings");
+export const switches = () => invoke<Switches>("switches");
 
 /** Switch the Semantic-Code `kind` on or off; switching on downloads its model first when it is missing, reporting the
  * bytes received. Fails with "cancelled" when `cancelTasks` stops the download. */
 export const setSemantic = (kind: SemanticKind, on: boolean, onProgress: (d: Download) => void) =>
-  invoke<SemanticSettings>("set_semantic", { kind, on, onProgress: channel(onProgress) });
+  invoke<Switches>("set_semantic", { kind, on, onProgress: channel(onProgress) });
+
+/** Switch OCR of scanned PDF pages on or off. */
+export const setOcr = (on: boolean) => invoke<Switches>("set_ocr", { on });
 
 export const metaCode = (title: string, description?: string, meta?: string) =>
   invoke<IsccUnit>("meta_code", { title, description: description || null, meta: meta || null });

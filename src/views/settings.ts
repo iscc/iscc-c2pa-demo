@@ -1,14 +1,18 @@
-// Settings dialog: the experimental Semantic-Codes, switched on and off per kind. Ticking a box
-// agrees to the download of its model, whose size, source and licence the dialog shows; the
-// download runs in the dialog, with its progress and Cancel under the box.
+// Settings dialog: the experimental Semantic-Codes, switched on and off per kind, and OCR of
+// scanned PDF pages. Ticking a Semantic-Code agrees to the download of its model, whose size,
+// source and licence the dialog shows; the download runs in the dialog, with its progress and
+// Cancel under the box. OCR's models are built in, so its box downloads nothing.
 
-import type { Download, SemanticKind, SemanticSettings } from "../api";
+import type { Download, SemanticKind, Switches } from "../api";
 import { esc, formatBytes } from "../util";
 import { dialog, downloadProgress, meter, patchProgress } from "./overlay";
 
+/** A switch of the dialog: a kind of Semantic-Code, or OCR. */
+export type Switch = SemanticKind | "ocr";
+
 /** A switch being changed: its model downloading, or the choice being saved. */
 export interface SettingsOperation {
-  kind: SemanticKind;
+  kind: Switch;
   on: boolean;
   /** Bytes of the model received so far; null while nothing is downloaded. */
   download: Download | null;
@@ -21,7 +25,7 @@ export interface SettingsDialog {
   /** The one switch being changed now; null when none is. */
   operation: SettingsOperation | null;
   /** Why the last change of each switch failed. */
-  errors: Partial<Record<SemanticKind, string>>;
+  errors: Partial<Record<Switch, string>>;
   /** Why the switches could not be read. */
   error: string | null;
 }
@@ -37,6 +41,11 @@ const INTRO =
   "overlays, or after a translation. Neural networks compute them on this computer; a long book can take a minute. " +
   "Codes may differ from iscc-sci and iscc-sct by a few bits, because the models are compressed.";
 
+const OCR_INTRO =
+  "Reads the text of PDF pages that are scans, in Latin script and Chinese, so a scanned document gets a Content-Code " +
+  "Text and a Semantic-Code Text. Off, every PDF keeps the codes iscc-sdk computes; on, scans get codes iscc-sdk does " +
+  "not compute. A page takes a second or two.";
+
 /** Progress of a model's download, with Cancel. */
 function downloadRow(download: Download): string {
   const [fraction, text] = downloadProgress(download);
@@ -48,8 +57,8 @@ function downloadRow(download: Download): string {
 }
 
 /** The box of one kind: ticked when it is on, or while it is being switched on; disabled while any switch is being
- * changed. */
-function switchRow(k: (typeof KINDS)[number], settings: SemanticSettings | null, open: SettingsDialog): string {
+ * changed or a file is being read (`reading`). */
+function switchRow(k: (typeof KINDS)[number], settings: Switches | null, open: SettingsDialog, reading: boolean): string {
   const op = open.operation;
   const s = settings?.[k.kind];
   const changing = op?.kind === k.kind ? op : null;
@@ -59,7 +68,7 @@ function switchRow(k: (typeof KINDS)[number], settings: SemanticSettings | null,
   return `
     <div class="switch">
       <label class="check">
-        <input type="checkbox" name="semantic" value="${k.kind}" ${checked ? "checked" : ""} ${op || !settings ? "disabled" : ""} />
+        <input type="checkbox" name="semantic" value="${k.kind}" ${checked ? "checked" : ""} ${op || !settings || reading ? "disabled" : ""} />
         <span class="title"><span class="swatch" data-unit="semantic"></span>${esc(k.title)}</span>
         <span class="desc"${s ? ` title="${esc(s.model)}"` : ""}>${esc(k.model)}${size ? ` · ${esc(size)}` : ""}</span>
       </label>
@@ -68,22 +77,43 @@ function switchRow(k: (typeof KINDS)[number], settings: SemanticSettings | null,
     </div>`;
 }
 
+/** The OCR box: ticked when OCR is on, or while it is being switched on; disabled while any switch is being changed
+ * or a file is being read (`reading`). */
+function ocrRow(settings: Switches | null, open: SettingsDialog, reading: boolean): string {
+  const op = open.operation;
+  const checked = op?.kind === "ocr" ? op.on : Boolean(settings?.ocr);
+  const error = open.errors.ocr;
+  return `
+    <div class="switch">
+      <label class="check">
+        <input type="checkbox" name="ocr" value="ocr" ${checked ? "checked" : ""} ${op || !settings || reading ? "disabled" : ""} />
+        <span class="title">OCR for scanned PDF pages</span>
+        <span class="desc">PP-OCRv6 tiny by PaddlePaddle · Apache-2.0 · built in</span>
+      </label>
+      ${error ? `<p class="failed">${esc(error)}</p>` : ""}
+    </div>`;
+}
+
 /** Where the models come from and where they are kept. */
-function source(settings: SemanticSettings | null): string {
+function source(settings: Switches | null): string {
   if (!settings) return "";
   const folder = settings.folder ? ` · stored in <span class="mono">${esc(settings.folder)}</span>` : "";
   return `<p class="source">From <a class="ext" href="${esc(settings.url)}">github.com/iscc/iscc-c2pa-demo</a> · ${esc(settings.licence)} · checked against BLAKE3 hashes${folder}. Switching a Semantic-Code off keeps its model.</p>`;
 }
 
-/** The Settings dialog. Done waits while a switch is being changed. */
-export function settingsOverlay(open: SettingsDialog, settings: SemanticSettings | null): string {
+/** The Settings dialog. Done waits while a switch is being changed; the boxes also wait while a file is being read
+ * (`reading`), which a switched OCR starts. */
+export function settingsOverlay(open: SettingsDialog, settings: Switches | null, reading: boolean): string {
   const body = `
     <div class="settings">
       <div class="legend">Semantic-Codes <span class="hint">experimental</span></div>
       <p>${esc(INTRO)}</p>
-      ${KINDS.map((k) => switchRow(k, settings, open)).join("")}
-      ${open.error ? `<p class="failed">${esc(open.error)}</p>` : ""}
+      ${KINDS.map((k) => switchRow(k, settings, open, reading)).join("")}
       ${source(settings)}
+      <div class="legend">OCR <span class="hint">experimental</span></div>
+      <p>${esc(OCR_INTRO)}</p>
+      ${ocrRow(settings, open, reading)}
+      ${open.error ? `<p class="failed">${esc(open.error)}</p>` : ""}
     </div>`;
   const done = `<button class="btn small primary" data-action="close-settings" ${open.operation ? "disabled" : ""}>Done</button>`;
   return dialog("Settings", body, done);

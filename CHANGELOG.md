@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- OCR for scanned PDF pages (experimental, off by default): a page that is a scan, filled by one
+  image with next to no text on it, has its text recognised, so a scanned document gets a
+  Content-Code Text and a Semantic-Code Text. Every other page keeps the text iscc-sdk extracts,
+  and with OCR off every PDF keeps iscc-sdk's codes. The PP-OCRv6 tiny models (PaddlePaddle,
+  Apache-2.0) are built into the app, so nothing is downloaded; they read Latin script and
+  Chinese. Settings switches OCR on and off, the unit list shows the recognition's progress and
+  how many pages it read, and a scan without OCR points to Settings. The CLI reads scans with
+  `--ocr`.
+
 ## 0.3.0 - 2026-10-05
 
 - Semantic-Codes (experimental, off by default): images and documents can get a Semantic-Code

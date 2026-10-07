@@ -13,25 +13,20 @@
 mod image;
 mod text;
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
 use anyhow::{bail, Result};
 use iscc_lib::codec::{self, MainType, SubType, Version};
 use serde::{Deserialize, Serialize};
 
 use crate::formats::Kind;
 use crate::iscc::{self, Content, IsccUnit, UNIT_BITS};
+use crate::memo::Memo;
 use crate::tools;
 use crate::video::Progress;
 
 pub use text::{char_offsets, chunks, TokenSizer};
 
-/// Most units the memo keeps before it starts over.
-const MEMO_CAPACITY: usize = 64;
-
-/// Units computed in this session, by the BLAKE3 hash of their model input.
-static MEMO: Mutex<Option<HashMap<[u8; 32], IsccUnit>>> = Mutex::new(None);
+/// Units computed in this session, by the BLAKE3 hash of their model input; at most 64.
+static MEMO: Memo<IsccUnit> = Memo::new(64);
 
 /// A kind of Semantic-Code, each computed by a model of its own.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,7 +130,7 @@ pub fn unit(content: Content<'_>, progress: Progress) -> Result<IsccUnit> {
     };
     // In the order of `tools::semantic_files`: the model, then the tokenizer of a text.
     let files = tools::semantic_paths(kind)?;
-    if let Some(unit) = recall(&key) {
+    if let Some(unit) = MEMO.recall(&key) {
         return Ok(unit);
     }
     let unit = match content {
@@ -146,7 +141,7 @@ pub fn unit(content: Content<'_>, progress: Progress) -> Result<IsccUnit> {
         )?,
         _ => unreachable!("rejected above"),
     };
-    keep(key, &unit);
+    MEMO.keep(key, unit.clone());
     Ok(unit)
 }
 
@@ -168,22 +163,6 @@ fn binarize(embedding: &[f32]) -> [u8; 32] {
         }
     }
     digest
-}
-
-/// The unit kept for the model input `key`.
-fn recall(key: &[u8; 32]) -> Option<IsccUnit> {
-    let memo = MEMO.lock().unwrap_or_else(|p| p.into_inner());
-    memo.as_ref()?.get(key).cloned()
-}
-
-/// Keep `unit` for the model input `key`; a full memo starts over.
-fn keep(key: [u8; 32], unit: &IsccUnit) {
-    let mut memo = MEMO.lock().unwrap_or_else(|p| p.into_inner());
-    let map = memo.get_or_insert_with(HashMap::new);
-    if map.len() >= MEMO_CAPACITY {
-        map.clear();
-    }
-    map.insert(key, unit.clone());
 }
 
 #[cfg(test)]
@@ -233,21 +212,6 @@ mod tests {
         assert!(text.iscc.starts_with("ISCC:CAD"), "{}", text.iscc);
     }
 
-    #[test]
-    fn memo_remembers_and_starts_over_when_full() {
-        let unit = encode(SubType::TEXT, &[1.0; 256]).unwrap();
-        let first = *blake3::hash(b"memo test first").as_bytes();
-        keep(first, &unit);
-        assert_eq!(recall(&first), Some(unit.clone()));
-        for i in 0..MEMO_CAPACITY {
-            keep(
-                *blake3::hash(format!("memo test {i}").as_bytes()).as_bytes(),
-                &unit,
-            );
-        }
-        assert_eq!(recall(&first), None, "the memo started over");
-    }
-
     /// The reference values `tests/fixtures/expected_semantic.py` wrote with iscc-sci and
     /// iscc-sct and their fp32 models.
     fn reference() -> serde_json::Value {
@@ -267,28 +231,6 @@ mod tests {
     fn distance(a: &str, b: &str) -> u32 {
         let similarity = iscc::similarity(a, b).unwrap().expect("units of one kind");
         ((1.0 - similarity) * 256.0).round() as u32
-    }
-
-    /// The instruction set rten picks on this CPU, for the drift report.
-    fn instruction_set() -> &'static str {
-        #[cfg(target_arch = "x86_64")]
-        {
-            if std::arch::is_x86_feature_detected!("avx512f") {
-                return "x86_64 AVX-512";
-            }
-            if std::arch::is_x86_feature_detected!("avx2") {
-                return "x86_64 AVX2";
-            }
-            "x86_64 generic"
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            "aarch64 NEON"
-        }
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        {
-            "generic"
-        }
     }
 
     /// The text this app extracts from the text fixture `name`.
@@ -506,7 +448,7 @@ mod tests {
         let worst = report.iter().map(|(_, d)| *d).max().unwrap();
         println!(
             "{} ({} codes, worst {worst} of 256 bits): {report:?}",
-            instruction_set(),
+            crate::parallel::instruction_set(),
             report.len()
         );
         for (name, d) in &report {

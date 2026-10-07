@@ -325,15 +325,14 @@ function verdict(mt: UnitMatch, neutral: boolean): string {
 /** Explains what each unit in the match column was recomputed from, for the units present, as HTML. */
 function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspection, semantic: boolean): string {
   const has = (unit: string) => sb.matches.some((mt) => mt.embedded.unit === unit);
-  const parts: string[] = [];
+  const html: string[] = [];
   if (sb.preservation === "preserved") {
     const from = m.sidecar ? "this file" : "this file without its Content Credentials";
-    parts.push(`Every unit is recomputed from ${from}, which is the file that was signed.`);
+    html.push(esc(`Every unit is recomputed from ${from}, which is the file that was signed.`));
   } else {
-    if (has("content")) parts.push(contentNote(inspection));
-    if (has("data") || has("instance")) parts.push(`Data-Code and Instance-Code are recomputed from ${bitstreamSource(m)}.`);
+    if (has("content")) html.push(contentNote(inspection));
+    if (has("data") || has("instance")) html.push(esc(`Data-Code and Instance-Code are recomputed from ${bitstreamSource(m)}.`));
   }
-  const html = parts.map(esc);
   if (has("semantic")) html.push(semanticNote(sb.preservation === "preserved", inspection, semantic));
   if (has("data") || has("instance")) {
     html.push(esc("Data-Code tolerates small byte changes; Instance-Code is exact and either matches or not."));
@@ -364,12 +363,17 @@ function semanticNote(preserved: boolean, inspection: Inspection, semantic: bool
   return esc(`${from}This app's semantic models are compressed, so a Semantic-Code made by iscc-sci or iscc-sct may differ by a few bits.`);
 }
 
-/** What the Content-Code in the match column was computed from. */
+/** What the Content-Code in the match column was computed from, as HTML; for a scan while OCR is off, why it is not
+ * compared and the way to Settings. */
 function contentNote(inspection: Inspection): string {
-  if (!inspection.content_from_source) return `Content-Code is recomputed from this file's ${contentSource(inspection)}.`;
-  return (
+  if (inspection.ocr && !inspection.ocr.on) {
+    const settings = `<button type="button" class="linkbtn" data-action="settings">Turn it on in Settings</button>`;
+    return `${esc("Content-Code is not compared: this file's text is in scanned pages, which OCR reads, and OCR is off.")} ${settings}.`;
+  }
+  if (!inspection.content_from_source) return esc(`Content-Code is recomputed from this file's ${contentSource(inspection)}.`);
+  return esc(
     "Content-Code is that of the file just signed: this copy carries its compressed video unchanged, packet for packet, " +
-    "so its frames are the same. Open this file again to recompute it from its own frames."
+      "so its frames are the same. Open this file again to recompute it from its own frames.",
   );
 }
 

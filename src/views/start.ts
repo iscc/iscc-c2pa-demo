@@ -37,22 +37,34 @@ function kindRow(k: KindInfo): string {
   return `<div class="media">${icon}${esc(k.label)}</div><div class="chips">${chips}</div>${cells}`;
 }
 
-/** Table of supported formats, with a bracket under the units that one soft binding carries. The Semantic-Code is
- * experimental; while both kinds are off (`semanticOff`), a line points to Settings. */
-function formatsTable(kinds: KindInfo[], semanticOff: boolean): string {
+/** Which experimental features are off: both kinds of Semantic-Code, OCR of scanned PDF pages. */
+export interface Off {
+  semantic: boolean;
+  ocr: boolean;
+}
+
+/** The line that points to Settings while an experimental feature is off; empty when none is. */
+function settingsLine(off: Off): string {
+  const names = [off.semantic ? "Semantic-Codes" : "", off.ocr ? "OCR for scanned PDF pages" : ""].filter(Boolean);
+  if (!names.length) return "";
+  const are = names.length > 1 || off.semantic ? "are" : "is";
+  const them = names.length > 1 || off.semantic ? "them" : "it";
+  return `<div class="models">${esc(names.join(" and "))} ${are} experimental and off. <button type="button" class="linkbtn" data-action="settings">Turn ${them} on in Settings</button>.</div>`;
+}
+
+/** Table of supported formats, with a bracket under the units that one soft binding carries. The Semantic-Code and
+ * OCR are experimental; while one is off, a line points to Settings. */
+function formatsTable(kinds: KindInfo[], off: Off): string {
   if (!kinds.length) return "";
   const head = ["Media", "Formats", "Meta", "Semantic", "Content", "Data", "Instance"]
     .map((h) => `<span class="head">${h}</span>`)
     .join("");
-  const models = semanticOff
-    ? `<div class="models">Semantic-Codes are experimental and off. <button type="button" class="linkbtn" data-action="settings">Turn them on in Settings</button>.</div>`
-    : "";
   return `
     <div class="kinds">
       ${head}
       ${kinds.map(kindRow).join("")}
       <div class="binding"><span class="bracket"></span>one C2PA soft binding</div>
-      ${models}
+      ${settingsLine(off)}
     </div>`;
 }
 
@@ -67,16 +79,16 @@ function footer(info: AppInfo | null): string {
     </footer>`;
 }
 
-/** The start screen shown while no file is open; `error` is the last failure to open one, `semanticOff` whether both
- * kinds of Semantic-Code are off. */
-export function startScreen(info: AppInfo | null, error: string | null, semanticOff: boolean): string {
+/** The start screen shown while no file is open; `error` is the last failure to open one, `off` the experimental
+ * features that are off. */
+export function startScreen(info: AppInfo | null, error: string | null, off: Off): string {
   return `
     <div class="empty">
       <div class="dropzone" data-action="open" role="button" tabindex="0">
         <div class="ring"><div class="dot"></div></div>
         <h1>Drop an image, a document, an audio or a video file</h1>
         <p>See its Content Credentials and ISCC, or sign it with an ISCC soft binding.</p>
-        ${formatsTable(info?.kinds ?? [], semanticOff)}
+        ${formatsTable(info?.kinds ?? [], off)}
         ${error ? `<p class="banner error">${esc(error)}</p>` : ""}
       </div>
       ${footer(info)}

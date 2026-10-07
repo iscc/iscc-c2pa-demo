@@ -1,6 +1,7 @@
 //! One reader for every supported format: the content behind the Content-Code, a preview picture,
 //! the asset's own title and description, and its creator; [`load`] adds the Data-Code and
-//! Instance-Code of the file. [`glance`] leaves the slow part of a video for later.
+//! Instance-Code of the file. [`glance`] leaves the slow parts for later: decoding a video, and
+//! recognising the scanned pages of a PDF when OCR is on.
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -15,6 +16,7 @@ use image::RgbImage;
 use crate::formats::{self, Format, Kind};
 use crate::iscc::{self, Content, IsccUnit};
 use crate::metadata::{self, Embedded};
+use crate::pdf::OcrPages;
 use crate::video::{self, Progress};
 use crate::{audio, epub, office, pdf, plain, svg, tools};
 
@@ -22,6 +24,8 @@ use crate::{audio, epub, office, pdf, plain, svg, tools};
 const NO_TEXT: &str = "no text found in this document";
 /// Why a video at a glance has no Content-Code yet.
 const NOT_DECODED: &str = "the video is not decoded yet";
+/// Why a PDF at a glance with OCR on has no Content-Code yet.
+const NOT_RECOGNISED: &str = "the scanned pages are not recognised yet";
 
 /// The input of the Content-Code.
 #[derive(Debug, Clone)]
@@ -42,6 +46,9 @@ pub enum AssetContent {
     /// A video at a [`glance`]: its tags, facts and a frame are read, its frames not decoded yet,
     /// so its Content-Code is still to come. The signatures of the [`video::Video`] are empty.
     Undecoded(video::Video),
+    /// A PDF at a [`glance`] with OCR on: its scanned pages are not recognised yet, so its
+    /// Content-Code is still to come.
+    Unrecognised,
 }
 
 /// What an asset contributes to inspection and signing.
@@ -58,6 +65,8 @@ pub struct Asset {
     /// What signing does to this asset that its owner may not want (breaking a PDF's digital
     /// signature); `None` when there is nothing to warn about.
     pub sign_warning: Option<&'static str>,
+    /// The scanned pages of a PDF and whether OCR reads them; `None` without scanned pages.
+    pub ocr: Option<OcrPages>,
 }
 
 /// Parts of a text document as its format reader finds them.
@@ -90,7 +99,16 @@ impl Asset {
                 Content::Unavailable(reason)
             }
             AssetContent::Undecoded(_) => Content::Unavailable(NOT_DECODED),
+            AssetContent::Unrecognised => Content::Unavailable(NOT_RECOGNISED),
         }
+    }
+
+    /// Whether the Content-Code is still to come: a video not decoded or a scan not recognised.
+    pub fn content_pending(&self) -> bool {
+        matches!(
+            self.content,
+            AssetContent::Undecoded(_) | AssetContent::Unrecognised
+        )
     }
 
     /// The picture to show: the image itself, or the preview of a document, audio or video file.
@@ -115,17 +133,32 @@ pub struct Loaded {
 /// The last video decoded, so that signing the video just opened does not decode it again.
 static DECODED: Memory = Memory(Mutex::new(None));
 
+/// When the scanned pages of a PDF are recognised: never (OCR is off), in a later pass, or now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ocr {
+    Off,
+    Later,
+    Now,
+}
+
 /// Load the asset at `path` with the Data-Code and Instance-Code of the file. A video stays on
 /// disk, as it can take gigabytes: ffmpeg reads it while the file is hashed alongside, and
 /// `progress` follows ffmpeg; the same bytes are decoded only once in a row; without ffmpeg the
-/// video is only hashed ([`AssetContent::Unread`]). Every other format is read into memory.
-pub fn load(path: &Path, format: &Format, progress: Progress) -> Result<Loaded> {
+/// video is only hashed ([`AssetContent::Unread`]). Every other format is read into memory; with
+/// `ocr`, the scanned pages of a PDF are recognised, `progress` following them.
+pub fn load(path: &Path, format: &Format, ocr: bool, progress: Progress) -> Result<Loaded> {
     if format.kind == Kind::Video {
         return load_video(path, tools::ffmpeg_path(), progress, &DECODED);
     }
+    let ocr = if ocr { Ocr::Now } else { Ocr::Off };
+    load_bytes(path, format, ocr, progress)
+}
+
+/// [`load`] of a file read into memory, its scanned pages as `ocr` says.
+fn load_bytes(path: &Path, format: &Format, ocr: Ocr, progress: Progress) -> Result<Loaded> {
     let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     Ok(Loaded {
-        asset: read(path, &bytes, format)?,
+        asset: read_with(path, &bytes, format, ocr, progress)?,
         bitstream: Some(iscc::bitstream_units(&bytes)?),
         size: bytes.len() as u64,
     })
@@ -133,10 +166,12 @@ pub fn load(path: &Path, format: &Format, progress: Progress) -> Result<Loaded> 
 
 /// Load the asset at `path` so that it shows at once: a video's tags, facts and a preview frame
 /// only, neither its frames decoded ([`AssetContent::Undecoded`]) nor the file hashed; without
-/// ffmpeg it stays unread. Every other format loads as with [`load`].
-pub fn glance(path: &Path, format: &Format) -> Result<Loaded> {
+/// ffmpeg it stays unread. With `ocr`, the scanned pages of a PDF are left for later
+/// ([`AssetContent::Unrecognised`]). Every other format loads as with [`load`].
+pub fn glance(path: &Path, format: &Format, ocr: bool) -> Result<Loaded> {
     if format.kind != Kind::Video {
-        return load(path, format, &|_| true);
+        let ocr = if ocr { Ocr::Later } else { Ocr::Off };
+        return load_bytes(path, format, ocr, &|_| true);
     }
     let size = std::fs::metadata(path)
         .with_context(|| format!("cannot read {}", path.display()))?
@@ -154,15 +189,16 @@ pub fn glance(path: &Path, format: &Format) -> Result<Loaded> {
 
 /// Load the signed copy at `path` of the asset `source`. A video copy that provably decodes to
 /// the frames analysed in the source is not decoded again ([`video::read_copy`]); any other
-/// copy loads like any file.
+/// copy loads like any file, its scanned pages recognised with `ocr`.
 pub fn load_signed_copy(
     path: &Path,
     format: &Format,
     source: &Asset,
+    ocr: bool,
     progress: Progress,
 ) -> Result<Loaded> {
     if format.kind != Kind::Video {
-        return load(path, format, progress);
+        return load(path, format, ocr, progress);
     }
     with_ffmpeg(tools::ffmpeg_path(), path, |ffmpeg| {
         video::read_copy(ffmpeg, path, source, progress)
@@ -222,6 +258,7 @@ fn unread(reason: &'static str) -> Asset {
         metadata: Embedded::default(),
         sign_block: None,
         sign_warning: None,
+        ocr: None,
     }
 }
 
@@ -331,8 +368,20 @@ impl Read for Stoppable<'_> {
 }
 
 /// Read the asset held in `bytes`; `path` names the file for formats that resolve resources
-/// next to it (SVG). A video goes through a temporary file, as ffmpeg reads files.
+/// next to it (SVG). A video goes through a temporary file, as ffmpeg reads files. The scanned
+/// pages of a PDF are not recognised: OCR is off.
 pub fn read(path: &Path, bytes: &[u8], format: &Format) -> Result<Asset> {
+    read_with(path, bytes, format, Ocr::Off, &|_| true)
+}
+
+/// [`read`], the scanned pages of a PDF recognised as `ocr` says, `progress` following them.
+fn read_with(
+    path: &Path,
+    bytes: &[u8],
+    format: &Format,
+    ocr: Ocr,
+    progress: Progress,
+) -> Result<Asset> {
     match format.mime {
         formats::SVG => svg::read(path, bytes),
         _ if format.kind == Kind::Image => read_raster(bytes),
@@ -340,7 +389,7 @@ pub fn read(path: &Path, bytes: &[u8], format: &Format) -> Result<Asset> {
         _ if format.kind == Kind::Video => video::read_bytes(&tools::ffmpeg_path()?, bytes, format),
         formats::EPUB => Ok(from_document(epub::read(bytes)?)),
         formats::TXT | formats::MARKDOWN => Ok(from_document(plain::read(bytes))),
-        formats::PDF => read_pdf(bytes),
+        formats::PDF => read_pdf(bytes, ocr, progress),
         mime if office::handles(mime) => Ok(from_document(office::read(bytes, mime)?)),
         mime => bail!("no reader for {mime}"),
     }
@@ -354,16 +403,29 @@ fn read_raster(bytes: &[u8]) -> Result<Asset> {
         metadata: metadata::image(bytes),
         sign_block: None,
         sign_warning: None,
+        ocr: None,
     })
 }
 
-/// A PDF, with the reason it cannot be signed or the warning that signing it deserves.
-fn read_pdf(bytes: &[u8]) -> Result<Asset> {
-    let (doc, flags) = pdf::read(bytes)?;
+/// A PDF, with the reason it cannot be signed or the warning that signing it deserves, and its
+/// scanned pages recognised as `ocr` says.
+fn read_pdf(bytes: &[u8], ocr: Ocr, progress: Progress) -> Result<Asset> {
+    let pdf = pdf::read(bytes)?;
+    let flags = pdf.flags;
+    let pages = pdf.ocr_pages(ocr != Ocr::Off);
+    let asset = match (ocr, pages) {
+        (Ocr::Now, Some(_)) => from_document(pdf.recognised(bytes, progress)?),
+        (Ocr::Later, Some(_)) => Asset {
+            content: AssetContent::Unrecognised,
+            ..from_document(pdf.document)
+        },
+        _ => from_document(pdf.document),
+    };
     Ok(Asset {
         sign_block: flags.sign_block(),
         sign_warning: flags.sign_warning(),
-        ..from_document(doc)
+        ocr: pages,
+        ..asset
     })
 }
 
@@ -389,6 +451,7 @@ fn from_document(doc: Document) -> Asset {
         ),
         sign_block: None,
         sign_warning: None,
+        ocr: None,
     }
 }
 
@@ -436,7 +499,7 @@ mod tests {
             error.downcast_ref::<tools::Cancelled>().is_some(),
             "{error:#}"
         );
-        let loaded = load(&path, formats::by_path(&path).unwrap(), &|_| true).unwrap();
+        let loaded = load(&path, formats::by_path(&path).unwrap(), false, &|_| true).unwrap();
         assert_eq!(loaded.size, std::fs::metadata(&path).unwrap().len());
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(
@@ -449,7 +512,7 @@ mod tests {
     fn a_video_at_a_glance_is_neither_decoded_nor_hashed() {
         crate::tools::tests::ensure_ffmpeg();
         let path = fixture("demo.mp4");
-        let glanced = glance(&path, formats::by_path(&path).unwrap()).unwrap();
+        let glanced = glance(&path, formats::by_path(&path).unwrap(), false).unwrap();
         let AssetContent::Undecoded(video) = &glanced.asset.content else {
             panic!("{:?}", glanced.asset.content);
         };
@@ -461,7 +524,7 @@ mod tests {
         assert!(iscc::content_unit(glanced.asset.content()).is_err());
         // Any other format loads in full.
         let image = fixture("CA.jpg");
-        let loaded = glance(&image, formats::by_path(&image).unwrap()).unwrap();
+        let loaded = glance(&image, formats::by_path(&image).unwrap(), true).unwrap();
         assert!(loaded.bitstream.is_some());
     }
 

@@ -17,9 +17,10 @@ import {
   metaCode,
   needsFfmpeg,
   type Progress,
+  switches as readSwitches,
   type SemanticKind,
-  type SemanticSettings,
-  semanticSettings,
+  type Switches,
+  setOcr,
   setSemantic,
   signAsset,
   type ToolStatus,
@@ -59,8 +60,8 @@ interface State {
   analysis: Analysis | null;
   /** The offer to download ffmpeg before a video is opened, and that download. */
   tool: ToolPrompt | null;
-  /** Which Semantic-Codes are on; null until known, which counts as off. */
-  semantic: SemanticSettings | null;
+  /** Which Semantic-Codes are on, and whether OCR is; null until known, which counts as off. */
+  switches: Switches | null;
   /** The Settings dialog while it is open. */
   settings: SettingsDialog | null;
   error: string | null;
@@ -76,7 +77,7 @@ const state: State = {
   busy: null,
   analysis: null,
   tool: null,
-  semantic: null,
+  switches: null,
   settings: null,
   error: null,
   banner: null,
@@ -113,11 +114,11 @@ function render() {
       <span class="version mono">${info ? `v${esc(info.version)} · c2pa ${esc(info.c2pa_version)}` : ""}</span>
     </header>
     <main>
-      ${inspection ? workspace(inspection) : startScreen(info, state.error, !(semanticOn("image") || semanticOn("text")))}
+      ${inspection ? workspace(inspection) : startScreen(info, state.error, experimentsOff())}
       <div class="dropoverlay ${state.dragging ? "active" : ""}"><div class="ring">Drop to inspect</div></div>
       ${state.busy ? busyOverlay(state.busy) : ""}
       ${state.tool ? toolOverlay(state.tool) : ""}
-      ${state.settings ? settingsOverlay(state.settings, state.semantic) : ""}
+      ${state.settings ? settingsOverlay(state.settings, state.switches, Boolean(state.busy)) : ""}
     </main>`;
   app.querySelectorAll<HTMLElement>(".column").forEach((c, i) => {
     c.scrollTop = scroll[i] ?? 0;
@@ -160,7 +161,12 @@ function unitListHint(inspection: Inspection): string {
 
 /** Whether the Semantic-Code of files of `kind` is on; unknown counts as off, and audio and video have none. */
 function semanticOn(kind: AssetKind): boolean {
-  return (kind === "image" || kind === "text") && Boolean(state.semantic?.[kind].on);
+  return (kind === "image" || kind === "text") && Boolean(state.switches?.[kind].on);
+}
+
+/** Which experimental features are off, for the start screen's pointer to Settings: both Semantic-Codes, OCR. */
+function experimentsOff(): { semantic: boolean; ocr: boolean } {
+  return { semantic: !(semanticOn("image") || semanticOn("text")), ocr: !state.switches?.ocr };
 }
 
 /** Whether the views show the open file's Semantic-Code: only when its kind is on and the inspection mentions the
@@ -291,7 +297,7 @@ async function openSettings() {
   state.settings = open;
   render();
   try {
-    state.semantic = await semanticSettings();
+    state.switches = await readSwitches();
   } catch (e) {
     open.error = `The settings could not be read: ${e}`;
   }
@@ -311,14 +317,14 @@ function closeSettings() {
 async function switchSemantic(kind: SemanticKind, on: boolean) {
   const open = state.settings;
   if (!open || open.operation) return;
-  const known = state.semantic?.[kind];
+  const known = state.switches?.[kind];
   const download = on && known && !known.installed ? { received: 0, total: known.bytes } : null;
   const operation: SettingsOperation = { kind, on, download, cancelled: false };
   open.operation = operation;
   delete open.errors[kind];
   render();
   try {
-    state.semantic = await setSemantic(kind, on, (d) => {
+    state.switches = await setSemantic(kind, on, (d) => {
       if (open.operation !== operation) return;
       const first = !operation.download;
       operation.download = d;
@@ -332,6 +338,26 @@ async function switchSemantic(kind: SemanticKind, on: boolean) {
     if (!operation.cancelled) open.errors[kind] = String(e);
   }
   render();
+}
+
+/** Switch OCR of scanned PDF pages on or off. An open PDF with scanned pages opens again, so its Content-Code follows:
+ * on, its pages are recognised in the background; off, it gets iscc-sdk's code. The new load supersedes any pass
+ * still running, and the dialog stays open. Nothing is downloaded, the models are built in. */
+async function switchOcr(on: boolean) {
+  const open = state.settings;
+  if (!open || open.operation) return;
+  open.operation = { kind: "ocr", on, download: null, cancelled: false };
+  delete open.errors.ocr;
+  render();
+  try {
+    state.switches = await setOcr(on);
+  } catch (e) {
+    open.errors.ocr = String(e);
+  }
+  open.operation = null;
+  render();
+  const scan = state.inspection?.ocr ? state.inspection.path : null;
+  if (scan && !open.errors.ocr) await load(scan, { keepSettings: true });
 }
 
 /** Stop the model's download. The one task generation stops a background pass too, which then shows as stopped,
@@ -410,15 +436,22 @@ async function analyse(path: string) {
   render();
 }
 
+/** How `load` opens a file: whether it offers to download a missing ffmpeg first, and whether Settings stays open
+ * (the open file reloaded because OCR was switched; its boxes wait while the file is read). */
+interface LoadOptions {
+  offerFfmpeg?: boolean;
+  keepSettings?: boolean;
+}
+
 /** Load and inspect a file path. A video with frames needs ffmpeg for its Meta-Code and Content-Code; when it is
  * missing, the user is offered the download first, unless `offerFfmpeg` is false. The file opened last wins: it
  * replaces whatever load or signing still runs. Nothing opens while a tool downloads or a switch in Settings is
- * being changed, since opening cancels the tasks that run. Opening closes the ffmpeg offer and Settings: a switch
- * flipped while the file is read would act on the file open before it. */
-async function load(path: string, offerFfmpeg = true) {
+ * being changed, since opening cancels the tasks that run. Opening closes the ffmpeg offer and, unless kept,
+ * Settings: a switch flipped while the file is read would act on the file open before it. */
+async function load(path: string, { offerFfmpeg = true, keepSettings = false }: LoadOptions = {}) {
   if (state.tool?.download || state.settings?.operation) return;
   state.tool = null;
-  state.settings = null;
+  if (!keepSettings) state.settings = null;
   const ext = splitPath(path).ext.slice(1).toLowerCase();
   if (state.info && !state.info.extensions.includes(ext)) {
     const kinds = listJoin(state.info.kinds.map((k) => `${k.label.toLowerCase()} (${k.extensions.join(", ")})`));
@@ -452,7 +485,7 @@ async function glance(seq: number, path: string): Promise<boolean> {
   render();
   try {
     // The switches as the backend applies them now: a model may have come or gone since they were read.
-    state.semantic = await semanticSettings().catch(() => state.semantic);
+    state.switches = await readSwitches().catch(() => state.switches);
     const inspection = await inspectAsset(path, false, () => {});
     if (seq !== loadSeq) return false;
     state.inspection = inspection;
@@ -586,7 +619,7 @@ async function submitSign() {
       state.error = `Signing failed: ${e}`;
       // A model deleted by hand turns its Semantic-Code off: read the switches again, so the form drops the unit
       // and the next Sign works.
-      state.semantic = await semanticSettings().catch(() => state.semantic);
+      state.switches = await readSwitches().catch(() => state.switches);
     }
   } finally {
     if (seq === signSeq) {
@@ -682,7 +715,7 @@ function stopAnalysis() {
 function onAction(action: string) {
   if (action === "open") return void pickFile();
   if (action === "install-tool") return void installTool();
-  if (action === "skip-tool" && state.tool) return void load(state.tool.path, false);
+  if (action === "skip-tool" && state.tool) return void load(state.tool.path, { offerFfmpeg: false });
   if (action === "stop-analysis") return stopAnalysis();
   if (action === "resume-analysis" && state.inspection) return void analyse(state.inspection.path);
   if (action === "settings") return void openSettings();
@@ -747,6 +780,7 @@ function wireEvents() {
   app.addEventListener("change", (ev) => {
     const target = ev.target as HTMLInputElement;
     if (target.name === "semantic") return void switchSemantic(target.value as SemanticKind, target.checked);
+    if (target.name === "ocr") return void switchOcr(target.checked);
     if (["cred", "alg", "ts_on", "ts_preset"].includes(target.name)) {
       syncForm();
       render();
@@ -801,7 +835,7 @@ async function main() {
   wireEvents();
   render();
   state.info = await appInfo().catch(() => null);
-  state.semantic = await semanticSettings().catch(() => null);
+  state.switches = await readSwitches().catch(() => null);
   render();
   await wireDragDrop();
   const path = await initialPath().catch(() => null);

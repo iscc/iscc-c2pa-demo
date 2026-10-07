@@ -4,7 +4,8 @@
 //! code 1 (usage errors exit with 2).
 //!
 //! The experimental Semantic-Codes are left out unless `--semantic` asks for them (or `sign
-//! --units` names them), whatever the app has switched on: the CLI never reads its settings.
+//! --units` names them), and the scanned pages of a PDF are recognised only with `--ocr`,
+//! whatever the app has switched on: the CLI never reads its settings.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -16,6 +17,7 @@ use iscc_c2pa_demo_lib::formats::{self, Kind};
 use iscc_c2pa_demo_lib::inspect::{self, Depth, Inspection};
 use iscc_c2pa_demo_lib::iscc::{self, MetaInput};
 use iscc_c2pa_demo_lib::semantic::{SemanticKind, SemanticKinds};
+use iscc_c2pa_demo_lib::settings::Settings;
 use iscc_c2pa_demo_lib::sign::{self, Credentials, SignRequest, TimestampOutcome, TrainingEntry};
 use iscc_c2pa_demo_lib::{timestamp, tools};
 use serde::Serialize;
@@ -47,6 +49,10 @@ enum Command {
         /// embedded one; its model must be installed.
         #[arg(long)]
         semantic: bool,
+        /// Recognise the text of a PDF's scanned pages by OCR (Latin script and Chinese), for a
+        /// Content-Code iscc-sdk does not compute.
+        #[arg(long)]
+        ocr: bool,
     },
     /// Write a signed copy with an ISCC soft binding; defaults mirror the Sign tab.
     Sign(Box<SignArgs>),
@@ -141,6 +147,10 @@ struct SignArgs {
     /// installed. Naming `semantic` in --units does the same.
     #[arg(long)]
     semantic: bool,
+    /// Recognise the text of a PDF's scanned pages by OCR for its Content-Code (Latin script and
+    /// Chinese), one iscc-sdk does not compute.
+    #[arg(long)]
+    ocr: bool,
     /// Digital source type URI, recorded on the parent ingredient when the file has no Content
     /// Credentials yet [default: none recorded].
     #[arg(long)]
@@ -230,12 +240,16 @@ fn with_install_hint(error: anyhow::Error) -> anyhow::Error {
     error
 }
 
-/// The kinds of Semantic-Code a command computes: both when asked for, else none.
-fn semantic_kinds(asked: bool) -> SemanticKinds {
-    if asked {
-        SemanticKinds::ALL
-    } else {
-        SemanticKinds::NONE
+/// What a command computes: both kinds of Semantic-Code when asked for (`semantic`), else none,
+/// and OCR when asked for.
+fn settings(semantic: bool, ocr: bool) -> Settings {
+    Settings {
+        semantic: if semantic {
+            SemanticKinds::ALL
+        } else {
+            SemanticKinds::NONE
+        },
+        ocr,
     }
 }
 
@@ -247,8 +261,14 @@ fn megabytes(bytes: u64) -> String {
 /// Execute the parsed command and print its JSON.
 fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
-        Command::Inspect { file, semantic } => {
-            let depth = Depth::FULL.with_semantic_kinds(semantic_kinds(*semantic));
+        Command::Inspect {
+            file,
+            semantic,
+            ocr,
+        } => {
+            let depth = Depth::FULL
+                .with_semantic_kinds(settings(*semantic, false).semantic)
+                .with_ocr(*ocr);
             let mut inspection = inspect::inspect_with(file, depth, &|_, _| true)?;
             note_missing_tools(&inspection, *semantic);
             strip_preview(&mut inspection, cli.no_preview);
@@ -259,10 +279,10 @@ fn run(cli: &Cli) -> Result<()> {
                 .units
                 .as_ref()
                 .is_some_and(|u| u.iter().any(|u| u == "semantic"));
-            let kinds = semantic_kinds(args.semantic || named);
-            let request = sign_request(args, kinds)?;
+            let settings = settings(args.semantic || named, args.ocr);
+            let request = sign_request(args, settings)?;
             let mut result =
-                sign::sign_with(&request, kinds, &|_, _| true).map_err(with_install_hint)?;
+                sign::sign_with(&request, settings, &|_, _| true).map_err(with_install_hint)?;
             if let TimestampOutcome::Failed { url, reason } = &result.timestamp {
                 eprintln!("note: signed without a timestamp: {url} failed ({reason})");
             }
@@ -383,12 +403,14 @@ fn strip_preview(inspection: &mut Inspection, strip: bool) {
 }
 
 /// The signing request, with every option the user left out filled in the way the Sign tab
-/// prefills its form, the Semantic-Code of `kinds` only. A file that cannot be signed is an
-/// error; what signing does to it that its owner may not want is a note.
-fn sign_request(args: &SignArgs, kinds: SemanticKinds) -> Result<SignRequest> {
-    let depth = Depth::FULL.with_semantic_kinds(kinds);
+/// prefills its form, the Semantic-Code and OCR as `settings` say. A file that cannot be signed
+/// is an error; what signing does to it that its owner may not want is a note.
+fn sign_request(args: &SignArgs, settings: Settings) -> Result<SignRequest> {
+    let depth = Depth::FULL
+        .with_semantic_kinds(settings.semantic)
+        .with_ocr(settings.ocr);
     let source = inspect::inspect_with(&args.file, depth, &|_, _| true)?;
-    note_missing_tools(&source, kinds != SemanticKinds::NONE);
+    note_missing_tools(&source, settings.semantic != SemanticKinds::NONE);
     if let Some(block) = source.sign_block {
         bail!("{block}");
     }
@@ -549,7 +571,8 @@ mod tests {
             .ends_with("run `c2pa-iscc tools install semantic-image`"));
         let other = with_install_hint(anyhow!("something else"));
         assert_eq!(other.to_string(), "something else");
-        assert_eq!(semantic_kinds(false), SemanticKinds::NONE);
-        assert_eq!(semantic_kinds(true), SemanticKinds::ALL);
+        assert_eq!(settings(false, false), Settings::NONE);
+        assert_eq!(settings(true, false).semantic, SemanticKinds::ALL);
+        assert!(settings(false, true).ocr);
     }
 }

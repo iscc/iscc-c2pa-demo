@@ -17,10 +17,12 @@ Opening a file shows:
   the app takes the whole text, so their Content-Code Text and Semantic-Code Text differ from
   iscc-sdk's. The experimental Semantic-Codes are off until switched on in Settings; they come
   from compressed copies of the iscc-sci and iscc-sct models and stay within a few bits of their
-  codes (see [Semantic-Codes](#semantic-codes)).
-  Units that take long (a video's frames and hashes, the Semantic-Code) are computed in the
-  background after the file is shown, each with its own progress bar (see
-  [Shown at once](#shown-at-once));
+  codes (see [Semantic-Codes](#semantic-codes)). OCR of scanned PDF pages is off until switched
+  on in Settings too; on, a scan gets a Content-Code Text from its recognised text, which iscc-sdk
+  does not compute (see [OCR](#ocr)).
+  Units that take long (a video's frames and hashes, the Semantic-Code, the text of scanned
+  pages) are computed in the background after the file is shown, each with its own progress bar
+  (see [Shown at once](#shown-at-once));
 - the ISCC soft binding embedded in the manifest, decoded from its ISCC-SEQ value and compared
   unit by unit with the file, and whether the file is source-preserving (see
   [Notes on the soft binding](#notes-on-the-soft-binding));
@@ -57,6 +59,7 @@ The Sign tab writes a signed copy with:
 | Audio | [`symphonia`](https://crates.io/crates/symphonia) 0.6 decodes, a resampler with fpcalc's settings in `src-tauri/src/resample.rs`, [`rusty-chromaprint`](https://crates.io/crates/rusty-chromaprint) fingerprints, [`lofty`](https://crates.io/crates/lofty) reads tags and cover art; [`rusty-opus`](https://crates.io/crates/rusty-opus) decodes Opus tracks of MP4 containers, registered as a symphonia decoder in `src-tauri/src/opus.rs`; no external tools |
 | Video | ffmpeg 8.1, the [iscc-binaries](https://github.com/iscc/iscc-binaries) build iscc-sdk uses, downloaded on first use and run as a separate program for the MPEG-7 frame signatures, the tags and a preview frame (see [Video](#video)) |
 | Semantic-Codes | [`rten`](https://crates.io/crates/rten) 0.27 runs weight-compressed copies of the iscc-sci and iscc-sct models, downloaded on first use; [`tokenizers`](https://crates.io/crates/tokenizers) 0.23 (pure Rust, no Oniguruma) and [`text-splitter`](https://crates.io/crates/text-splitter) 0.33 tokenize and chunk text as iscc-sct does (see [Semantic-Codes](#semantic-codes)) |
+| OCR | PP-OCRv6 tiny (PaddlePaddle) in `rten`, compiled into the binary, with [`rten-imageproc`](https://crates.io/crates/rten-imageproc) for contours and a pipeline of our own in `src-tauri/src/ocr.rs` (see [OCR](#ocr)) |
 | CLI | [`clap`](https://crates.io/crates/clap) |
 | UI | Vite + TypeScript, no framework; ISCC brand tokens, Readex Pro and JetBrains Mono |
 | Content Credentials pin | `src/assets/content_credentials_{icon,logo}.svg`, copied from [c2pa-conformance-tool](https://github.com/contentauth/c2pa-conformance-tool) (Apache 2.0). The icon and the name are C2PA trademarks; shown unmodified as the presence indicator per the [C2PA UX guidance](https://spec.c2pa.org/specifications/specifications/2.2/ux/UX_Recommendations.html) |
@@ -77,19 +80,21 @@ WebKitGTK 4.1 with its development packages on Linux (also needed for `cargo tes
 
 ```sh
 pnpm install
-uv run scripts/fetch_pdfium.py # once after cloning, and when the pinned pdfium build changes
+uv run scripts/fetch_resources.py # once after cloning, and when a pinned file changes
 pnpm tauri dev                 # dev build with hot reload, Vite on port 43172
 pnpm tauri dev -- -- /full/path/to/image.jpg  # open a file at startup (absolute path)
 pnpm tauri build               # installers under src-tauri/target/release/bundle
 ```
 
-**pdfium is a build prerequisite.** `tauri.conf.json` bundles `src-tauri/pdfium/*` with the app,
-and the Tauri build script fails on every cargo run (build, test, clippy, rust-analyzer) when
-that directory is empty: "glob pattern pdfium/* path not found". `scripts/fetch_pdfium.py`
-downloads the pinned build of [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)
-for your system, checks its SHA-256 and extracts the library and its licence files there; it does
-nothing when the right build is present. The pre-push hooks, `mise run lint`, `mise run test`,
-CI and the release workflow run it themselves. The app loads the library at run time from its
+**pdfium and the OCR models are build prerequisites.** `tauri.conf.json` bundles
+`src-tauri/pdfium/*` with the app, and the Tauri build script fails on every cargo run (build,
+test, clippy, rust-analyzer) when that directory is empty: "glob pattern pdfium/* path not
+found"; `ocr.rs` compiles in the files of `src-tauri/ocr/`, and the build fails without them.
+`scripts/fetch_resources.py`, the one place that pins both, downloads the pinned build of
+[bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) for your system and the
+PP-OCRv6 tiny models, checks their SHA-256 and puts them there; it does nothing when the right
+files are present. The pre-push hooks, `mise run lint`, `mise run test`, CI and the release
+workflow run it themselves. The app loads the library at run time from its
 resource directory; the CLI looks next to its executable, and debug builds also in
 `src-tauri/pdfium`.
 
@@ -106,6 +111,7 @@ cargo run --features cli --bin c2pa-iscc -- formats                             
 cargo run --features cli --bin c2pa-iscc -- tools install                              # ffmpeg, for video
 cargo run --features cli --bin c2pa-iscc -- tools install semantic                     # both semantic models (242 MB)
 cargo run --features cli --bin c2pa-iscc -- inspect ../photo.jpg --semantic            # with the Semantic-Code Image
+cargo run --features cli --bin c2pa-iscc -- inspect ../scan.pdf --ocr                  # a scan's text read by OCR
 cargo run --features cli --bin c2pa-iscc -- sign --help                                # every option
 ```
 
@@ -123,7 +129,10 @@ the app has switched on: the CLI never reads the app's settings, so its output d
 them. It needs its kind's model: with `--semantic` and the model missing, `inspect` and `sign`
 leave it out with a note to run `c2pa-iscc tools install semantic-image` (or `semantic-text`;
 `semantic` installs both), and `--units semantic` is an error with the same hint. `tools status`
-shows ffmpeg and each model (`semantic_image`, `semantic_text`) and where they are.
+shows ffmpeg and each model (`semantic_image`, `semantic_text`) and where they are. The scanned
+pages of a PDF are recognised only with `--ocr` (on `inspect` and `sign`), for the same reason;
+the JSON's `ocr` says how many pages are scans and whether OCR read them. Like a video's
+decoding, OCR prints no progress.
 
 ## Test
 
@@ -154,7 +163,16 @@ on the first run (see [Video](#video) and [Semantic-Codes](#semantic-codes)).
 
 `expected_pdf.py DIR` writes references for every PDF below a folder of your own, and
 `PDF_CORPUS_DIR=DIR cargo test --lib pdf_corpus -- --ignored` compares the app with them. Run it
-on a large set of PDFs before changing the pdfium build.
+on a large set of PDFs before changing the pdfium build; `ocr_routing_corpus` (same variable)
+lists the pages of that set OCR would read.
+
+Two tests hold model results to a reference within a budget, because rten's kernels differ by
+instruction set: the Semantic-Codes against iscc-sci and iscc-sct, and the OCR of
+`scan-demo.pdf` against `expected_ocr.json` (rewrite it with `OCR_WRITE_REFERENCE=1`). Their
+names contain `budget`; CI runs them in a step of their own with `--nocapture`, so the log shows
+how far the runner drifted (`cargo test --tests --all-features budget -- --nocapture`).
+`OCR_CORPUS_DIR=DIR cargo test --release --lib ocr_corpus -- --ignored --nocapture` measures OCR
+quality and speed on the page images and truth codes of a quality set (see [OCR](#ocr)).
 
 Sources and licences of the fixtures are listed in
 [`src-tauri/tests/fixtures/README.md`](src-tauri/tests/fixtures/README.md).
@@ -251,7 +269,7 @@ iscc-sdk bit for bit, apart from the deviations below.
 
 **The pdfium build is pinned, in lockstep with iscc-sdk.** pdfium's own updates change the
 extracted text (chromium/8076 differs from 7999 on right-to-left Arabic), so the app and
-iscc-sdk must use the same build. `PDFIUM_BUILD` in `scripts/fetch_pdfium.py` is the only place
+iscc-sdk must use the same build. `PDFIUM_BUILD` in `scripts/fetch_resources.py` is the only place
 that names it, with the SHA-256 of each archive; the reference script names the pypdfium2
 version that bundles the same build. The app uses the raw C API through pdfium-render's
 `pdfium_7881` bindings, the newest set that binds bblanchon's build (`pdfium_future` expects
@@ -269,6 +287,8 @@ app's minimum.
   A string that does not decode at all counts as missing. Strings starting with `FF FE` are read
   as UTF-16LE, as Tika and pdfium do, although the PDF specification has no such encoding.
 - A PDF lopdf cannot parse has no metadata (none of the 94 corpus files).
+- With OCR switched on (off by default), the scanned pages of a PDF get their text from OCR, where
+  iscc-sdk has none or only a stamp; see [OCR](#ocr).
 
 **Signing rewrites the PDF.** c2pa-rs (feature `pdf`, lopdf) loads the whole document and saves a
 new file with the manifest as an embedded file; incremental updates, linearisation and object
@@ -283,6 +303,85 @@ guards against:
   button and the CLI prints it as a `note:` (`Inspection.sign_warning`); the empty signature
   field of a blank form is not a signature. pdfium still counts the broken signature in the
   signed copy, so the copy warns again.
+
+## OCR
+
+**Off by default, for parity with iscc-sdk.** iscc-sdk hashes only a PDF's text layer, so a scan
+has no text to code (see the deviations above). With OCR switched on in Settings (or `--ocr` in
+the CLI), the app recognises the text of the pages that are scans and puts it in place of their
+native text, so a scanned document gets a Content-Code Text and a Semantic-Code Text that iscc-sdk
+does not compute. Every other page keeps iscc-sdk's text, and a PDF without scanned pages keeps
+iscc-sdk's codes whatever the switch says. Off, nothing is rendered for OCR and no model is loaded.
+The switch is `ocr` in `settings.json`, off when missing. Nothing in the manifest marks an OCR
+code; the unit list says how many pages OCR read.
+
+**Which pages are scans.** A page is a scan when its largest image covers at least 90% of its
+bounding box and its native text has fewer than 50 characters after `text_collapse`
+(`pdf::is_scanned`); images inside form XObjects count, 15 levels deep, as pypdfium2's
+`get_objects` finds them. The rule reads page objects only, so every PDF is routed at a glance.
+Measured on the 94-file PDF corpus (844 pages): it picks only the first page of an image-only
+Adobe Express design (`ocr_routing_corpus`). A scan with a stamped page number or Bates number
+(a few native characters) is still a scan, and its stamp is not counted twice; a scan with an
+invisible text layer (scanner software, Acrobat's "Recognize Text") keeps that layer, as in
+iscc-sdk. A scan that does not fill its page (below 90%) is not recognised.
+
+**Models, compiled in.** PP-OCRv6 tiny, PaddlePaddle's text detector (1.8 MB) and recogniser
+(4.5 MB, 6,904 characters: Latin-script languages with their diacritics, English and Chinese; no
+Japanese kana, Cyrillic, Greek, Arabic, Korean or Indic scripts), the official ONNX files from
+Hugging Face (`PaddlePaddle/PP-OCRv6_tiny_det_onnx` and `_rec_onnx`). `scripts/fetch_resources.py`
+pins them by commit and SHA-256 and writes them to `src-tauri/ocr/` (git-ignored) with the
+dictionary taken from the recogniser's `inference.yml`, one entry per line. `src-tauri/src/ocr.rs`
+compiles them into the app and the CLI with `include_bytes!` and runs them in rten, which the
+Semantic-Codes use too. Each document loads them (tens of milliseconds) and drops them after.
+
+**Pipeline** (`ocr.rs`). Pages render at 1984 px on the long side (about 180 dpi on A4 and
+Letter, `/Rotate` applied). The detector's probability map, thresholded, gives a contour per
+line, its minimum-area rectangle is scored and grown as PaddleOCR's DB post-processing does, with
+RapidOCR's settings (mean and deviation 0.5, thresholds 0.3 and 0.5, growth ratio 1.6), which read
+long documents a little better than the model's own `inference.yml`. The minimum-area rectangle is
+our own (exact integer hull, rotating calipers): rten-imageproc's collapses on long thin lines, which
+dropped whole lines of text. The reading order is a recursive XY-cut (column gutters first, then
+horizontal gaps, then lines by their centre) of the boxes turned back by the page's skew, the median
+angle of its long lines; the picture itself is never turned. Each line is sampled from the page into
+a 48 px high input, one line per run: padding lines to a common width, as batches do, changes the
+text. Greedy CTC decoding maps labels through the dictionary.
+
+**Quality.** Measured with `ocr_corpus` on 11 documents of the PDF corpus, three pages each,
+rendered clean (300 dpi) and as a rough office scan (200 dpi grey, 0.8 degrees, noise, blur, JPEG
+60), each scored as the similarity of its Content-Code Text with the one of its text layer: the
+five long documents (2,000 to 12,851 characters) reach 0.970 clean and 0.978 rough on average,
+0.957 at least; unrelated documents score about 0.5. Short texts move more bits per misread
+character, and maths becomes noise. `scan-demo.pdf` (the first page of `demo.pdf`, scanned)
+reads at least 0.90 against its born-digital text, `scan.pdf` exactly.
+
+**Speed.** Release build on a four-core Core i7-7700K: a dense page (two columns, about 85 lines)
+takes 1.9 s on all cores, 5.9 s on one. Detection runs on all of a page's threads, and its lines on
+as many one-thread workers, since rten spreads one line poorly over many threads. A 20-page scan
+takes 16 s, 0.8 s a page: up to four pages are recognised at once (`pdf::MAX_PAGE_WORKERS`),
+sharing out the cores. Detecting a page takes about 220 MB, so four at once peak at 1.2 GB; eight
+took 2 GB and were no faster. Rendering a page takes about 0.1 s. In dev builds a page takes
+several seconds, because the pixel loops of `ocr.rs` are not optimised there.
+
+**Drift.** rten's results are the same on any number of threads, but its kernels depend on the
+instruction set (AVX-512, AVX2, NEON or generic), so another CPU may now and then read a character
+differently. The OCR Content-Code may differ by up to 16 of 256 bits between machines (Titusz,
+2026-10-03); `scan_code_stays_within_the_budget_of_the_reference` holds `scan-demo.pdf` to
+`expected_ocr.json`, made on the machine it names, and CI runs it on Windows, Linux and macOS
+(NEON) with its drift report in the log.
+
+**Background pass and memo.** At a glance, a PDF with scanned pages and OCR on has its
+Content-Code (and Semantic-Code Text) pending (`AssetContent::Unrecognised`); the full pass
+recognises the pages, reporting `content` progress per page, then embeds the text. Stop, Resume
+and opening another file work as for a video. One thread renders the pages, holding pdfium's lock
+for one page at a time so another file can be read meanwhile, and one worker per logical core
+recognises them; a single page gets all cores (`parallel::ordered`, shared with the
+Semantic-Code Text). The text of each page is remembered by the hash of its pixels for the
+session: c2pa-rs rewrites a PDF when it signs it but keeps its images, so the source, the signed
+copy and that copy reopened render to the same pixels and each page is recognised once.
+
+**Switching it** with a scan open opens the file again, so its codes follow the switch at once.
+A scan signed with OCR on and checked with OCR off (or by iscc-sdk) has no Content-Code to compare
+with the embedded one: the soft-binding card says so and points to Settings.
 
 ## Video
 
@@ -415,7 +514,7 @@ on the arm64 macOS runner.
 
 Opening a file shows it at once and computes the slow units afterwards, in the background
 (`inspect::Depth`). The first inspection is a glance (`Depth::GLANCE`): everything but a video's
-frames and hashes and the Semantic-Code. A video at a glance takes two short ffmpeg runs, the
+frames and hashes, the Semantic-Code and, with OCR on, the text of a PDF's scanned pages. A video at a glance takes two short ffmpeg runs, the
 ffmetadata dump and the preview frame (`video::glance`), so its tags, Meta-Code, duration, frame
 size and preview show right away; its Content-Code, Data-Code and Instance-Code are pending
 (`Inspection.pending`), and so is the preservation verdict of a signed AVI, which needs the hash of
@@ -423,7 +522,8 @@ its source view. Its Content Credentials are read but not checked yet (validatio
 shown as "Checking…"): c2pa-rs reads and hashes the whole file to check the hard binding, so that
 check runs once, in the second pass. The second inspection (`Depth::FULL`) computes everything and
 replaces the first; it reports the progress of each slow unit by name (`content` while a video
-decodes, `semantic` while a text is embedded), shown in that unit's row. Data-Code and Instance-Code
+decodes or scanned pages are recognised, `semantic` while a text is embedded), shown in that unit's
+row. Data-Code and Instance-Code
 have no share to report and show a moving bar.
 
 The background pass stops when another file is opened or the file is closed; Stop in the unit list
@@ -432,8 +532,8 @@ signing needs the units, and a video signed afterwards is not decoded again (see
 [Video](#video)). The full pass repeats the cheap part of the glance (the manifest, the tags, an
 image's decoding, a document's text extraction). A signed copy is inspected in full, except a
 Semantic-Code that was left out at signing, which the background pass computes as for any file just
-opened. While both kinds of Semantic-Code are off (the default), images and documents have nothing
-pending and get no background pass. The CLI always inspects in full.
+opened. While both kinds of Semantic-Code and OCR are off (the default), images and documents have
+nothing pending and get no background pass. The CLI always inspects in full.
 
 ## Semantic-Codes
 
@@ -586,7 +686,8 @@ downloads it on request from iscc-binaries, a GPL-2.0-or-later build, and runs i
 program. The semantic models are not bundled either: the ISC21 image descriptor (MIT, exported
 through Towhee, Apache-2.0) as iscc-sci packages it (Apache-2.0), and
 `paraphrase-multilingual-MiniLM-L12-v2` with its tokenizer (Apache-2.0) as iscc-sct packages it
-(Apache-2.0); the `models-v1` release names the sources. Test fixtures and certificates from other projects keep
+(Apache-2.0); the `models-v1` release names the sources. The app and the CLI carry the PP-OCRv6
+tiny text detection and recognition models of PaddlePaddle (Apache-2.0), compiled in. Test fixtures and certificates from other projects keep
 their own licences, listed in [`src-tauri/tests/fixtures/README.md`](src-tauri/tests/fixtures/README.md)
 and [`src-tauri/resources/certs/README.md`](src-tauri/resources/certs/README.md). The fonts
 (Readex Pro, JetBrains Mono) are under the SIL Open Font License, with the licence texts in

@@ -70,7 +70,7 @@ symphonia = { version = "0.6.1", default-features = false, features = [
 rusty-chromaprint = "0.3.0"
 rusty-opus = "0.9.1"
 lofty = "0.25.4"
-# PDF text and rendering through the pdfium library bundled with the app (scripts/fetch_pdfium.py
+# PDF text and rendering through the pdfium library bundled with the app (scripts/fetch_resources.py
 # pins the build), bound at run time, so a missing library is an inspection error. Only the raw C
 # API is used. `pdfium_7881` is the newest API set that binds bblanchon's build (`pdfium_future`
 # expects XFA, V8 and Skia symbols); pdf.rs serialises all calls itself.
@@ -93,6 +93,9 @@ tempfile = "3"
 # semantic/text.rs sizes chunks itself), and 0.23 honours the truncation tokenizer.json declares.
 rten = "=0.27.0"
 rten-tensor = "=0.27.0"
+# OCR of scanned PDF pages (src/ocr.rs): contours and minimum-area rectangles of the text detector,
+# in lockstep with rten; the PP-OCRv6 models are compiled in (scripts/fetch_resources.py).
+rten-imageproc = "=0.27.0"
 tokenizers = { version = "=0.23.2", default-features = false, features = [
   "unstable_wasm",
 ] }
@@ -128,6 +131,8 @@ strip = true
 [profile.release.package.rten]
 opt-level = 3
 [profile.release.package.rten-base]
+opt-level = 3
+[profile.release.package.rten-imageproc]
 opt-level = 3
 [profile.release.package.rten-gemm]
 opt-level = 3

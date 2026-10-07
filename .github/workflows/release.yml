@@ -82,8 +82,9 @@ jobs:
           key: ${{ matrix.args }}
       - uses: astral-sh/setup-uv@v10.2.0
       - run: pnpm install --frozen-lockfile
-      # The pdfium library the installers bundle (tauri.conf.json bundle.resources).
-      - run: uv run scripts/fetch_pdfium.py --target ${{ matrix.pdfium }}
+      # The pdfium library the installers bundle (tauri.conf.json bundle.resources) and the OCR
+      # models compiled into the app.
+      - run: uv run scripts/fetch_resources.py --target ${{ matrix.pdfium }}
       - run: pnpm tauri build ${{ matrix.args }}
       - name: Attach the installers to the release
         shell: bash

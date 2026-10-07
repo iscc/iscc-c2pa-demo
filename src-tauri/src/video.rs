@@ -118,6 +118,7 @@ pub fn read(ffmpeg: &Path, path: &Path, progress: Progress) -> Result<Asset> {
         metadata: probe.metadata,
         sign_block: None,
         sign_warning: None,
+        ocr: None,
     })
 }
 
@@ -141,6 +142,7 @@ pub fn glance(ffmpeg: &Path, path: &Path) -> Result<Asset> {
         metadata: probe.metadata,
         sign_block: None,
         sign_warning: None,
+        ocr: None,
     })
 }
 
@@ -189,6 +191,7 @@ pub fn read_copy(ffmpeg: &Path, path: &Path, source: &Asset, progress: Progress)
         metadata: probe.metadata,
         sign_block: None,
         sign_warning: None,
+        ocr: None,
     })
 }
 

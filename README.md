@@ -125,8 +125,13 @@ so the download page shows you how to open them the first time.
   Image and the Semantic-Code Text on separately; switching one on downloads its model once
   (100 MB for images, 142 MB for text). Their codes may differ from iscc-sci's and iscc-sct's by
   a few bits.
-- **Large files show at once.** A video's frames, the hashes of a large file and the
-  Semantic-Code are computed after the file is shown, each with its own progress bar.
+- **Scanned PDF pages can be read by OCR, switched on in Settings.** A scan has no text layer, so
+  without OCR it gets no Content-Code Text, just as in iscc-sdk. With OCR on, the app recognises
+  the text of the pages that are scans (Latin script and Chinese) and leaves every other page as
+  it is; such codes come from this app alone. The models are built in: nothing is downloaded.
+- **Large files show at once.** A video's frames, the hashes of a large file, the
+  Semantic-Code and the text of scanned pages are computed after the file is shown, each with its
+  own progress bar.
 - **Your files stay on your computer.** Inspecting works offline, once ffmpeg and the semantic
   models are there. When you sign, only a hash of the signature goes to a timestamp service.
 
@@ -137,15 +142,15 @@ The core is Rust, and the app runs on [Tauri 2](https://tauri.app). It uses
 [iscc-lib](https://crates.io/crates/iscc-lib) for the ISCC units, pure Rust readers for every
 other format, the [pdfium](https://pdfium.googlesource.com/pdfium/) library bundled with the
 app for PDF, ffmpeg for video, and [rten](https://github.com/robertknight/rten) with compressed
-iscc-sci and iscc-sct models for the Semantic-Codes; the app downloads ffmpeg and the models on
-first use. You need no other tools and no Python. The tests check every ISCC unit against
+iscc-sci and iscc-sct models for the Semantic-Codes and with PP-OCRv6 for scanned pages; the app
+downloads ffmpeg and the semantic models on first use, the OCR models are compiled in. You need no other tools and no Python. The tests check every ISCC unit against
 iscc-core, the ISCC reference implementation, iscc-sdk, iscc-sci and iscc-sct.
 
 The same core builds as `c2pa-iscc`, a command-line tool that prints JSON.
 
 ```sh
 pnpm install
-uv run scripts/fetch_pdfium.py                                               # the pinned pdfium, once
+uv run scripts/fetch_resources.py                                            # pdfium and the OCR models, once
 pnpm tauri dev                                                               # the app
 cd src-tauri && cargo run --features cli --bin c2pa-iscc -- sign photo.jpg   # the CLI
 ```

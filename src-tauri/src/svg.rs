@@ -91,6 +91,7 @@ pub fn read(path: &Path, bytes: &[u8]) -> Result<Asset> {
         ),
         sign_block: None,
         sign_warning: None,
+        ocr: None,
     })
 }
 

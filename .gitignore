@@ -10,3 +10,4 @@ __pycache__/
 _site/
 src-tauri/pdfium/
 build/
+src-tauri/ocr/

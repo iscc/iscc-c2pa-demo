@@ -177,6 +177,9 @@
         <li><b>Semantic-Codes are experimental and off until you switch them on.</b> Settings switches the
           Semantic-Code Image and the Semantic-Code Text on separately; switching one on downloads its model once
           (100 MB for images, 142 MB for text). Neural networks compute them on your computer.</li>
+        <li><b>Scanned PDF pages can be read by OCR.</b> Switched on in Settings, OCR recognises the text of pages
+          that are scans (Latin script and Chinese), so a scanned document gets a Content-Code. Off, every PDF keeps
+          the codes iscc-sdk computes. The models are built in.</li>
         <li><b>Your files stay on your computer.</b> Inspecting works offline, once ffmpeg and the models are there.
           When you sign, only a hash of the signature goes to a timestamp service.</li>
       </ul>
@@ -189,8 +192,8 @@
         <p>The core is Rust: <a href="https://crates.io/crates/c2pa">c2pa-rs</a> for Content Credentials,
           <a href="https://crates.io/crates/iscc-lib">iscc-lib</a> for ISCC, pure Rust readers for most formats,
           the bundled pdfium library for PDF, ffmpeg for video, and <a href="https://github.com/robertknight/rten">rten</a>
-          with compressed iscc-sci and iscc-sct models for the Semantic-Codes; the app downloads ffmpeg and the models
-          on first use. The same
+          with compressed iscc-sci and iscc-sct models for the Semantic-Codes and PP-OCRv6 for scanned pages; the app
+          downloads ffmpeg and the semantic models on first use. The same
           core also builds as <code>c2pa-iscc</code>, a command-line tool that prints JSON, for scripts and agents.
           Both are Apache-2.0.</p>
         <p class="small">Needs Rust 1.96 or later, Node 22.12 or later, pnpm and uv. On Linux also the
@@ -199,7 +202,7 @@
       <pre><code>git clone https://github.com/iscc/iscc-c2pa-demo
 cd iscc-c2pa-demo
 pnpm install
-uv run scripts/fetch_pdfium.py
+uv run scripts/fetch_resources.py
 pnpm tauri dev
 
 # the command-line tool

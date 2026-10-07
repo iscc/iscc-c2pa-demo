@@ -1,4 +1,4 @@
-"""Build the generated PDF fixtures: metadata variants, a scan without text and an Arabic document.
+"""Build the generated PDF fixtures: metadata variants, scans without text and an Arabic document.
 
 Run: uv run --with iscc-sdk pdf_fixtures.py   (rtl.pdf needs LibreOffice; set SOFFICE when
 soffice is not on PATH)
@@ -7,20 +7,25 @@ The meta-*.pdf files are copies of c2pa-rs's basic-no-xmp.pdf with document info
 entries and XMP packets that pin iscc-sdk's (Tika's) metadata rules: ISCC keys before the
 standard ones, docinfo before XMP, blank values skipped, the first language alternative in
 document order, creators of an rdf:Seq joined, and the text-string encodings. scan.pdf is one
-page holding only a picture of text; rtl.pdf is rtl.fodt converted by LibreOffice. Run the
-hooks on new files and regenerate expected_pdf.json afterwards.
+page holding only a picture of text; rtl.pdf is rtl.fodt converted by LibreOffice (skipped
+without it). For OCR: scan-demo.pdf is page 1 of demo.pdf as a skewed grey scan, scan-stamped.pdf
+the same with a native page number over it, mixed.pdf a born-digital page followed by that scan,
+and scan-blank.pdf a noisy scan of an empty page. Run the hooks on new files and regenerate
+expected_pdf.json afterwards, and expected_ocr.json when scan-demo.pdf changed.
 """
 
 import os
+import random
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import iscc_sdk as idk
-from PIL import Image, ImageDraw
+import pypdfium2 as pdfium
+from PIL import Image, ImageDraw, ImageFilter
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ByteStringObject, DecodedStreamObject, NameObject
+from pypdf.generic import ArrayObject, ByteStringObject, DecodedStreamObject, DictionaryObject, NameObject
 
 HERE = Path(__file__).parent
 BASE = HERE / "basic-no-xmp.pdf"
@@ -117,6 +122,81 @@ def scan_fixture():
     )
 
 
+def demo_scan():
+    """Page 1 of demo.pdf as an office scan: 150 dpi grey, turned by 0.8 degrees, softened."""
+    page = pdfium.PdfDocument(HERE / "demo.pdf")[0]
+    img = page.render(scale=150 / 72, fill_color=(255, 255, 255, 255)).to_pil().convert("L")
+    img = img.rotate(0.8, resample=Image.BICUBIC, fillcolor=255)
+    return img.filter(ImageFilter.GaussianBlur(radius=0.5))
+
+
+def save_scan(img, name, quality=50):
+    """Save img as a one-page PDF of a JPEG at 150 dpi."""
+    img.save(HERE / name, resolution=150, quality=quality, title="Scanned page", creationDate=FIXED_DATE, modDate=FIXED_DATE)
+
+
+def helvetica(writer):
+    """A reference to the standard Helvetica font, which a PDF need not embed."""
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    return writer._add_object(font)
+
+
+def text_stream(writer, lines, x, y, size):
+    """A content stream showing lines in Helvetica (resource /F1) from (x, y) down."""
+    shown = " ".join(f"({line}) Tj 0 -{size * 1.4:g} Td" for line in lines)
+    stream = DecodedStreamObject()
+    stream.set_data(f"BT /F1 {size} Tf {x} {y} Td {shown} ET".encode())
+    return writer._add_object(stream)
+
+
+def stamp(name, text):
+    """Draw text in Helvetica at the bottom of the first page of name, as native text."""
+    writer = PdfWriter(clone_from=PdfReader(HERE / name))
+    page = writer.pages[0]
+    page[NameObject("/Resources")][NameObject("/Font")] = DictionaryObject({NameObject("/F1"): helvetica(writer)})
+    contents = dict.__getitem__(page, NameObject("/Contents"))
+    page[NameObject("/Contents")] = ArrayObject([contents, text_stream(writer, [text], 290, 20, 10)])
+    writer.write(HERE / name)
+
+
+BORN_DIGITAL = [
+    "This first page is born digital: its text is a text layer,",
+    "which pdfium extracts as it is. The second page is a scan.",
+]
+
+
+def born_digital_page(writer):
+    """Add a Letter page whose only content is BORN_DIGITAL in Helvetica."""
+    page = writer.add_blank_page(612, 792)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): helvetica(writer)})}
+    )
+    page[NameObject("/Contents")] = text_stream(writer, BORN_DIGITAL, 72, 700, 12)
+
+
+def ocr_fixtures():
+    """scan-demo.pdf, scan-stamped.pdf, mixed.pdf and scan-blank.pdf for OCR."""
+    scan = demo_scan()
+    save_scan(scan, "scan-demo.pdf")
+    save_scan(scan, "scan-stamped.pdf")
+    stamp("scan-stamped.pdf", "Page 1 of 9")
+    writer = PdfWriter()
+    born_digital_page(writer)
+    writer.add_page(PdfReader(HERE / "scan-demo.pdf").pages[0])
+    writer.add_metadata({"/Title": "Mixed document"})
+    writer.write(HERE / "mixed.pdf")
+    rng = random.Random(20261006)
+    blank = Image.new("L", (850, 1100), 255)
+    blank.putdata([255 - int(abs(rng.gauss(0, 4))) for _ in range(850 * 1100)])
+    blank.save(HERE / "scan-blank.pdf", resolution=100, quality=60, title="Blank scan", creationDate=FIXED_DATE, modDate=FIXED_DATE)
+
+
 def rtl_fixture():
     """rtl.pdf: rtl.fodt exported by LibreOffice."""
     soffice = os.environ.get("SOFFICE", "soffice")
@@ -126,7 +206,9 @@ def rtl_fixture():
 def main():
     meta_fixtures()
     scan_fixture()
-    rtl_fixture()
+    ocr_fixtures()
+    if os.environ.get("SOFFICE") or shutil.which("soffice"):
+        rtl_fixture()
     for path in sorted(HERE.glob("*.pdf")):
         print(f"{path.name:24} {path.stat().st_size:>7} bytes")
 

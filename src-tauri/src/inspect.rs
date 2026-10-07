@@ -17,6 +17,7 @@ use crate::context::{base_settings, ISCC_SOFT_BINDING_ALG};
 use crate::formats::{self, Format, Kind};
 use crate::iscc::{self, Content, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
+use crate::pdf::OcrPages;
 use crate::semantic::{SemanticKind, SemanticKinds};
 use crate::tools::{self, Cancelled};
 use crate::{audio, semantic, thumbnail};
@@ -56,8 +57,8 @@ pub struct Inspection {
     /// Meta, Semantic, Content, Data and Instance units of the whole file, as any ISCC tool
     /// computes them and as signing this file would embed them.
     pub iscc: Vec<IsccUnit>,
-    /// Units a later pass still computes ([`Depth::GLANCE`]): `semantic`, and a video's
-    /// `content`, `data` and `instance`.
+    /// Units a later pass still computes ([`Depth::GLANCE`]): `semantic`, a video's `content`,
+    /// `data` and `instance`, and a scan's `content` when OCR is on.
     pub pending: Vec<&'static str>,
     /// Title, description and ISCC metadata behind the Meta-Code, and where the title came from.
     pub meta_fields: MetaFields,
@@ -75,6 +76,9 @@ pub struct Inspection {
     /// copy carries unchanged, so it decodes to the same frames; false when it was computed from
     /// this file's own frames.
     pub content_from_source: bool,
+    /// How many pages of a PDF are scans and whether OCR read them, its Content-Code then coming
+    /// from their recognised text; `None` for a file without scanned pages.
+    pub ocr: Option<OcrPages>,
     /// Why this file cannot be signed (an encrypted PDF); `None` when it can.
     pub sign_block: Option<&'static str>,
     /// What signing does to this file that its owner may not want (breaking a PDF's digital
@@ -266,9 +270,13 @@ pub fn asset_format(path: &Path) -> Result<&'static Format> {
 /// What an inspection computes now, and what it leaves pending for a later pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Depth {
-    /// Decode and hash a video now; false shows it at a glance ([`asset::glance`]), its
-    /// Content-Code, Data-Code and Instance-Code pending.
-    pub decode_video: bool,
+    /// Decode and hash a video now and, with `ocr`, recognise the scanned pages of a PDF; false
+    /// shows the file at a glance ([`asset::glance`]), a video's Content-Code, Data-Code and
+    /// Instance-Code and a scan's Content-Code pending.
+    pub decode: bool,
+    /// Recognise the scanned pages of a PDF, whose Content-Code then comes from their text; off,
+    /// a PDF has iscc-sdk's Content-Code.
+    pub ocr: bool,
     pub semantic: Semantic,
     /// The kinds of Semantic-Code `semantic` applies to; a file of another kind is inspected as
     /// with [`Semantic::Never`].
@@ -289,19 +297,22 @@ pub enum Semantic {
 impl Depth {
     /// What shows at once: every unit but the slow ones, which stay pending.
     pub const GLANCE: Depth = Depth {
-        decode_video: false,
+        decode: false,
+        ocr: false,
         semantic: Semantic::Later,
         semantic_kinds: SemanticKinds::ALL,
     };
     /// Every unit.
     pub const FULL: Depth = Depth {
-        decode_video: true,
+        decode: true,
+        ocr: false,
         semantic: Semantic::Now,
         semantic_kinds: SemanticKinds::ALL,
     };
     /// Every unit but the Semantic-Code, which needs the models.
     pub const NO_SEMANTIC: Depth = Depth {
-        decode_video: true,
+        decode: true,
+        ocr: false,
         semantic: Semantic::Never,
         semantic_kinds: SemanticKinds::ALL,
     };
@@ -314,6 +325,11 @@ impl Depth {
         }
     }
 
+    /// This depth with OCR of scanned PDF pages switched `on` or off.
+    pub fn with_ocr(self, on: bool) -> Depth {
+        Depth { ocr: on, ..self }
+    }
+
     /// When the Semantic-Code of a file of `kind` is computed: never for a kind left out.
     fn semantic_for(self, kind: Kind) -> Semantic {
         if self.semantic_kinds.includes(kind) {
@@ -324,8 +340,9 @@ impl Depth {
     }
 }
 
-/// Hears how far a slow unit got: `content` while a video decodes, `semantic` while a text is
-/// embedded, with the share done (`None` when unknown); false stops the inspection.
+/// Hears how far a slow unit got: `content` while a video decodes or scanned pages are
+/// recognised, `semantic` while a text is embedded, with the share done (`None` when unknown);
+/// false stops the inspection.
 pub type Progress<'a> = &'a dyn Fn(&'static str, Option<f64>) -> bool;
 
 /// Inspect the file at `path`, every unit but the Semantic-Code. The units in `iscc` are those
@@ -337,10 +354,10 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
 /// [`inspect`] to `depth`, with `progress` following the slow units.
 pub fn inspect_with(path: &Path, depth: Depth, progress: Progress) -> Result<Inspection> {
     let format = asset_format(path)?;
-    let loaded = if depth.decode_video {
-        asset::load(path, format, &|f| progress("content", f))?
+    let loaded = if depth.decode {
+        asset::load(path, format, depth.ocr, &|f| progress("content", f))?
     } else {
-        asset::glance(path, format)?
+        asset::glance(path, format, depth.ocr)?
     };
     inspect_loaded(path, format, loaded, depth, progress)
 }
@@ -371,7 +388,7 @@ fn file_units(
         _ => unit_or_error(iscc::meta_unit(meta_input(meta_fields))),
     };
     let semantic = semantic_unit(kind, asset, semantic, progress)?;
-    let undecoded = matches!(asset.content, AssetContent::Undecoded(_));
+    let undecoded = asset.content_pending();
     let (content, content_error) = if undecoded {
         (None, None)
     } else {
@@ -425,17 +442,19 @@ impl Slow {
 }
 
 /// The Semantic-Code of an image or a text as `when` asks; audio and video have none. A
-/// document without text has none for the reason it has no Content-Code. Only a cancelled run
-/// fails the inspection.
+/// document without text has none for the reason it has no Content-Code; one whose text is still
+/// to come (a scan not recognised yet) leaves it for later too. Only a cancelled run fails the
+/// inspection.
 fn semantic_unit(kind: Kind, asset: &Asset, when: Semantic, progress: Progress) -> Result<Slow> {
     let Some(semantic_kind) = SemanticKind::of(kind).filter(|_| when != Semantic::Never) else {
         return Ok(Slow::Absent);
     };
     let content = asset.content();
-    if let Content::Unavailable(reason) = content {
+    let pending = asset.content_pending();
+    if let (Content::Unavailable(reason), false) = (content, pending) {
         return Ok(Slow::Failed(reason.to_owned()));
     }
-    if when == Semantic::Later {
+    if when == Semantic::Later || pending {
         return Ok(match tools::semantic_paths(semantic_kind) {
             Ok(_) => Slow::Pending,
             Err(e) => Slow::Failed(e.to_string()),
@@ -552,6 +571,7 @@ pub fn inspect_loaded(
         semantic_error: file.semantic_error,
         content_error: file.content_error,
         content_from_source: matches!(&asset.content, AssetContent::Video(v) if v.from_source),
+        ocr: asset.ocr,
         sign_block: asset.sign_block,
         sign_warning: asset.sign_warning,
         manifest,
@@ -1802,6 +1822,84 @@ mod tests {
     }
 
     #[test]
+    fn ocr_leaves_a_scan_pending_at_a_glance() {
+        crate::tools::tests::ensure_semantic();
+        let scan = fixture("scan-demo.pdf");
+        let scan = Path::new(&scan);
+        let pages = OcrPages {
+            scanned: 1,
+            pages: 1,
+            on: true,
+        };
+        let glanced = inspect_with(scan, Depth::GLANCE.with_ocr(true), &unstopped).unwrap();
+        assert_eq!(glanced.pending, ["semantic", "content"]);
+        assert_eq!(glanced.ocr, Some(pages));
+        assert_eq!(
+            (&glanced.content_error, &glanced.semantic_error),
+            (&None, &None)
+        );
+        assert_eq!(
+            unit_names(&glanced),
+            ["Meta-Code", "Data-Code", "Instance-Code"]
+        );
+
+        let reports = std::cell::RefCell::new(Vec::new());
+        let full = inspect_with(scan, Depth::FULL.with_ocr(true), &|unit, f| {
+            reports.borrow_mut().push((unit, f));
+            true
+        })
+        .unwrap();
+        assert!(full.pending.is_empty());
+        assert_eq!(full.ocr, Some(pages));
+        let units = [
+            "Meta-Code",
+            "Semantic-Code Text",
+            "Content-Code Text",
+            "Data-Code",
+            "Instance-Code",
+        ];
+        assert_eq!(unit_names(&full), units);
+        let reports = reports.into_inner();
+        assert_eq!(reports.first(), Some(&("content", Some(1.0))), "the page");
+        // Then its text is embedded, unless another test embedded it before (the memo).
+        let mut embedding = reports.iter().skip_while(|(unit, _)| *unit == "content");
+        assert!(
+            embedding.all(|(unit, _)| *unit == "semantic"),
+            "{reports:?}"
+        );
+        let stopped = inspect_with(scan, Depth::FULL.with_ocr(true), &|_, _| false);
+        assert!(stopped.unwrap_err().downcast_ref::<Cancelled>().is_some());
+    }
+
+    #[test]
+    fn a_scan_without_ocr_says_why_it_has_no_text() {
+        crate::tools::tests::ensure_semantic();
+        let scan = fixture("scan-demo.pdf");
+        let pages = OcrPages {
+            scanned: 1,
+            pages: 1,
+            on: false,
+        };
+        let off = inspect_with(Path::new(&scan), Depth::GLANCE, &unstopped).unwrap();
+        assert!(off.pending.is_empty(), "nothing left for later");
+        assert_eq!(off.ocr, Some(pages));
+        assert_eq!(off.content_error.as_deref(), Some(crate::pdf::NEEDS_OCR));
+        assert_eq!(off.semantic_error, off.content_error);
+        let born_digital = inspect_with(Path::new(&fixture("demo.pdf")), Depth::GLANCE, &unstopped);
+        assert_eq!(born_digital.unwrap().ocr, None);
+    }
+
+    #[test]
+    fn a_blank_scan_has_no_text_to_code() {
+        let blank = fixture("scan-blank.pdf");
+        let full = inspect_with(Path::new(&blank), Depth::FULL.with_ocr(true), &unstopped).unwrap();
+        let reason = Some(crate::pdf::NOTHING_RECOGNISED);
+        assert_eq!(full.content_error.as_deref(), reason);
+        assert_eq!(full.semantic_error.as_deref(), reason);
+        assert!(full.pending.is_empty());
+    }
+
+    #[test]
     fn a_signed_video_at_a_glance_leaves_its_verdict_open() {
         crate::tools::tests::ensure_ffmpeg();
         let dir = tempfile::tempdir().unwrap();
@@ -2024,6 +2122,7 @@ mod tests {
                 metadata: Default::default(),
                 sign_block: None,
                 sign_warning: None,
+                ocr: None,
             },
             bitstream: Some(iscc::bitstream_units(&bytes).unwrap()),
             size: bytes.len() as u64,

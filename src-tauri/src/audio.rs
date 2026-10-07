@@ -93,6 +93,7 @@ pub fn read(bytes: &[u8], format: &Format) -> Result<Asset> {
         metadata,
         sign_block: None,
         sign_warning: None,
+        ocr: None,
     })
 }
 

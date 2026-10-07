@@ -9,9 +9,7 @@
 //! order, so the code does not depend on the number of cores.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use rten::{Model, RunOptions, ThreadPool};
@@ -20,7 +18,7 @@ use rten_tensor::{NdTensor, Tensor};
 use text_splitter::{ChunkConfig, ChunkSizer, TextSplitter};
 use tokenizers::Tokenizer;
 
-use crate::tools::Cancelled;
+use crate::parallel;
 use crate::video::Progress;
 
 /// Most tokens per chunk, as iscc-sct's `max_tokens`.
@@ -40,12 +38,6 @@ pub(super) fn key(text: &str) -> [u8; 32] {
     hasher.update(text.as_bytes());
     *hasher.finalize().as_bytes()
 }
-
-/// A chunk for a worker: its index, the byte offset where it ends, its text.
-type Job<'t> = (usize, usize, &'t str);
-
-/// A chunk embedded by a worker: its index, the byte offset where it ends, its embedding.
-type Embedded = (usize, usize, Result<Vec<f32>>);
 
 /// The document embedding of `text` by the text model at `model` with the tokenizer at
 /// `tokenizer`: the mean of its chunk embeddings, L2-normalised, with one worker per logical
@@ -88,8 +80,9 @@ fn embedding_with(
 }
 
 /// The embeddings of the chunks `config` cuts from `text`, in text order: one thread splits and
-/// hands each chunk to `workers` threads as soon as it is cut, while the calling thread gathers
-/// the results and reports progress. A failed chunk or a stop ends the run.
+/// hands each chunk to `workers` single-threaded workers as soon as it is cut, while the calling
+/// thread gathers the results and reports the share of the text up to the furthest chunk
+/// embedded. A failed chunk or a stop ends the run.
 fn embed_chunks(
     model: &Model,
     encoder: &Tokenizer,
@@ -98,85 +91,20 @@ fn embed_chunks(
     workers: usize,
     progress: Progress,
 ) -> Result<Vec<Vec<f32>>> {
-    let stop = AtomicBool::new(false);
-    // A short queue: the splitter stays a few chunks ahead of the workers.
-    let (job_tx, job_rx) = mpsc::sync_channel(workers);
-    let job_rx = Mutex::new(job_rx);
-    let (done_tx, done_rx) = mpsc::channel();
-    std::thread::scope(|scope| {
-        scope.spawn(|| split(config, text, &stop, job_tx));
-        for _ in 0..workers.max(1) {
-            let done_tx = done_tx.clone();
-            scope.spawn(|| work(model, encoder, &job_rx, &stop, done_tx));
-        }
-        drop(done_tx);
-        gather(done_rx, text.len(), &stop, progress)
-    })
-}
-
-/// Cuts `text` into chunks and queues them for the workers, until the text ends or `stop` is
-/// set.
-fn split<'t>(
-    config: ChunkConfig<&TokenSizer>,
-    text: &'t str,
-    stop: &AtomicBool,
-    jobs: SyncSender<Job<'t>>,
-) {
     let splitter = TextSplitter::new(config);
-    for (index, (offset, chunk)) in splitter.chunk_indices(text).enumerate() {
-        if stop.load(Ordering::Relaxed) || jobs.send((index, offset + chunk.len(), chunk)).is_err()
-        {
-            break;
-        }
-    }
-}
-
-/// A worker: embeds queued chunks on a thread pool of its own with a single thread, until the
-/// queue closes. After a stop it only empties the queue, so the splitter never waits on a full
-/// one.
-fn work(
-    model: &Model,
-    encoder: &Tokenizer,
-    jobs: &Mutex<Receiver<Job<'_>>>,
-    stop: &AtomicBool,
-    done: Sender<Embedded>,
-) {
-    let threads = Arc::new(ThreadPool::with_num_threads(1));
-    loop {
-        let job = jobs.lock().unwrap_or_else(|e| e.into_inner()).recv();
-        let Ok((index, end, chunk)) = job else {
-            return;
-        };
-        if !stop.load(Ordering::Relaxed) {
-            // The receiver is gone only after a stop.
-            let _ = done.send((index, end, embed_chunk(model, encoder, chunk, &threads)));
-        }
-    }
-}
-
-/// The embeddings from the workers in text order; reports the share of the text up to the
-/// furthest chunk embedded. Sets `stop` when a chunk fails or `progress` returns false.
-fn gather(
-    done: Receiver<Embedded>,
-    length: usize,
-    stop: &AtomicBool,
-    progress: Progress,
-) -> Result<Vec<Vec<f32>>> {
-    let mut vectors: Vec<Option<Vec<f32>>> = Vec::new();
+    let chunks = splitter
+        .chunk_indices(text)
+        .map(|(offset, chunk)| (offset + chunk.len(), chunk));
+    let embed = |(end, chunk): (usize, &str), threads: &Arc<ThreadPool>| {
+        Ok((end, embed_chunk(model, encoder, chunk, threads)?))
+    };
     let mut reached = 0;
-    for (index, end, vector) in done {
-        let vector = vector.inspect_err(|_| stop.store(true, Ordering::Relaxed))?;
-        if vectors.len() <= index {
-            vectors.resize(index + 1, None);
-        }
-        vectors[index] = Some(vector);
-        reached = reached.max(end);
-        if !progress(Some(reached as f64 / length as f64)) {
-            stop.store(true, Ordering::Relaxed);
-            return Err(Cancelled.into());
-        }
-    }
-    Ok(vectors.into_iter().flatten().collect())
+    let mut done = |(end, _): &(usize, Vec<f32>)| {
+        reached = reached.max(*end);
+        progress(Some(reached as f64 / text.len() as f64))
+    };
+    let embedded = parallel::ordered(workers, 1, chunks, embed, &mut done)?;
+    Ok(embedded.into_iter().map(|(_, vector)| vector).collect())
 }
 
 /// The embedding of one chunk: tokenized as `tokenizer.json` declares (special tokens added,

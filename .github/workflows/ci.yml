@@ -48,8 +48,9 @@ jobs:
       - run: pnpm build
       - name: Pre-commit hooks (formatting, file hygiene)
         run: uv run prek run --all-files --stage pre-commit --show-diff-on-failure
-      # tauri.conf.json bundles src-tauri/pdfium/*, and the build script fails when it is empty.
-      - run: uv run scripts/fetch_pdfium.py
+      # tauri.conf.json bundles src-tauri/pdfium/*, and the build script fails when it is empty;
+      # ocr.rs compiles in the models of src-tauri/ocr/.
+      - run: uv run scripts/fetch_resources.py
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 
   test:
@@ -78,7 +79,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: uv run scripts/fetch_pdfium.py
+      - run: uv run scripts/fetch_resources.py
       # The video and Semantic-Code tests run the ffmpeg and the models the app installs on first
       # use (tools.rs) and install them when they are missing; keep them between runs instead of
       # downloading 26 to 73 MB plus 242 MB each time. The key names both versions.
@@ -93,4 +94,7 @@ jobs:
       - name: Install Rosetta 2
         if: runner.os == 'macOS' && runner.arch == 'ARM64'
         run: softwareupdate --install-rosetta --agree-to-license
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features -- --skip budget
+      # The tests that hold model results to a reference within a budget (Semantic-Codes, OCR)
+      # report how far this CPU's instruction set drifts; cargo hides the output of passing tests.
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features budget -- --nocapture

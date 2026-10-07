@@ -44,10 +44,11 @@ repos:
         stages: [pre-commit]
 
       # Pre-push hooks (thorough quality gates)
-      # tauri.conf.json bundles src-tauri/pdfium/*, so every cargo run needs the library there.
-      - id: fetch-pdfium
-        name: Fetch the pinned pdfium library
-        entry: uv run scripts/fetch_pdfium.py
+      # tauri.conf.json bundles src-tauri/pdfium/*, so every cargo run needs the library there,
+      # and ocr.rs compiles in the models of src-tauri/ocr/.
+      - id: fetch-resources
+        name: Fetch the pinned pdfium library and OCR models
+        entry: uv run scripts/fetch_resources.py
         language: system
         always_run: true
         stages: [pre-push]

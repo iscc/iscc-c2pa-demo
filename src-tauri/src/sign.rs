@@ -20,6 +20,7 @@ use crate::inspect::{self, Depth, Inspection, Semantic, TRAINING_MINING_LABEL};
 use crate::iscc::{self, IsccUnit, MetaInput, UnitSelection};
 use crate::metadata;
 use crate::semantic::{self, SemanticKind, SemanticKinds};
+use crate::settings::Settings;
 use crate::thumbnail::{self, THUMBNAIL_EDGE, THUMBNAIL_MIME, THUMBNAIL_QUALITY};
 use crate::timestamp::{BestEffortTsa, FailureSlot};
 use crate::tools::{self, Cancelled};
@@ -110,9 +111,13 @@ pub enum Stage {
     Output,
 }
 
-/// Sign `request.source` into `request.output`, with either kind of Semantic-Code.
+/// Sign `request.source` into `request.output`, with either kind of Semantic-Code and OCR off.
 pub fn sign(request: &SignRequest) -> Result<SignResult> {
-    sign_with(request, SemanticKinds::ALL, &|_, _| true)
+    let settings = Settings {
+        semantic: SemanticKinds::ALL,
+        ocr: false,
+    };
+    sign_with(request, settings, &|_, _| true)
 }
 
 /// [`sign`], with `progress` following the slow units of the source and of its signed copy: the
@@ -122,13 +127,16 @@ pub fn sign(request: &SignRequest) -> Result<SignResult> {
 /// of `semantic`.
 /// Between the two, `progress` hears [`Stage::Write`] for every format: stopped there or before,
 /// the run leaves no output; after it the output is written and stays.
-/// `kinds` are the kinds of Semantic-Code this run may compute: a request for one of another
-/// kind fails before anything is computed, and the signed copy's inspection leaves them out.
+/// `settings` say which kinds of Semantic-Code this run may compute (a request for one of another
+/// kind fails before anything is computed, and the signed copy's inspection leaves them out) and
+/// whether OCR recognises the scanned pages of a PDF, in the source and in the signed copy; a
+/// page recognised before comes from the memo of `ocr`.
 pub fn sign_with(
     request: &SignRequest,
-    kinds: SemanticKinds,
+    settings: Settings,
     progress: &dyn Fn(Stage, Option<f64>) -> bool,
 ) -> Result<SignResult> {
+    let kinds = settings.semantic;
     let source = Path::new(&request.source);
     let output = Path::new(&request.output);
     if same_file(source, output) {
@@ -145,7 +153,9 @@ pub fn sign_with(
     {
         bail!("{}", semantic_off(kind));
     }
-    let loaded = asset::load(source, format, &|f| progress(Stage::Source, f))?;
+    let loaded = asset::load(source, format, settings.ocr, &|f| {
+        progress(Stage::Source, f)
+    })?;
     let asset = &loaded.asset;
     if let Some(block) = asset.sign_block {
         bail!("{block}");
@@ -218,12 +228,14 @@ pub fn sign_with(
     std::fs::rename(&tmp, output)
         .with_context(|| format!("cannot replace {}", output.display()))?;
     let copy_format = inspect::asset_format(output)?;
-    let copy =
-        asset::load_signed_copy(output, copy_format, asset, &|f| progress(Stage::Output, f))?;
+    let copy = asset::load_signed_copy(output, copy_format, asset, settings.ocr, &|f| {
+        progress(Stage::Output, f)
+    })?;
     // A Semantic-Code left out at signing is left to a later pass, as for any file just opened,
     // unless its kind is off.
     let depth = Depth {
-        decode_video: true,
+        decode: true,
+        ocr: settings.ocr,
         semantic: if selection.semantic {
             Semantic::Now
         } else {
@@ -399,6 +411,12 @@ mod tests {
     use crate::inspect::Preservation;
     use c2pa::ValidationState;
 
+    /// Both kinds of Semantic-Code, OCR off.
+    const SEMANTIC: Settings = Settings {
+        semantic: SemanticKinds::ALL,
+        ocr: false,
+    };
+
     fn fixture(name: &str) -> String {
         format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
     }
@@ -515,7 +533,7 @@ mod tests {
         crate::tools::tests::ensure_semantic();
         let dir = tempfile::tempdir().unwrap();
         let req = request("no_manifest.jpg", &dir.path().join("off-signed.jpg"));
-        let result = sign_with(&req, SemanticKinds::NONE, &|_, _| true).unwrap();
+        let result = sign_with(&req, Settings::NONE, &|_, _| true).unwrap();
         assert!(result.inspection.pending.is_empty());
         assert_eq!(result.inspection.semantic_error, None);
         assert_eq!(result.inspection.iscc.len(), 4);
@@ -529,7 +547,10 @@ mod tests {
         req.units = ["meta", "semantic", "text", "data", "instance"]
             .map(String::from)
             .to_vec();
-        let image_only = SemanticKinds::NONE.with(SemanticKind::Image, true);
+        let image_only = Settings {
+            semantic: SemanticKinds::NONE.with(SemanticKind::Image, true),
+            ..Settings::NONE
+        };
         let error = sign_with(&req, image_only, &|_, _| panic!("nothing computed")).unwrap_err();
         let message = error.to_string();
         assert!(
@@ -1126,7 +1147,7 @@ mod tests {
         let scan = inspect::inspect(Path::new(&fixture("scan.pdf"))).unwrap();
         assert_eq!(
             scan.content_error.as_deref(),
-            Some("no text layer found; a scanned PDF has only pictures of text")
+            Some("no text layer found; its scanned pages need OCR, which is off")
         );
         assert!(scan.iscc.iter().all(|u| u.unit != "content"));
         assert!(scan.preview.starts_with("data:image/jpeg;base64,"));
@@ -1143,6 +1164,56 @@ mod tests {
         assert_eq!(
             inspection.content_error.as_deref(),
             Some("no text found in this document")
+        );
+    }
+
+    #[test]
+    fn a_scan_signed_with_ocr_embeds_and_matches_its_recognised_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("scan-demo-signed.pdf");
+        let mut req = request("scan-demo.pdf", &output);
+        req.units = ["meta", "text", "data", "instance"]
+            .map(String::from)
+            .to_vec();
+        let off = sign_with(&req, Settings::NONE, &|_, _| true).unwrap_err();
+        assert_eq!(
+            off.to_string(),
+            crate::pdf::NEEDS_OCR,
+            "no text without OCR"
+        );
+        let ocr = Settings {
+            ocr: true,
+            ..Settings::NONE
+        };
+        let stages = std::cell::RefCell::new(Vec::new());
+        let result = sign_with(&req, ocr, &|stage, f| {
+            stages.borrow_mut().push((stage, f));
+            true
+        })
+        .unwrap();
+        let stages = stages.into_inner();
+        assert!(stages.contains(&(Stage::Source, Some(1.0))), "{stages:?}");
+        assert!(stages.contains(&(Stage::Output, Some(1.0))), "{stages:?}");
+        let pages = crate::pdf::OcrPages {
+            scanned: 1,
+            pages: 1,
+            on: true,
+        };
+        assert_eq!(result.inspection.ocr, Some(pages));
+        let manifest = result.inspection.manifest.unwrap();
+        let text = manifest.soft_bindings[0]
+            .matches
+            .iter()
+            .find(|m| m.embedded.unit == "content")
+            .unwrap();
+        assert_eq!(text.similarity, Some(1.0));
+        // c2pa-rs rewrites the PDF but keeps its image, so the copy's page renders to the same
+        // pixels and comes from the memo of `ocr`: each page is recognised once.
+        let source = std::fs::read(fixture("scan-demo.pdf")).unwrap();
+        let copy = std::fs::read(&output).unwrap();
+        assert_eq!(
+            crate::pdf::scanned_pictures(&source),
+            crate::pdf::scanned_pictures(&copy)
         );
     }
 
@@ -1180,7 +1251,7 @@ mod tests {
             let mut req = request(file, &output);
             req.units = vec!["video".into(), "data".into(), "instance".into()];
             let copy_reports = std::cell::Cell::new(0);
-            let result = sign_with(&req, SemanticKinds::ALL, &|stage, _| {
+            let result = sign_with(&req, SEMANTIC, &|stage, _| {
                 if stage == Stage::Output {
                     copy_reports.set(copy_reports.get() + 1);
                 }
@@ -1209,7 +1280,7 @@ mod tests {
         req.source = source.to_string_lossy().into_owned();
         req.units = vec!["video".into(), "data".into(), "instance".into()];
         // Analysed as demo.mp4, written from rotated.mp4.
-        let result = sign_with(&req, SemanticKinds::ALL, &|stage, _| {
+        let result = sign_with(&req, SEMANTIC, &|stage, _| {
             if stage == Stage::Write {
                 std::fs::copy(fixture("rotated.mp4"), &source).unwrap();
             }
@@ -1243,7 +1314,7 @@ mod tests {
         let stages = std::cell::RefCell::new(Vec::new());
         let error = sign_with(
             &request("no_manifest.jpg", &output),
-            SemanticKinds::ALL,
+            SEMANTIC,
             &|stage, _| {
                 stages.borrow_mut().push(stage);
                 stage != Stage::Write

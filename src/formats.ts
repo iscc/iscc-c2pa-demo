@@ -54,7 +54,7 @@ export const CONTENT_FROM: Record<AssetKind, string> = { image: "pixels", text: 
 
 /** What the Content-Code of the file is computed from. */
 export function contentSource(inspection: Inspection): string {
-  if (inspection.kind === "text") return "text";
+  if (inspection.kind === "text") return inspection.ocr?.on ? "text, scanned pages recognised by OCR" : "text";
   if (inspection.kind === "audio") return "decoded audio";
   if (inspection.kind === "video") return "video frames";
   return inspection.mime === "image/svg+xml" ? "rendered image" : "pixels";
