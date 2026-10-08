@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-10-08
 
 - PDFs are signed by appending the Content Credentials as a new revision, so the original stays
   byte for byte at the start of the signed file. A signed or re-signed PDF shows "Source
