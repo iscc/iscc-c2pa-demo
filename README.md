@@ -125,6 +125,12 @@ so the download page shows you how to open them the first time.
   Image and the Semantic-Code Text on separately; switching one on downloads its model once
   (100 MB for images, 142 MB for text). Their codes may differ from iscc-sci's and iscc-sct's by
   a few bits.
+- **A signed PDF keeps the original inside.** c2pa-rs rewrites the whole PDF to embed a
+  manifest; this app appends the Content Credentials as a new revision instead, so the original
+  stays byte for byte at the start of the signed file and a digital signature already in it stays
+  valid for what it signed. A title or description given at signing is written into the PDF
+  too, so the Meta-Code describes the file itself. Certified PDFs cannot be signed, as the C2PA
+  specification asks.
 - **Scanned PDF pages can be read by OCR, switched on in Settings.** A scan has no text layer, so
   without OCR it gets no Content-Code Text, just as in iscc-sdk. With OCR on, the app recognises
   the text of the pages that are scans (Latin script and Chinese) and leaves every other page as

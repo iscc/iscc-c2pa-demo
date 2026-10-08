@@ -177,6 +177,10 @@
         <li><b>Semantic-Codes are experimental and off until you switch them on.</b> Settings switches the
           Semantic-Code Image and the Semantic-Code Text on separately; switching one on downloads its model once
           (100 MB for images, 142 MB for text). Neural networks compute them on your computer.</li>
+        <li><b>A signed PDF keeps the original inside.</b> The app appends the Content Credentials as a new
+          revision, so the original stays byte for byte at the start of the signed file and its own digital
+          signature stays valid. A title or description given at signing is written into the PDF too. Certified PDFs
+          cannot be signed.</li>
         <li><b>Scanned PDF pages can be read by OCR.</b> Switched on in Settings, OCR recognises the text of pages
           that are scans (Latin script and Chinese), so a scanned document gets a Content-Code. Off, every PDF keeps
           the codes iscc-sdk computes. The models are built in.</li>
