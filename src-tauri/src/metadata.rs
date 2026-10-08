@@ -20,7 +20,7 @@ use std::path::Path;
 use image::ImageDecoder;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::{Namespace, ResolveResult};
-use quick_xml::{NsReader, XmlVersion};
+use quick_xml::{NsReader, Writer, XmlVersion};
 use serde::Serialize;
 
 pub const NS_RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
@@ -376,6 +376,52 @@ pub fn document_xmp(xmp: &[u8]) -> DocumentXmp {
         description: filled(first_alt("description")),
         creator: filled(creator),
     }
+}
+
+/// `xmp` without every element named `local` in the namespace `ns` (a property such as
+/// `dc:description`, with everything inside it); every other byte of the packet stays as it is.
+/// `None` when the packet has no such element or does not parse.
+pub fn xmp_without(xmp: &[u8], ns: &str, local: &str) -> Option<Vec<u8>> {
+    let text = std::str::from_utf8(xmp).ok()?;
+    let mut reader = NsReader::from_str(text);
+    let mut writer = Writer::new(Vec::with_capacity(xmp.len()));
+    let mut depth = 0usize;
+    let mut skipped = None::<usize>;
+    let mut removed = false;
+    loop {
+        let (resolved, event) = reader.read_resolved_event().ok()?;
+        let named = match &event {
+            Event::Start(e) | Event::Empty(e) => {
+                bound(&resolved).as_deref() == Some(ns) && e.local_name().as_ref() == local
+            }
+            _ => false,
+        };
+        match &event {
+            Event::Eof => break,
+            Event::Start(_) => {
+                if named && skipped.is_none() {
+                    skipped = Some(depth);
+                }
+                depth += 1;
+            }
+            Event::End(_) => {
+                depth = depth.checked_sub(1)?;
+                if skipped == Some(depth) {
+                    (skipped, removed) = (None, true);
+                    continue;
+                }
+            }
+            Event::Empty(_) if named && skipped.is_none() => {
+                removed = true;
+                continue;
+            }
+            _ => {}
+        }
+        if skipped.is_none() {
+            writer.write_event(event).ok()?;
+        }
+    }
+    removed.then(|| writer.into_inner())
 }
 
 /// Top-level properties of an XMP packet. Simple properties may be attributes of
@@ -828,6 +874,29 @@ pub mod tests {
         })
         .unwrap()
         .iscc
+    }
+
+    #[test]
+    fn xmp_without_drops_one_property_and_keeps_every_other_byte() {
+        let description = r#"<dc:description><rdf:Alt><rdf:li xml:lang="x-default">Gone</rdf:li></rdf:Alt></dc:description>"#;
+        let packet = format!(
+            r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:dc="{NS_DC}"><dc:title><rdf:Alt><rdf:li xml:lang="x-default">A &amp; B</rdf:li></rdf:Alt></dc:title>{description}<dc:creator><rdf:Seq><rdf:li>Me</rdf:li></rdf:Seq></dc:creator></rdf:Description>
+</rdf:RDF></x:xmpmeta>
+<?xpacket end="w"?>"#
+        );
+        let stripped = xmp_without(packet.as_bytes(), NS_DC, "description").unwrap();
+        assert_eq!(
+            String::from_utf8(stripped.clone()).unwrap(),
+            packet.replace(description, "")
+        );
+        let read = document_xmp(&stripped);
+        assert_eq!(read.title.as_deref(), Some("A & B"));
+        assert_eq!(read.description, None);
+        assert_eq!(read.creator.as_deref(), Some("Me"));
+        assert_eq!(xmp_without(&stripped, NS_DC, "description"), None);
+        assert_eq!(xmp_without(b"<a><b></a>", NS_DC, "description"), None);
     }
 
     #[test]

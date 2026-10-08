@@ -20,7 +20,7 @@ use crate::metadata::{self, ManifestMeta, MetaFields};
 use crate::pdf::OcrPages;
 use crate::semantic::{SemanticKind, SemanticKinds};
 use crate::tools::{self, Cancelled};
-use crate::{audio, semantic, thumbnail};
+use crate::{audio, pdf_update, semantic, thumbnail};
 
 /// JPEG quality of the preview image.
 const PREVIEW_QUALITY: u8 = 82;
@@ -513,12 +513,20 @@ pub fn inspect_loaded(
         .as_ref()
         .filter(|_| hashed)
         .and_then(source_view_ranges)
+        .map(|ranges| pdf_view_ranges(path, format, ranges))
         .map(|ranges| {
             if ranges.is_empty() {
                 // Nothing to cut: the source view is the file itself.
                 Ok(SourceView::of_file(path, format, units))
             } else {
-                SourceView::new(path, format, ranges, units, semantic)
+                SourceView::new(
+                    path,
+                    format,
+                    ranges,
+                    units,
+                    semantic,
+                    depth.decode && depth.ocr,
+                )
             }
         })
         .transpose()?;
@@ -633,6 +641,26 @@ fn source_view_ranges(reader: &Reader) -> Option<Vec<(u64, u64)>> {
         data_hash_exclusions(reader)
     } else {
         Some(Vec::new())
+    }
+}
+
+/// The ranges cut from a file for its source view, given its exclusion ranges `ranges`: for a
+/// PDF whose manifest store came in an update section that adds nothing else, everything from
+/// that update section on, so that the source view is the PDF before it (IEP-0020); else `ranges`.
+fn pdf_view_ranges(path: &Path, format: &Format, ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    let [(start, _)] = ranges[..] else {
+        return ranges;
+    };
+    if format.mime != formats::PDF {
+        return ranges;
+    }
+    let end = usize::try_from(start)
+        .ok()
+        .zip(std::fs::read(path).ok())
+        .and_then(|(start, bytes)| pdf_update::source_end(&bytes, start));
+    match end {
+        Some(end) => vec![(end as u64, u64::MAX - end as u64)],
+        None => ranges,
     }
 }
 
@@ -766,6 +794,9 @@ struct SourceView<'a> {
     units: Vec<IsccUnit>,
     /// Whether the Semantic-Code is computed now, as for the file.
     semantic: Semantic,
+    /// Whether the scanned pages of a PDF are recognised now, as for the file: a signed scan is
+    /// source-preserving, and its view's text then comes from OCR too.
+    ocr: bool,
     /// Content-Code and Semantic-Code of the decoded view.
     decoded: OnceCell<Vec<IsccUnit>>,
 }
@@ -779,6 +810,7 @@ impl<'a> SourceView<'a> {
         exclusions: Vec<(u64, u64)>,
         file_units: &[IsccUnit],
         semantic: Semantic,
+        ocr: bool,
     ) -> Result<Self> {
         let meta = file_units.iter().find(|u| u.unit == "meta").cloned();
         let (bitstream, _) = iscc::stream_units(ViewReader::open(path, &exclusions)?)?;
@@ -788,6 +820,7 @@ impl<'a> SourceView<'a> {
             exclusions,
             units: meta.into_iter().chain(bitstream).collect(),
             semantic,
+            ocr,
             decoded: OnceCell::new(),
         })
     }
@@ -805,6 +838,7 @@ impl<'a> SourceView<'a> {
             exclusions: Vec::new(),
             units,
             semantic: Semantic::Never,
+            ocr: false,
             decoded: OnceCell::from(decoded),
         }
     }
@@ -816,7 +850,7 @@ impl<'a> SourceView<'a> {
             .and_then(|mut view| Ok(view.read_to_end(&mut bytes)?));
         let Some(asset) = read
             .ok()
-            .and_then(|_| asset::read(self.path, &bytes, self.format).ok())
+            .and_then(|_| asset::read(self.path, &bytes, self.format, self.ocr).ok())
         else {
             return Vec::new();
         };

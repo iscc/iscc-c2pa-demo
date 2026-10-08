@@ -16,6 +16,7 @@ pub mod office;
 pub mod opus;
 pub mod parallel;
 pub mod pdf;
+pub mod pdf_update;
 pub mod plain;
 pub mod resample;
 pub mod semantic;

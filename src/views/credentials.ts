@@ -338,9 +338,14 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
     html.push(esc("Data-Code tolerates small byte changes; Instance-Code is exact and either matches or not."));
   }
   if (has("meta")) {
+    // This app writes a PDF's title and description into the signed copy, so editing them at signing changes no match.
+    const edited =
+      inspection.mime === "application/pdf"
+        ? "This app writes a title and description given at signing into the PDF itself."
+        : "Changing an embedded title at signing therefore lowers the match.";
     html.push(
       esc(
-        "Meta-Code is recomputed from this file's title and description: the file's own metadata first, then the title and description stored in the Content Credentials at signing, then the manifest title, then the file name. Changing an embedded title at signing therefore lowers the match.",
+        `Meta-Code is recomputed from this file's title and description: the file's own metadata first, then the title and description stored in the Content Credentials at signing, then the manifest title, then the file name. ${edited}`,
       ),
     );
   }

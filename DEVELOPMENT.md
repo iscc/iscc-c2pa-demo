@@ -36,7 +36,8 @@ The Sign tab writes a signed copy with:
   defined by [IEP-0020](https://ieps.iscc.codes/iep-0020/) (one or more 256-bit ISCC-UNITs,
   header and body concatenated);
 - a `cawg.metadata` assertion with the title and description behind the Meta-Code, so a signed
-  copy recomputes the Meta-Code it was signed with;
+  copy recomputes the Meta-Code it was signed with; a PDF also gets them written into its own
+  metadata when they are not its own, with a `c2pa.edited.metadata` action;
 - an optional `cawg.training-mining` assertion (CAWG Training and Data Mining Assertion 1.1);
 - a `c2pa.opened` action with the source as parent ingredient, which carries the digital source
   type if one was chosen or, when the source already has Content Credentials, the existing
@@ -203,6 +204,19 @@ The app follows [IEP-0020](https://ieps.iscc.codes/iep-0020/) in full.
 including any Content Credentials it already carries. These are the units the left panel shows for
 that file, and the ones iscc-sdk computes for it. No ISCC code path knows anything about C2PA.
 
+One exception, so that the units describe the file as it is without its Content Credentials: a PDF
+whose title, description or ISCC metadata at signing are not its own (or that has no title of its
+own) gets them written into a revision of its own first, with iscc-sdk's keys (`/Title` and
+`/iscc_name`, `/Subject` and `/iscc_description`, `/iscc_meta`; `pdf_update::with_metadata`). A
+description cleared at signing is also taken out of the XMP packet (`dc:description`, the rest of
+the packet byte for byte), because readers fall back to it once the document information has
+none; the title and the ISCC metadata need no such step, as the document information wins. That
+edited copy is then the source: every unit is computed from it, its Meta-Code from the fields read
+back from it, and the manifest records the original as the `parentOf` ingredient with a
+`c2pa.edited.metadata` action after `c2pa.opened`. A copy stripped of its Content Credentials
+therefore computes every embedded unit, the Meta-Code included. Other formats still take the title
+and description of the Sign tab into `cawg.metadata` only, until they get a metadata writer.
+
 **Source preservation.** A signed file is *source-preserving* when its *source view* (the file
 without the byte ranges its C2PA data hash excludes) is byte for byte the file that was signed. The
 embedded Instance-Code proves it: the app computes the Instance-Code of the source view and
@@ -210,11 +224,40 @@ compares. The soft binding card shows one of three results:
 
 | Result | When | Formats signed here (c2pa-rs 0.91) |
 |---|---|---|
-| Source preserved | Instance-Codes equal | JPEG, PNG, GIF, TXT, Markdown |
-| Source not preserved | embedding changed other bytes, or the source already had Content Credentials | WebP, WAV and AVI (RIFF size field), TIFF (new image directory), SVG (namespace declaration), MP3 (ID3 tag rewritten), FLAC (ID3 tag in front), PDF (rewritten as a whole); any re-signed file |
+| Source preserved | Instance-Codes equal | JPEG, PNG, GIF, TXT, Markdown, PDF (appended update section), a re-signed PDF |
+| Source not preserved | embedding changed other bytes, or the source already had Content Credentials | WebP, WAV and AVI (RIFF size field), TIFF (new image directory), SVG (namespace declaration), MP3 (ID3 tag rewritten), FLAC (ID3 tag in front); any other re-signed file; a PDF signed by c2pa-rs itself (rewritten as a whole) |
 | Not verifiable | no data hash, no Instance-Code, a signature that does not validate or no longer covers the manifest as it is, or the file changed after signing | EPUB, DOCX, PPTX, XLSX, ODT, ODS, ODP (collection hash), M4A, MP4, MOV, M4V (BMFF hash) |
 
 `source_preservation_per_format` in `src-tauri/src/sign.rs` pins the table.
+
+**PDF source view.** The app signs a PDF itself (`src-tauri/src/pdf_update.rs`) instead of letting
+c2pa-rs rewrite it: it appends the manifest store as an incremental update (ISO 32000-1, 7.5.6),
+an unfiltered embedded file listed in the catalog's `/AF` and `/Names /EmbeddedFiles`, through
+c2pa-rs's embeddable API (`Builder::placeholder`, `set_data_hash_exclusions`,
+`update_hash_from_stream`, `sign_embeddable`, then the signed store patched into its place). Every
+update section starts with a single line feed, whatever the source ends with. The exclusion ranges
+of such a file still leave the appended catalog and cross-reference section in the view, so the
+app takes a PDF source view in their place, drafted for IEP-0020: the update section begins with
+the first object after the last `%%EOF` before the manifest store; when the byte before it is a
+line feed and the update section adds nothing but the manifest store (`only_adds_manifest`), the
+source view is every byte before that line feed. The app reads the update section's own
+cross-reference sections for that, because lopdf's merged table hides free entries and resolves
+objects by their headers: every entry must point into the update section at an object header
+with its number, the catalog may change only in `/AF` and `/Names /EmbeddedFiles`, where every
+entry but earlier manifest stores stays listed, the arrays and dictionaries on those paths keep
+their numbers, and every other object the update defines (the file specification and the
+embedded file among them) takes a number the source never used; no free entry for a number in
+use, no object streams, no `/XRefStm`, no `/Encrypt` (an encrypted PDF has no PDF source view:
+changing its encryption changes how every earlier object decodes), and the chain continues at
+the source's own cross-reference section, as the parsed trailer says (`/Pr#65v` is `/Prev`, and
+a `/Prev` inside a string is none). Without that, the signer's own update could show other pages than the source
+it claims to preserve: a page redefined, a content stream replaced by the manifest stream under
+its number, an entry pointing a page back at an earlier revision, a trailer skipping a revision,
+or a dropped attachment were all found to pass a looser check (reviews, 2026-10-08). A PDF
+signed by c2pa-rs (a rewrite) keeps the exclusion-range view and is not source-preserving.
+Measured on 112 PDFs (fixtures and the 94-file corpus): every one that is not encrypted
+validates, starts with its source byte for byte and recovers it; c2pa-python (c2pa-rs 0.91.0)
+validates them too.
 
 **What the embedded units are compared with.** When the file is source-preserving, every unit is
 recomputed from the source view, which then is the original. Otherwise Meta-Code and Content-Code
@@ -290,19 +333,27 @@ app's minimum.
 - With OCR switched on (off by default), the scanned pages of a PDF get their text from OCR, where
   iscc-sdk has none or only a stamp; see [OCR](#ocr).
 
-**Signing rewrites the PDF.** c2pa-rs (feature `pdf`, lopdf) loads the whole document and saves a
-new file with the manifest as an embedded file; incremental updates, linearisation and object
-streams are flattened, so a signed PDF is never source-preserving. Two consequences the app
-guards against:
+**Signing appends to the PDF.** The manifest store comes in an update section of its own (see
+[PDF source view](#notes-on-the-soft-binding)); incremental updates, linearisation, object streams
+and digital signatures of the source stay as they are. Three cases the app guards against:
 
-- An encrypted PDF cannot be signed: one with an empty user password comes out silently
-  decrypted, one with a user password fails. The Sign tab, `sign()` and the CLI refuse both with
-  a plain reason (`Inspection.sign_block`). Both still inspect; one that needs a password has no
-  text and no metadata.
-- An existing digital signature (`/ByteRange`) breaks. The Sign tab shows a warning above the
-  button and the CLI prints it as a `note:` (`Inspection.sign_warning`); the empty signature
-  field of a blank form is not a signature. pdfium still counts the broken signature in the
-  signed copy, so the copy warns again.
+- An encrypted PDF cannot be signed: lopdf cannot add a revision to it (C2PA would want the
+  manifest's stream left unencrypted through the `Identity` crypt filter). The Sign tab, `sign()`
+  and the CLI refuse it with a plain reason (`Inspection.sign_block`). It still inspects; one that
+  needs a password has no text and no metadata.
+- A certified PDF cannot be signed either. A certifying signature (DocMDP) limits later changes;
+  the C2PA specification allows no manifest at its levels 1 and 2, and at level 3 only through a
+  `FileAttachment` annotation on a page, which this app does not write (c2pa-rs has a writer for
+  it but never calls it). The annotation would change a page, which the PDF source view rules
+  out, and whether it keeps a level 3 certification valid is untested: pyHanko's default diff
+  policy has no rules for annotations and calls every such update `OTHER`. pdfium's
+  `FPDFSignatureObj_GetDocMDPPermission` finds the certification; the block works like the
+  encrypted one.
+- An existing approval signature (`/ByteRange`) stays valid for what it signed, but PDF viewers
+  report the appended revision as a change after signing (pyHanko: intact, modification level
+  `OTHER`). The Sign tab shows a warning above the button and the CLI prints it as a `note:`
+  (`Inspection.sign_warning`); the empty signature field of a blank form is not a signature. The
+  signed copy still carries the signature, so the copy warns again.
 
 ## OCR
 
@@ -376,8 +427,8 @@ and opening another file work as for a video. One thread renders the pages, hold
 for one page at a time so another file can be read meanwhile, and one worker per logical core
 recognises them; a single page gets all cores (`parallel::ordered`, shared with the
 Semantic-Code Text). The text of each page is remembered by the hash of its pixels for the
-session: c2pa-rs rewrites a PDF when it signs it but keeps its images, so the source, the signed
-copy and that copy reopened render to the same pixels and each page is recognised once.
+session: signing appends to a PDF and leaves its pages alone, so the source, the signed copy and
+that copy reopened render to the same pixels and each page is recognised once.
 
 **Switching it** with a scan open opens the file again, so its codes follow the switch at once.
 A scan signed with OCR on and checked with OCR off (or by iscc-sdk) has no Content-Code to compare

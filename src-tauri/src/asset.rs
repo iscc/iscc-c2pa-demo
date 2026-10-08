@@ -157,9 +157,33 @@ pub fn load(path: &Path, format: &Format, ocr: bool, progress: Progress) -> Resu
 /// [`load`] of a file read into memory, its scanned pages as `ocr` says.
 fn load_bytes(path: &Path, format: &Format, ocr: Ocr, progress: Progress) -> Result<Loaded> {
     let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    loaded_from(path, &bytes, format, ocr, progress)
+}
+
+/// [`load`] of an asset other than a video held in `bytes` (a PDF edited for signing); `path`
+/// names the file it comes from.
+pub fn load_in_memory(
+    path: &Path,
+    bytes: &[u8],
+    format: &Format,
+    ocr: bool,
+    progress: Progress,
+) -> Result<Loaded> {
+    let ocr = if ocr { Ocr::Now } else { Ocr::Off };
+    loaded_from(path, bytes, format, ocr, progress)
+}
+
+/// The asset held in `bytes` with their Data-Code and Instance-Code.
+fn loaded_from(
+    path: &Path,
+    bytes: &[u8],
+    format: &Format,
+    ocr: Ocr,
+    progress: Progress,
+) -> Result<Loaded> {
     Ok(Loaded {
-        asset: read_with(path, &bytes, format, ocr, progress)?,
-        bitstream: Some(iscc::bitstream_units(&bytes)?),
+        asset: read_with(path, bytes, format, ocr, progress)?,
+        bitstream: Some(iscc::bitstream_units(bytes)?),
         size: bytes.len() as u64,
     })
 }
@@ -368,10 +392,11 @@ impl Read for Stoppable<'_> {
 }
 
 /// Read the asset held in `bytes`; `path` names the file for formats that resolve resources
-/// next to it (SVG). A video goes through a temporary file, as ffmpeg reads files. The scanned
-/// pages of a PDF are not recognised: OCR is off.
-pub fn read(path: &Path, bytes: &[u8], format: &Format) -> Result<Asset> {
-    read_with(path, bytes, format, Ocr::Off, &|_| true)
+/// next to it (SVG). A video goes through a temporary file, as ffmpeg reads files. With `ocr`, the
+/// scanned pages of a PDF are recognised (from the memo of `ocr` when seen before).
+pub fn read(path: &Path, bytes: &[u8], format: &Format, ocr: bool) -> Result<Asset> {
+    let ocr = if ocr { Ocr::Now } else { Ocr::Off };
+    read_with(path, bytes, format, ocr, &|_| true)
 }
 
 /// [`read`], the scanned pages of a PDF recognised as `ocr` says, `progress` following them.
@@ -478,7 +503,7 @@ mod tests {
         for file in expected.as_object().unwrap().keys() {
             let path = fixture(file);
             let bytes = std::fs::read(&path).unwrap();
-            let asset = read(&path, &bytes, formats::by_path(&path).unwrap()).unwrap();
+            let asset = read(&path, &bytes, formats::by_path(&path).unwrap(), false).unwrap();
             if let AssetContent::Text(text) = asset.content {
                 std::fs::write(Path::new(&dir).join(format!("{file}.txt")), text).unwrap();
             }
@@ -608,7 +633,7 @@ mod tests {
         for (file, want) in expected.as_object().unwrap() {
             let path = fixture(file);
             let bytes = std::fs::read(&path).unwrap();
-            let asset = read(&path, &bytes, formats::by_path(&path).unwrap()).unwrap();
+            let asset = read(&path, &bytes, formats::by_path(&path).unwrap(), false).unwrap();
             assert_eq!(
                 asset.metadata.name.as_deref(),
                 want["title"].as_str(),

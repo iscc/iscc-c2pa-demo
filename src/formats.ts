@@ -4,9 +4,9 @@
 
 import type { AssetKind, Inspection } from "./api";
 
-/** What embedding a manifest does to a format's bytes, as measured with c2pa-rs 0.91 (test
- * `source_preservation_per_format`). `why` completes "Signing ..." for formats that are not
- * source-preserving. */
+/** What embedding a manifest does to a format's bytes, as measured with c2pa-rs 0.91 and, for PDF, with the update
+ * section this app appends (test `source_preservation_per_format`). `why` completes "Signing ..." for formats that are
+ * not source-preserving. */
 export type Embedding = { kind: "preserved" } | { kind: "changed" | "no_source_view"; why: string };
 
 /** Formats whose embedding changes bytes outside the manifest store, by MIME type. */
@@ -18,7 +18,6 @@ const CHANGED: Record<string, string> = {
   "audio/flac": "a FLAC file puts an ID3 tag in front of the audio",
   "audio/wav": "a WAV file rewrites its RIFF size field",
   "video/x-msvideo": "an AVI file rewrites its RIFF size field",
-  "application/pdf": "a PDF rewrites the whole file",
 };
 
 /** Zip containers: C2PA hashes them entry by entry. */

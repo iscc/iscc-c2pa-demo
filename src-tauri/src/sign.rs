@@ -14,16 +14,22 @@ use c2pa::{create_signer, BoxedSigner, Builder, BuilderIntent, Context, SigningA
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::asset::{self, Asset};
+use crate::asset::{self, Asset, Loaded};
 use crate::context::{self, base_settings, ISCC_SOFT_BINDING_ALG};
+use crate::formats::{self, Format};
 use crate::inspect::{self, Depth, Inspection, Semantic, TRAINING_MINING_LABEL};
 use crate::iscc::{self, IsccUnit, MetaInput, UnitSelection};
-use crate::metadata;
+use crate::metadata::{self, Embedded, ManifestMeta};
+use crate::pdf_update;
 use crate::semantic::{self, SemanticKind, SemanticKinds};
 use crate::settings::Settings;
 use crate::thumbnail::{self, THUMBNAIL_EDGE, THUMBNAIL_MIME, THUMBNAIL_QUALITY};
 use crate::timestamp::{BestEffortTsa, FailureSlot};
 use crate::tools::{self, Cancelled};
+use crate::video::Progress;
+
+/// Action recorded when signing wrote the title, description or ISCC metadata into the copy.
+const EDITED_METADATA: &str = "c2pa.edited.metadata";
 
 /// Signing request as sent by the UI.
 #[derive(Deserialize, Debug)]
@@ -153,21 +159,36 @@ pub fn sign_with(
     {
         bail!("{}", semantic_off(kind));
     }
-    let loaded = asset::load(source, format, settings.ocr, &|f| {
-        progress(Stage::Source, f)
-    })?;
-    let asset = &loaded.asset;
-    if let Some(block) = asset.sign_block {
+    let source_progress = |f| progress(Stage::Source, f);
+    let loaded = asset::load(source, format, settings.ocr, &source_progress)?;
+    if let Some(block) = loaded.asset.sign_block {
         bail!("{block}");
     }
-    let meta = MetaInput {
+    let requested = MetaInput {
         name: Some(&request.title),
         description: request.description.as_deref(),
         meta: request.meta.as_deref(),
     };
+    // A PDF that does not carry the requested title, description and ISCC metadata itself gets
+    // them in a revision first: the source of the soft binding is then that edited copy, and its
+    // Meta-Code comes from the fields read back from it, so a copy without its manifest keeps it.
+    let edited = edited_pdf(
+        source,
+        format,
+        &loaded.asset,
+        requested,
+        settings.ocr,
+        &source_progress,
+    )?;
+    let loaded = edited.as_ref().map_or(&loaded, |e| &e.loaded);
+    let asset = &loaded.asset;
+    let own_fields = edited
+        .as_ref()
+        .map(|_| metadata::meta_fields(asset.metadata.clone(), ManifestMeta::default(), source));
+    let meta = own_fields.as_ref().map_or(requested, inspect::meta_input);
     let semantic = selection
         .semantic
-        .then(|| semantic::unit(asset.content(), &|f| progress(Stage::Source, f)))
+        .then(|| semantic::unit(asset.content(), &source_progress))
         .transpose()?;
     let bitstream = loaded
         .bitstream
@@ -191,6 +212,9 @@ pub fn sign_with(
     }))?;
     builder.set_intent(BuilderIntent::Edit);
     add_parent(&mut builder, source, mime, request.source_type.as_deref())?;
+    if edited.is_some() {
+        builder.add_action(json!({ "action": EDITED_METADATA }))?;
+    }
     add_thumbnail(&mut builder, asset)?;
 
     let soft_binding: SoftBinding = serde_json::from_value(json!({
@@ -221,9 +245,10 @@ pub fn sign_with(
     // over the output only once signing succeeded; a failure leaves any previous output intact.
     let tmp = temp_sibling(output)?;
     let _ = std::fs::remove_file(&tmp);
-    if let Err(e) = builder.save_to_file(source, &tmp) {
+    let edited_bytes = edited.as_ref().map(|e| e.bytes.as_slice());
+    if let Err(e) = write_signed(&mut builder, format, source, edited_bytes, &tmp) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(anyhow!(e).context("signing failed"));
+        return Err(e.context("signing failed"));
     }
     std::fs::rename(&tmp, output)
         .with_context(|| format!("cannot replace {}", output.display()))?;
@@ -252,6 +277,70 @@ pub fn sign_with(
         timestamp: timestamp_outcome(tsa_url, tsa_failure),
         inspection,
     })
+}
+
+/// A PDF with the requested title, description and ISCC metadata written into a revision of its
+/// own, and that edited copy loaded.
+struct Edited {
+    bytes: Vec<u8>,
+    loaded: Loaded,
+}
+
+/// The PDF at `source` with `requested` written into it, loaded as the source of the soft
+/// binding; `None` when it already carries them (`own`, its metadata) or is no PDF.
+fn edited_pdf(
+    source: &Path,
+    format: &Format,
+    own: &Asset,
+    requested: MetaInput<'_>,
+    ocr: bool,
+    progress: Progress,
+) -> Result<Option<Edited>> {
+    if format.mime != formats::PDF || !differs(&own.metadata, requested) {
+        return Ok(None);
+    }
+    let original =
+        std::fs::read(source).with_context(|| format!("cannot read {}", source.display()))?;
+    let bytes = pdf_update::with_metadata(&original, requested)?;
+    let loaded = asset::load_in_memory(source, &bytes, format, ocr, progress)?;
+    Ok(Some(Edited { bytes, loaded }))
+}
+
+/// Whether `requested` is not what the file names itself with (`own`), compared as the file's
+/// metadata is read: sanitised, empty as missing. A file without a title of its own differs.
+fn differs(own: &Embedded, requested: MetaInput<'_>) -> bool {
+    let clean = |s: Option<&str>| s.map(metadata::sanitize).filter(|s| !s.is_empty());
+    own.name.is_none()
+        || clean(requested.name) != own.name
+        || clean(requested.description) != own.description
+        || clean(requested.meta) != own.meta
+}
+
+/// Sign `source` into `tmp` with the manifest of `builder`. A PDF gets the manifest store as an
+/// update section of its own, appended to `edited` when its metadata was written first; every
+/// other format is embedded by c2pa-rs.
+fn write_signed(
+    builder: &mut Builder,
+    format: &Format,
+    source: &Path,
+    edited: Option<&[u8]>,
+    tmp: &Path,
+) -> Result<()> {
+    if format.mime != formats::PDF {
+        builder.save_to_file(source, tmp)?;
+        return Ok(());
+    }
+    let original;
+    let bytes = match edited {
+        Some(bytes) => bytes,
+        None => {
+            original = std::fs::read(source)
+                .with_context(|| format!("cannot read {}", source.display()))?;
+            &original
+        }
+    };
+    std::fs::write(tmp, pdf_update::signed(builder, bytes)?)
+        .with_context(|| format!("cannot write {}", tmp.display()))
 }
 
 /// Why a Semantic-Code of `kind` cannot be signed: it is off, usually because its model went
@@ -975,11 +1064,11 @@ mod tests {
 
     #[test]
     fn source_preservation_per_format() {
-        // Measured with c2pa-rs 0.91. Preserved: embedding only inserts the manifest store.
-        // Changed: SVG gains a namespace declaration (and a metadata wrapper), MP3 gets its ID3
-        // tag rewritten as v2.4, FLAC an ID3 tag in front, WAV a new RIFF size, TIFF a new IFD,
-        // PDF a full rewrite by lopdf. No source view: zip containers (collection hash) and M4A
-        // (BMFF hash).
+        // Measured with c2pa-rs 0.91. Preserved: embedding only inserts the manifest store, or
+        // appends it as an update section of a PDF (`pdf_update`). Changed: SVG gains a namespace
+        // declaration (and a metadata wrapper), MP3 gets its ID3 tag rewritten as v2.4, FLAC an
+        // ID3 tag in front, WAV a new RIFF size, TIFF a new IFD. No source view: zip containers
+        // (collection hash) and M4A (BMFF hash).
         use Preservation::*;
         crate::tools::tests::ensure_ffmpeg();
         let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-formats-all");
@@ -995,7 +1084,7 @@ mod tests {
             ("demo.wav", Changed),
             ("demo.svg", Changed),
             ("demo.tif", Changed),
-            ("demo.pdf", Changed),
+            ("demo.pdf", Preserved),
             ("demo.docx", NoSourceView),
             ("demo.pptx", NoSourceView),
             ("demo.xlsx", NoSourceView),
@@ -1070,10 +1159,96 @@ mod tests {
         );
         let manifest = second.inspection.manifest.as_ref().unwrap();
         assert_eq!(manifest.validation_state, "Trusted");
+        // The second update section leaves the first signed copy whole: it is the source.
         let sb = &manifest.soft_bindings[0];
-        assert_eq!(sb.preservation, Some(Preservation::Resigned));
-        assert_eq!(unit_match(sb, "Content-Code Text").similarity, Some(1.0));
-        assert_eq!(unit_match(sb, "Meta-Code").similarity, Some(1.0));
+        assert_eq!(sb.preservation, Some(Preservation::Preserved));
+        assert!(sb.matches.iter().all(|m| m.similarity == Some(1.0)));
+        let first_bytes = std::fs::read(&first.output).unwrap();
+        assert!(std::fs::read(&second.output)
+            .unwrap()
+            .starts_with(&first_bytes));
+    }
+
+    #[test]
+    fn pdf_metadata_given_at_signing_is_written_into_the_copy() {
+        // demo.pdf has a title of its own and no description; the description comes at signing.
+        let dir = tempfile::tempdir().unwrap();
+        let source = inspect::inspect(Path::new(&fixture("demo.pdf"))).unwrap();
+        assert_eq!(source.meta_fields.description, None);
+        let mut req = request("demo.pdf", &dir.path().join("described.pdf"));
+        req.title = source.meta_fields.name.clone();
+        req.description = Some("Added at signing".into());
+        req.units = ["meta", "text", "data", "instance"]
+            .map(String::from)
+            .to_vec();
+        let result = sign(&req).unwrap();
+
+        // The copy names itself with the new fields, and the units describe the copy without its
+        // manifest store, which is the source view: every unit matches, Instance-Code included.
+        let copy = &result.inspection;
+        assert_eq!(copy.meta_fields.name_source, "metadata");
+        assert_eq!(
+            copy.meta_fields.description.as_deref(),
+            Some("Added at signing")
+        );
+        let manifest = copy.manifest.as_ref().unwrap();
+        assert_eq!(manifest.validation_state, "Trusted");
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::Preserved));
+        assert!(
+            sb.matches.iter().all(|m| m.similarity == Some(1.0)),
+            "{sb:?}"
+        );
+        assert_eq!(result.units[0], copy.iscc[0], "the copy's own Meta-Code");
+        assert_eq!(result.units[1], source.iscc[1], "the source's text");
+        assert_eq!(actions(manifest), ["c2pa.opened", EDITED_METADATA]);
+        assert_eq!(manifest.ingredients[0].title.as_deref(), Some("demo.pdf"));
+
+        // Cut off its manifest store, the copy computes exactly the embedded units.
+        let stripped = dir.path().join("stripped.pdf");
+        std::fs::write(&stripped, stripped_copy(&dir.path().join("described.pdf"))).unwrap();
+        let stripped = inspect::inspect(&stripped).unwrap();
+        assert!(stripped.manifest.is_none());
+        assert_eq!(stripped.iscc, result.units);
+
+        // The fields the file already carries are not written again.
+        req.description = None;
+        req.output = dir.path().join("plain.pdf").to_string_lossy().into_owned();
+        let plain = sign(&req).unwrap();
+        assert_eq!(plain.units, source.iscc);
+        assert_eq!(
+            actions(plain.inspection.manifest.as_ref().unwrap()),
+            ["c2pa.opened"]
+        );
+    }
+
+    #[test]
+    fn a_description_cleared_at_signing_is_gone_from_the_copy() {
+        // meta-xmp-only.pdf holds its description in XMP, where a reader falls back to it once
+        // the document information has none.
+        let dir = tempfile::tempdir().unwrap();
+        let source = inspect::inspect(Path::new(&fixture("meta-xmp-only.pdf"))).unwrap();
+        assert_eq!(
+            source.meta_fields.description.as_deref(),
+            Some("Deutsche Beschreibung")
+        );
+        let mut req = request("meta-xmp-only.pdf", &dir.path().join("cleared.pdf"));
+        req.title = source.meta_fields.name.clone();
+        req.description = None;
+        req.units = ["meta", "data", "instance"].map(String::from).to_vec();
+        let result = sign(&req).unwrap();
+        let copy = &result.inspection;
+        assert_eq!(copy.meta_fields.description, None);
+        assert_eq!(result.units[0], copy.iscc[0], "the copy's own Meta-Code");
+        assert_ne!(result.units[0], source.iscc[0], "without the description");
+        let manifest = copy.manifest.as_ref().unwrap();
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::Preserved));
+        assert!(
+            sb.matches.iter().all(|m| m.similarity == Some(1.0)),
+            "{sb:?}"
+        );
+        assert_eq!(actions(manifest), ["c2pa.opened", EDITED_METADATA]);
     }
 
     #[test]
@@ -1113,8 +1288,10 @@ mod tests {
         .unwrap();
         let manifest = result.inspection.manifest.as_ref().unwrap();
         assert_eq!(manifest.validation_state, "Trusted");
-        // pdfium still counts the signature that signing broke, so the copy warns again.
+        // The signature stays in the copy, which starts with the source, so the copy warns again.
         assert!(result.inspection.sign_warning.is_some());
+        let source = std::fs::read(fixture("basic-retest.pdf")).unwrap();
+        assert!(std::fs::read(&result.output).unwrap().starts_with(&source));
     }
 
     #[test]
@@ -1207,14 +1384,33 @@ mod tests {
             .find(|m| m.embedded.unit == "content")
             .unwrap();
         assert_eq!(text.similarity, Some(1.0));
-        // c2pa-rs rewrites the PDF but keeps its image, so the copy's page renders to the same
-        // pixels and comes from the memo of `ocr`: each page is recognised once.
+        // The copy keeps the source's pages, so its page renders to the same pixels and comes
+        // from the memo of `ocr`: each page is recognised once.
         let source = std::fs::read(fixture("scan-demo.pdf")).unwrap();
         let copy = std::fs::read(&output).unwrap();
         assert_eq!(
             crate::pdf::scanned_pictures(&source),
             crate::pdf::scanned_pictures(&copy)
         );
+    }
+
+    /// The signed PDF at `path` without the update section that holds its manifest store.
+    fn stripped_copy(path: &Path) -> Vec<u8> {
+        let bytes = std::fs::read(path).unwrap();
+        let exclusions = inspect::data_hash_exclusions(&reader(path)).unwrap();
+        let end = crate::pdf_update::source_end(&bytes, exclusions[0].0 as usize).unwrap();
+        bytes[..end].to_vec()
+    }
+
+    /// The actions of the active manifest, in order.
+    fn actions(manifest: &inspect::ManifestSummary) -> Vec<String> {
+        manifest
+            .assertions
+            .iter()
+            .filter(|a| a.label.starts_with("c2pa.actions"))
+            .flat_map(|a| a.data["actions"].as_array().cloned().unwrap_or_default())
+            .filter_map(|a| a["action"].as_str().map(str::to_owned))
+            .collect()
     }
 
     /// Open the manifest store of `path` with the app's settings.

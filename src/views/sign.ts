@@ -173,6 +173,19 @@ export interface SignForm {
   metaError: string | null;
 }
 
+/** What signing does with a title and description that a PDF does not carry itself. */
+const WRITES_METADATA =
+  "Signing writes this title and description into the PDF copy, as a revision of its own, and computes every ISCC unit from that copy.";
+
+/** Whether signing writes the form's title and description into the copy: a PDF that does not carry them itself. The
+ * backend decides the same on sanitised values; white space is all that differs here. */
+export function writesMetadata(form: SignForm, inspection: Inspection): boolean {
+  if (inspection.mime !== "application/pdf") return false;
+  const own = inspection.meta_fields;
+  const clean = (s: string | null) => (s ?? "").trim().replace(/\s+/g, " ");
+  return own.name_source !== "metadata" || clean(form.title) !== clean(own.name) || clean(form.description) !== clean(own.description);
+}
+
 /** Placeholder for the Meta-Code preview when there is no code to show. */
 export function metaPreviewHint(form: SignForm): string {
   return form.metaError ? `not available: ${form.metaError}` : "enter a title to preview";
@@ -388,6 +401,7 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
           <label for="f-description">Description <span class="hint">(optional, feeds the Meta-Code)</span></label>
           <input type="text" id="f-description" name="description" value="${esc(form.description)}" />
         </div>
+        <span class="hint" data-writes-metadata ${writesMetadata(form, inspection) ? "" : "hidden"}>${esc(WRITES_METADATA)}</span>
         ${
           hasManifest
             ? ""

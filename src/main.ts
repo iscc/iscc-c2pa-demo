@@ -44,6 +44,7 @@ import {
   type TimestampChoice,
   toRequest,
   WAITING,
+  writesMetadata,
 } from "./views/sign";
 import { startScreen } from "./views/start";
 
@@ -532,8 +533,11 @@ async function resetSignForm(inspection: Inspection) {
   if (inspection.content_error) form.units.delete(inspection.kind);
 }
 
-/** Update only the Meta-Code preview line inside the form, preserving focus. */
+/** Update only the Meta-Code preview line inside the form, and whether the title and description get written into a PDF
+ * copy, preserving focus. */
 function patchMetaPreview() {
+  const writes = app.querySelector<HTMLElement>("[data-writes-metadata]");
+  if (writes && state.form && state.inspection) writes.hidden = !writesMetadata(state.form, state.inspection);
   const el = app.querySelector<HTMLElement>("[data-meta-code]");
   const code = state.form?.metaPreview?.iscc;
   if (!el) return;

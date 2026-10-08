@@ -29,7 +29,7 @@ use image::RgbImage;
 use lopdf::Object;
 use pdfium_render::prelude::{
     PdfiumLibraryBindings, FPDF_BITMAP, FPDF_DOCUMENT, FPDF_DWORD, FPDF_FORMFILLINFO, FPDF_PAGE,
-    FPDF_PAGEOBJECT, FPDF_TEXTPAGE, FS_RECTF,
+    FPDF_PAGEOBJECT, FPDF_SIGNATURE, FPDF_TEXTPAGE, FS_RECTF,
 };
 use serde::Serialize;
 
@@ -63,7 +63,7 @@ const SCAN_TEXT: usize = 50;
 const MAX_PAGE_WORKERS: usize = 4;
 /// What one compressed stream may inflate to in lopdf, so that a decompression bomb in a file of
 /// unknown origin fails instead of exhausting memory; real object streams stay far below it.
-const MAX_STREAM_BYTES: usize = 64 << 20;
+pub(crate) const MAX_STREAM_BYTES: usize = 64 << 20;
 
 /// Why a PDF without a text layer has no Content-Code.
 const NO_TEXT_LAYER: &str = "no text layer found; a scanned PDF has only pictures of text";
@@ -91,21 +91,31 @@ pub struct PdfFlags {
     pub encrypted: bool,
     /// Carries at least one digital signature.
     pub digitally_signed: bool,
+    /// One of its signatures certifies it (DocMDP), which restricts later changes.
+    pub certified: bool,
 }
 
 impl PdfFlags {
-    /// Why the PDF cannot be signed: c2pa-rs rewrites the file, which silently drops an
-    /// encryption with an empty password and fails on one with a user password.
+    /// Why the PDF cannot be signed: the manifest store goes into an appended revision
+    /// (`pdf_update`), which this app cannot encrypt; and C2PA allows no manifest in a certified
+    /// PDF at DocMDP levels 1 and 2, and at level 3 only through a file attachment annotation,
+    /// which this app does not write.
     pub fn sign_block(self) -> Option<&'static str> {
-        self.encrypted.then_some(
-            "Encrypted PDFs cannot be signed: embedding the manifest would remove the encryption or fail.",
-        )
+        if self.encrypted {
+            Some("Encrypted PDFs cannot be signed: this app cannot add a revision to an encrypted PDF.")
+        } else if self.certified {
+            Some("Certified PDFs cannot be signed: their author's certifying signature limits later changes, and adding Content Credentials would break the certification.")
+        } else {
+            None
+        }
     }
 
-    /// What signing a digitally signed PDF does to it; none for encrypted ones, which are blocked.
+    /// What signing a digitally signed PDF does to it; none for blocked ones. The appended
+    /// revision leaves the signed bytes alone, but viewers report it.
     pub fn sign_warning(self) -> Option<&'static str> {
-        (self.digitally_signed && !self.encrypted)
-            .then_some("Signing rewrites the PDF and breaks its existing digital signature.")
+        (self.digitally_signed && self.sign_block().is_none()).then_some(
+            "Its digital signature stays valid for what it signed, but PDF viewers will report that the document changed after signing.",
+        )
     }
 }
 
@@ -180,6 +190,7 @@ pub fn read(bytes: &[u8]) -> Result<Pdf> {
     let flags = PdfFlags {
         encrypted: unsafe { lib.FPDF_GetSecurityHandlerRevision(doc.0) } != -1,
         digitally_signed: digitally_signed(lib, doc.0),
+        certified: certified(lib, doc.0),
     };
     let (pages, scanned) = pages(lib, doc.0);
     let no_text_reason = if scanned.is_empty() {
@@ -218,7 +229,7 @@ fn unopened(code: c_ulong) -> Result<Pdf> {
         },
         flags: PdfFlags {
             encrypted: true,
-            digitally_signed: false,
+            ..Default::default()
         },
         ..Default::default()
     })
@@ -227,12 +238,27 @@ fn unopened(code: c_ulong) -> Result<Pdf> {
 /// Whether a signature field carries a signature value: pdfium counts every `/Sig` form field,
 /// the empty placeholder of an unsigned form included.
 fn digitally_signed(lib: &dyn PdfiumLibraryBindings, doc: FPDF_DOCUMENT) -> bool {
-    let count = unsafe { lib.FPDF_GetSignatureCount(doc) };
-    (0..count).any(|i| {
-        let signature = unsafe { lib.FPDF_GetSignatureObject(doc, i) };
-        !signature.is_null()
-            && unsafe { lib.FPDFSignatureObj_GetContents(signature, std::ptr::null_mut(), 0) } > 0
+    signatures(lib, doc).any(|signature| unsafe {
+        lib.FPDFSignatureObj_GetContents(signature, std::ptr::null_mut(), 0) > 0
     })
+}
+
+/// Whether a signature certifies the document: its DocMDP transform permits no changes (1),
+/// form filling and signing (2), or those and annotations (3).
+fn certified(lib: &dyn PdfiumLibraryBindings, doc: FPDF_DOCUMENT) -> bool {
+    signatures(lib, doc)
+        .any(|signature| unsafe { lib.FPDFSignatureObj_GetDocMDPPermission(signature) } > 0)
+}
+
+/// The signature objects pdfium finds in `doc`, one for each `/Sig` form field.
+fn signatures(
+    lib: &dyn PdfiumLibraryBindings,
+    doc: FPDF_DOCUMENT,
+) -> impl Iterator<Item = FPDF_SIGNATURE> + '_ {
+    let count = unsafe { lib.FPDF_GetSignatureCount(doc) };
+    (0..count)
+        .map(move |i| unsafe { lib.FPDF_GetSignatureObject(doc, i) })
+        .filter(|signature| !signature.is_null())
 }
 
 /// A pdfium handle that is closed when it goes out of scope.
@@ -687,7 +713,7 @@ mod tests {
     /// where iscc-sdk made mojibake of a UTF-8 docinfo string.
     fn mismatches(path: &Path, want: &Value) -> Vec<String> {
         let bytes = std::fs::read(path).unwrap();
-        let asset = match asset::read(path, &bytes, formats::by_path(path).unwrap()) {
+        let asset = match asset::read(path, &bytes, formats::by_path(path).unwrap(), false) {
             Ok(asset) => asset,
             Err(e) => return vec![format!("cannot read: {e}")],
         };
@@ -773,6 +799,7 @@ mod tests {
             &path,
             &fixture("meta-utf8.pdf"),
             formats::by_path(&path).unwrap(),
+            false,
         )
         .unwrap();
         assert_eq!(asset.metadata.name.as_deref(), Some("Größe 日本語 UTF-8"));
@@ -847,6 +874,51 @@ mod tests {
         assert!(!read(&bytes).unwrap().flags.digitally_signed);
         let signed = read(&fixture("basic-retest.pdf")).unwrap();
         assert!(signed.flags.digitally_signed);
+    }
+
+    #[test]
+    fn certified_pdfs_cannot_be_signed() {
+        // A certifying signature at each DocMDP level, as pyHanko and Acrobat write it; pdfium
+        // reads the dictionaries and checks no signature bytes.
+        use lopdf::{dictionary, Object};
+        for level in 1..=3 {
+            let mut pdf = lopdf::Document::load_mem(&fixture("basic-no-xmp.pdf")).unwrap();
+            let value = pdf.add_object(dictionary! {
+                "Type" => "Sig",
+                "Contents" => Object::String(vec![1, 2, 3], lopdf::StringFormat::Hexadecimal),
+                "Reference" => vec![Object::Dictionary(dictionary! {
+                    "Type" => "SigRef",
+                    "TransformMethod" => "DocMDP",
+                    "TransformParams" => dictionary! { "Type" => "TransformParams", "P" => level, "V" => "1.2" },
+                })],
+            });
+            let field = pdf.add_object(dictionary! {
+                "FT" => "Sig",
+                "T" => Object::string_literal("Certification"),
+                "V" => Object::Reference(value),
+            });
+            let form = pdf.add_object(dictionary! { "Fields" => vec![Object::Reference(field)] });
+            let catalog = pdf.catalog_mut().unwrap();
+            catalog.set("AcroForm", Object::Reference(form));
+            catalog.set(
+                "Perms",
+                dictionary! { "DocMDP" => Object::Reference(value) },
+            );
+            let mut bytes = Vec::new();
+            pdf.save_to(&mut bytes).unwrap();
+            let flags = read(&bytes).unwrap().flags;
+            assert!(flags.digitally_signed && flags.certified, "P={level}");
+            assert!(flags.sign_block().unwrap().starts_with("Certified PDFs"));
+            assert_eq!(flags.sign_warning(), None);
+        }
+        // An approval signature only warns.
+        let approved = read(&fixture("basic-retest.pdf")).unwrap().flags;
+        assert!(!approved.certified);
+        assert!(approved.sign_block().is_none() && approved.sign_warning().is_some());
+        // c2pa-rs's fixture is certified at level 1 and encrypted; encryption is named first.
+        let both = read(&fixture("basic-signed.pdf")).unwrap().flags;
+        assert!(both.certified && both.encrypted);
+        assert!(both.sign_block().unwrap().starts_with("Encrypted PDFs"));
     }
 
     #[test]

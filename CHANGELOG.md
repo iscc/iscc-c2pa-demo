@@ -2,14 +2,19 @@
 
 ## Unreleased
 
-- OCR for scanned PDF pages (experimental, off by default): a page that is a scan, filled by one
-  image with next to no text on it, has its text recognised, so a scanned document gets a
-  Content-Code Text and a Semantic-Code Text. Every other page keeps the text iscc-sdk extracts,
-  and with OCR off every PDF keeps iscc-sdk's codes. The PP-OCRv6 tiny models (PaddlePaddle,
-  Apache-2.0) are built into the app, so nothing is downloaded; they read Latin script and
-  Chinese. Settings switches OCR on and off, the unit list shows the recognition's progress and
-  how many pages it read, and a scan without OCR points to Settings. The CLI reads scans with
-  `--ocr`.
+- PDFs are signed by appending the Content Credentials as a new revision, so the original stays
+  byte for byte at the start of the signed file. A signed or re-signed PDF shows "Source
+  preserved" with every unit matching, and a digital signature already in it stays valid for
+  what it signed (viewers list the new revision as a later change). Certified PDFs cannot be
+  signed, as the C2PA specification asks.
+- A title or description given at signing is written into the signed PDF's own metadata, and the
+  ISCC is computed from that copy, so its Meta-Code matches 100%, with or without the Content
+  Credentials; the manifest records the edit. In 0.3.0 a description added at signing lowered the
+  match.
+- OCR for scanned PDF pages (experimental, off by default): switched on in Settings, or with
+  `--ocr` in the CLI, the pages that are scans have their text recognised, so a scanned document
+  gets a Content-Code Text and a Semantic-Code Text; other pages keep the text iscc-sdk extracts.
+  The PP-OCRv6 tiny models (Apache-2.0) are built in and read Latin script and Chinese.
 
 ## 0.3.0 - 2026-10-05
 

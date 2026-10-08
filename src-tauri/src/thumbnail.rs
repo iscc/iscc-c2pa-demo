@@ -61,7 +61,8 @@ mod tests {
             let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
             let path = Path::new(&path);
             let bytes = std::fs::read(path).unwrap();
-            let asset = asset::read(path, &bytes, inspect::asset_format(path).unwrap()).unwrap();
+            let asset =
+                asset::read(path, &bytes, inspect::asset_format(path).unwrap(), false).unwrap();
             let picture = asset.picture().expect("raster image");
             let jpeg = scaled_jpeg(picture, THUMBNAIL_EDGE, THUMBNAIL_QUALITY).unwrap();
             assert!(jpeg.len() < 12_000, "{name}: {} bytes", jpeg.len());

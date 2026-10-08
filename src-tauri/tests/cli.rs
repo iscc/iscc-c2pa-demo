@@ -304,7 +304,7 @@ fn sign_pdf_refuses_encryption_and_notes_a_digital_signature() {
     ]);
     let stderr = String::from_utf8_lossy(&signed.stderr);
     assert!(
-        stderr.contains("note: Signing rewrites the PDF and breaks its existing digital signature"),
+        stderr.contains("note: Its digital signature stays valid for what it signed"),
         "{stderr}"
     );
     let result = json(&signed);

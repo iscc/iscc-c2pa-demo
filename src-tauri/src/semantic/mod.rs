@@ -238,7 +238,10 @@ mod tests {
         let path = fixture(name);
         let bytes = std::fs::read(&path).unwrap();
         let format = crate::formats::by_path(&path).unwrap();
-        match crate::asset::read(&path, &bytes, format).unwrap().content {
+        match crate::asset::read(&path, &bytes, format, false)
+            .unwrap()
+            .content
+        {
             crate::asset::AssetContent::Text(text) => text,
             other => panic!("{name}: no text, {other:?}"),
         }
