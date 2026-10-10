@@ -46,6 +46,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # tauri::generate_context! embeds ../dist, so the frontend must exist before cargo runs.
       - run: pnpm build
+      - run: pnpm test
       - name: Pre-commit hooks (formatting, file hygiene)
         run: uv run prek run --all-files --stage pre-commit --show-diff-on-failure
       # tauri.conf.json bundles src-tauri/pdfium/*, and the build script fails when it is empty;

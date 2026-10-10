@@ -23,8 +23,9 @@ run = [
 ]
 
 [tasks.test]
-description = "Run the Rust unit and integration tests"
+description = "Run the TypeScript tests and the Rust unit and integration tests"
 run = [
+  "pnpm test",
   "uv run scripts/fetch_resources.py",
   "cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features",
 ]

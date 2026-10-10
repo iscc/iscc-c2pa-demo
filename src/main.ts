@@ -27,6 +27,7 @@ import {
   type UnitSlug,
 } from "./api";
 import logoUrl from "./assets/iscc-logo-black-coral.svg";
+import { type SourceChoice, toggleList } from "./sourcetype";
 import { copyText, esc, json, listJoin, splitPath } from "./util";
 import { type Analysis, assetCard, patchPending, unitList } from "./views/asset";
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
@@ -644,7 +645,7 @@ function syncForm() {
   const data = new FormData(el);
   form.title = String(data.get("title") ?? "");
   form.description = String(data.get("description") ?? "");
-  form.sourceType = String(data.get("source_type") ?? form.sourceType);
+  form.source = readSource(data, form.source);
   form.units = new Set(data.getAll("unit").map(String));
   for (const key of Object.keys(form.training)) {
     const info = data.get(`constraint:${key}`);
@@ -658,6 +659,17 @@ function syncForm() {
     form.credentials = { kind: "demo" };
   }
   form.timestamp = readTimestamp(data, form.timestamp);
+}
+
+/** The answers about how the source was made in `data`; controls not shown (the second question, the variants, the
+ * full list) are missing there and keep `prev`. */
+function readSource(data: FormData, prev: SourceChoice): SourceChoice {
+  return {
+    origin: String(data.get("source_origin") ?? prev.origin),
+    variant: String(data.get("source_variant") ?? prev.variant),
+    after: String(data.get("source_after") ?? prev.after),
+    term: data.has("source_term") ? String(data.get("source_term")) : prev.term,
+  };
 }
 
 /** The timestamp choice in `data`; disabled controls are missing there and keep `prev`. */
@@ -692,6 +704,11 @@ async function onClick(target: HTMLElement) {
   if (d.useKey && state.form) {
     syncForm();
     setTrainingUse(state.form, d.useKey, d.use ?? "");
+    return render();
+  }
+  if (d.sourceList && state.form && state.inspection) {
+    syncForm();
+    state.form.source = toggleList(state.inspection.kind, state.form.source);
     return render();
   }
 }
@@ -763,7 +780,7 @@ function wireEvents() {
       return;
     }
     const target = (ev.target as HTMLElement).closest<HTMLElement>(
-      "[data-action],[data-tab],[data-copy],[data-goto],[data-pick],[data-reveal],[data-use-key]",
+      "[data-action],[data-tab],[data-copy],[data-goto],[data-pick],[data-reveal],[data-use-key],[data-source-list]",
     );
     if (target) await onClick(target);
   });
@@ -785,7 +802,7 @@ function wireEvents() {
     const target = ev.target as HTMLInputElement;
     if (target.name === "semantic") return void switchSemantic(target.value as SemanticKind, target.checked);
     if (target.name === "ocr") return void switchOcr(target.checked);
-    if (["cred", "alg", "ts_on", "ts_preset"].includes(target.name)) {
+    if (["cred", "alg", "ts_on", "ts_preset", "source_origin", "source_variant", "source_after", "source_term"].includes(target.name)) {
       syncForm();
       render();
     }
