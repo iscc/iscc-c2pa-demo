@@ -31,6 +31,7 @@ import { type SourceChoice, toggleList } from "./sourcetype";
 import { copyText, esc, json, listJoin, splitPath } from "./util";
 import { type Analysis, assetCard, patchPending, unitList } from "./views/asset";
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
+import { CHECK_ICON } from "./views/icons";
 import { type Busy, busyOverlay, downloadProgress, patchProgress, type ToolPrompt, toolOverlay } from "./views/overlay";
 import { patchSettingsDownload, type SettingsDialog, type SettingsOperation, settingsOverlay } from "./views/settings";
 import {
@@ -758,13 +759,14 @@ function onAction(action: string) {
   }
 }
 
-/** Copy `text` and let the button say for a moment whether that worked. */
+/** Copy `text` and let the button say for a moment whether that worked: "Copied", or a check on an icon button. */
 async function copyWithFeedback(button: HTMLElement, text: string) {
   const ok = await copyText(text);
-  const label = button.textContent;
-  button.textContent = ok ? "Copied" : "Select and copy";
+  const content = button.innerHTML;
+  const done = button.classList.contains("iconbtn") ? CHECK_ICON : "Copied";
+  button.innerHTML = ok ? done : "Select and copy";
   window.setTimeout(() => {
-    button.textContent = label;
+    button.innerHTML = content;
   }, 1200);
 }
 

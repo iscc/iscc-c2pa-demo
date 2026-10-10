@@ -5,14 +5,7 @@ import type { AppInfo, AssetKind, KindInfo } from "../api";
 import crLogoUrl from "../assets/content_credentials_logo.svg";
 import { CONTENT_FROM } from "../formats";
 import { esc } from "../util";
-
-/** Line icons for each kind of media, drawn with the current text colour. */
-const ICONS: Record<AssetKind, string> = {
-  image: `<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>`,
-  text: `<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>`,
-  audio: `<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>`,
-  video: `<rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 10l5-3v10l-5-3z"/>`,
-};
+import { kindIcon } from "./icons";
 
 /** The units of each row, as [unit, what it is computed from]; the Content-Code varies by kind, and only images and
  * documents have a Semantic-Code (empty for the others). */
@@ -29,12 +22,11 @@ function units(kind: AssetKind): [string, string][] {
 
 /** One row of the formats table: kind of media with its formats under its name, and its units. */
 function kindRow(k: KindInfo): string {
-  const icon = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k.kind]}</svg>`;
   const formats = k.formats.map((f) => `<span>${esc(f)}</span>`).join("");
   const cells = units(k.kind)
     .map(([unit, from]) => `<span class="cell">${from ? `<span data-unit="${unit}">${esc(from)}</span>` : ""}</span>`)
     .join("");
-  return `<div class="media">${icon}<div><div class="name">${esc(k.label)}</div><div class="formats">${formats}</div></div></div>${cells}`;
+  return `<div class="media">${kindIcon(k.kind)}<div><div class="name">${esc(k.label)}</div><div class="formats">${formats}</div></div></div>${cells}`;
 }
 
 /** Which experimental features are off: both kinds of Semantic-Code, OCR of scanned PDF pages. */

@@ -1,27 +1,28 @@
-// Left column: preview (image, document cover or thumbnail, audio cover art, video frame), file
-// facts and the ISCC units computed from the file, with the progress of those still being computed.
+// Left column: a small preview (image, document cover or thumbnail, audio cover art, video frame) beside the
+// file facts, and the ISCC units computed from the file, with the progress of those still being computed.
 
 import type { AssetKind, Inspection, IsccUnit, MetaFields, OcrPages, UnitSlug } from "../api";
 import { esc, formatBytes, formatDuration, isccHtml } from "../util";
+import { COPY_ICON, kindIcon } from "./icons";
 
-/** Placeholder for a file without a picture: EPUBs lack a cover, audio lacks cover art, a video
- * lacks a preview frame (no video stream, no ffmpeg, or no frame ffmpeg could pick; the unit list
- * says why when the Content-Code is missing too), other documents show their format. */
+/** Placeholder for a file without a picture: the icon of its kind and why there is none. EPUBs lack a cover, audio
+ * lacks cover art, a video lacks a preview frame (no video stream, no ffmpeg, or no frame ffmpeg could pick; the unit
+ * list says why when the Content-Code is missing too), other documents show their format. */
 function placeholder(inspection: Inspection): string {
   let text = inspection.format_label;
   if (inspection.mime === "application/epub+zip") text = "no cover image";
   if (inspection.kind === "audio") text = "no cover art";
   if (inspection.kind === "video") text = "no preview frame";
-  return `<div class="nopreview">${esc(text)}</div>`;
+  return `<div class="nopreview">${kindIcon(inspection.kind)}<span>${esc(text)}</span></div>`;
 }
 
-/** Pixel size of an image (the rendered size of an SVG), the extracted text length ("none"
+/** Pixel size of an image (the rendered size of an SVG), the number of characters of the extracted text ("none"
  * when there is no text to count: the unit list says why), the audio duration, or the duration
  * and frame size of a video. */
 function extent(inspection: Inspection): string {
   if (inspection.kind === "text") {
-    const text = inspection.characters === null ? "none" : `${inspection.characters.toLocaleString()} characters`;
-    return `<dt>Text</dt><dd>${text}</dd>`;
+    const count = inspection.characters === null ? "none" : inspection.characters.toLocaleString();
+    return `<dt>Characters</dt><dd>${count}</dd>`;
   }
   const duration = `<dt>Duration</dt><dd>${inspection.duration_secs === null ? "unknown" : formatDuration(inspection.duration_secs)}</dd>`;
   if (inspection.kind === "audio") return duration;
@@ -33,24 +34,21 @@ function extent(inspection: Inspection): string {
   return `<dt>${label}</dt><dd>${inspection.width} × ${inspection.height}</dd>`;
 }
 
-/** Preview card with file facts. Document pictures and cover art keep their natural size. */
+/** File card: a small preview beside the file facts, so the ISCC below stays in view. The name is in the top bar. */
 export function assetCard(inspection: Inspection): string {
   const preview = inspection.preview
     ? `<img src="${inspection.preview}" alt="${esc(inspection.file_name)}" draggable="false" />`
     : placeholder(inspection);
   const creator = inspection.creator ? `<dt>Creator</dt><dd>${esc(inspection.creator)}</dd>` : "";
   return `
-    <section class="card">
-      <div class="preview${inspection.kind === "image" || inspection.kind === "video" ? "" : " document"}">${preview}</div>
-      <div class="body">
-        <dl class="facts">
-          <dt>File</dt><dd>${esc(inspection.file_name)}</dd>
-          <dt>Format</dt><dd title="${esc(inspection.mime)}">${esc(inspection.format_label)}</dd>
-          ${extent(inspection)}
-          ${creator}
-          <dt>Size</dt><dd>${esc(formatBytes(inspection.size_bytes))}</dd>
-        </dl>
-      </div>
+    <section class="card filecard">
+      <div class="preview">${preview}</div>
+      <dl class="facts">
+        <dt>Format</dt><dd title="${esc(inspection.mime)}">${esc(inspection.format_label)}</dd>
+        ${extent(inspection)}
+        ${creator}
+        <dt>Size</dt><dd>${esc(formatBytes(inspection.size_bytes))}</dd>
+      </dl>
     </section>`;
 }
 
@@ -180,10 +178,10 @@ function unitRow(u: IsccUnit, from: string): string {
         <span class="bar" data-unit="${u.unit}"></span>
         <div>
           <div class="name">${nameHtml(u.unit, u.name)}</div>
-          <div class="code">${isccHtml(u.iscc)}</div>
+          <div class="code fit">${isccHtml(u.iscc)}</div>
           ${from ? `<div class="from">${esc(from)}</div>` : ""}
         </div>
-        <button class="btn small quiet" data-copy="${esc(u.iscc)}" title="Copy">Copy</button>
+        <button class="btn small quiet iconbtn" data-copy="${esc(u.iscc)}" title="Copy ${esc(u.name)}" aria-label="Copy ${esc(u.name)}">${COPY_ICON}</button>
       </div>`;
 }
 
@@ -193,9 +191,9 @@ function ocrFrom(ocr: OcrPages): string {
   return ocr.pages === 1 ? "Text recognised by OCR" : `Text of all ${ocr.pages} pages recognised by OCR`;
 }
 
-/** Where a unit's inputs came from: the Meta-Code's title, a signed video copy's Content-Code, a scan's text. */
+/** Where a Content-Code's inputs came from when that needs saying: a signed video copy's, a scan's text. The
+ * Meta-Code's title is named only when the code could not be computed (`row`). */
 function unitFrom(u: IsccUnit, inspection: Inspection): string {
-  if (u.unit === "meta") return metaFrom(inspection.meta_fields);
   if (u.unit !== "content") return "";
   if (inspection.ocr?.on) return ocrFrom(inspection.ocr);
   return inspection.content_from_source ? FROM_SOURCE : "";
@@ -223,13 +221,16 @@ function row(slug: UnitSlug, inspection: Inspection, view: UnitListView): string
 }
 
 /** List of the file's ISCC units with their unit colour; a unit that could not be computed keeps its place and says
- * why, one still being computed shows its progress. */
+ * why, one still being computed shows its progress. While units are computed, Stop takes the hint's place. */
 export function unitList(inspection: Inspection, view: UnitListView): string {
   const rows = ORDER.map((slug) => row(slug, inspection, view)).join("");
-  const stop = view.analysis && !view.analysis.stopped ? `<button class="btn small quiet" data-action="stop-analysis">Stop</button>` : "";
+  const running = view.analysis && !view.analysis.stopped;
+  const status = running
+    ? `<button class="btn small quiet" data-action="stop-analysis">Stop</button>`
+    : `<span class="hint">${esc(view.hint)}</span>`;
   return `
     <section class="card">
-      <header><h2>ISCC of this file</h2><span class="grow"></span><span class="hint">${esc(view.hint)}</span>${stop}</header>
+      <header><h2>ISCC of this file</h2><span class="grow"></span>${status}</header>
       <div class="units">${rows}</div>
     </section>`;
 }
