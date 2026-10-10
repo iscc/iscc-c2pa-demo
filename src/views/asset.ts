@@ -1,7 +1,9 @@
 // Left column: a small preview (image, document cover or thumbnail, audio cover art, video frame) beside the
-// file facts, and the ISCC units computed from the file, with the progress of those still being computed.
+// file facts, the compact ISCC-CODE, and the ISCC units computed from the file, with the progress of those still
+// being computed.
 
 import type { AssetKind, Inspection, IsccUnit, MetaFields, OcrPages, UnitSlug } from "../api";
+import { isccCode } from "../composite";
 import { esc, formatBytes, formatDuration, isccHtml } from "../util";
 import { COPY_ICON, kindIcon } from "./icons";
 
@@ -209,7 +211,7 @@ function ocrAction(slug: UnitSlug, inspection: Inspection): string {
  * the file has no such unit, or for a Semantic-Code that is not shown. A Meta-Code missing for the Content-Code's
  * reason was never tried (a video's tags unread without ffmpeg), so it names no inputs. */
 function row(slug: UnitSlug, inspection: Inspection, view: UnitListView): string {
-  if (slug === "semantic" && !view.semantic) return "";
+  if (!shown(slug, view)) return "";
   const unit = inspection.iscc.find((u) => u.unit === slug);
   if (unit) return unitRow(unit, unitFrom(unit, inspection));
   const name = unitName(slug, inspection);
@@ -218,6 +220,41 @@ function row(slug: UnitSlug, inspection: Inspection, view: UnitListView): string
   if (!error) return "";
   const from = slug === "meta" && error !== inspection.content_error ? metaFrom(inspection.meta_fields) : "";
   return missingUnitRow(slug, name, error, from, ocrAction(slug, inspection));
+}
+
+/** Whether the unit list shows unit `slug`: every unit but a Semantic-Code that is not shown. */
+function shown(slug: UnitSlug, view: UnitListView): boolean {
+  return slug !== "semantic" || view.semantic;
+}
+
+/** Card with the compact ISCC-CODE of the units the list below shows, its bar striped in their colours; while any of
+ * them is still computed, it says it waits for them. Absent when the units give none (no Data- or Instance-Code). */
+export function codeCard(inspection: Inspection, view: UnitListView): string {
+  const units = inspection.iscc.filter((u) => shown(u.unit, view));
+  const pending = inspection.pending.some((slug) => shown(slug, view));
+  const code = pending ? null : isccCode(units.map((u) => u.iscc));
+  if (!pending && !code) return "";
+  const stripes = units.map((u) => `<span data-unit="${u.unit}"></span>`).join("");
+  const line = code
+    ? `<div class="code fit">${isccHtml(code)}</div>`
+    : `<div class="code" style="color:var(--muted)">waits for the units below</div>`;
+  const copy = code
+    ? `<button class="btn small quiet iconbtn" data-copy="${esc(code)}" title="Copy ISCC-CODE" aria-label="Copy ISCC-CODE">${COPY_ICON}</button>`
+    : "";
+  return `
+    <section class="card">
+      <header><h2>ISCC-CODE</h2></header>
+      <div class="units">
+        <div class="unit">
+          <span class="bar stripes">${pending ? "" : stripes}</span>
+          <div>
+            <div class="name">Summary of ISCC-UNITs</div>
+            ${line}
+          </div>
+          ${copy}
+        </div>
+      </div>
+    </section>`;
 }
 
 /** List of the file's ISCC units with their unit colour; a unit that could not be computed keeps its place and says
@@ -230,7 +267,7 @@ export function unitList(inspection: Inspection, view: UnitListView): string {
     : `<span class="hint">${esc(view.hint)}</span>`;
   return `
     <section class="card">
-      <header><h2>ISCC of this file</h2><span class="grow"></span>${status}</header>
+      <header><h2>ISCC-UNITs</h2><span class="grow"></span>${status}</header>
       <div class="units">${rows}</div>
     </section>`;
 }

@@ -29,7 +29,7 @@ import {
 import logoUrl from "./assets/iscc-logo-black-coral.svg";
 import { type SourceChoice, toggleList } from "./sourcetype";
 import { copyText, esc, json, listJoin, splitPath } from "./util";
-import { type Analysis, assetCard, patchPending, unitList } from "./views/asset";
+import { type Analysis, assetCard, codeCard, patchPending, unitList } from "./views/asset";
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
 import { CHECK_ICON } from "./views/icons";
 import { type Busy, busyOverlay, downloadProgress, patchProgress, type ToolPrompt, toolOverlay } from "./views/overlay";
@@ -193,6 +193,7 @@ function workspace(inspection: Inspection): string {
     ["raw", "Manifest JSON", ""],
   ];
   const semantic = semanticShown(inspection);
+  const units = { hint: unitListHint(inspection), analysis: state.analysis, semantic };
   let panel: string;
   switch (state.tab) {
     case "sign":
@@ -216,7 +217,8 @@ function workspace(inspection: Inspection): string {
     <div class="workspace">
       <div class="column">
         ${assetCard(inspection)}
-        ${unitList(inspection, { hint: unitListHint(inspection), analysis: state.analysis, semantic })}
+        ${codeCard(inspection, units)}
+        ${unitList(inspection, units)}
       </div>
       <div class="column">
         ${banner}${error}

@@ -1,0 +1,44 @@
+// Tests of the compact ISCC-CODE: run with `pnpm test`. The expected codes come from iscc-core 1.x
+// (`gen_iscc_code_v0` over units made with `encode_component` from SHA-256 digests of their names).
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { isccCode } from "./composite.ts";
+
+const META = "ISCC:AAD6UO6XHYVVA3QAKJZDFM7NOQ6AM3NIHKHDAZXWFJY6OXVZWSVB3NQ";
+const SEMANTIC_TEXT = "ISCC:CADTPBAHB7R6PY66L4HMBDVN7IIKZOVA6VBZC2Y2WLDI6NYZET7X3MY";
+const SEMANTIC_IMAGE = "ISCC:CEDTPBAHB7R6PY66L4HMBDVN7IIKZOVA6VBZC2Y2WLDI6NYZET7X3MY";
+const TEXT = "ISCC:EADZQLM6H24ZN5KZ4YZ7JUMU33ZXMHMQT5NDWZD5DKCR72WWPQZMTUI";
+const IMAGE = "ISCC:EEDWCBOWZR3K6QADEXUU2WEM4UI34W75XNZ3IN64KHWKIOIX26SD4PI";
+const AUDIO = "ISCC:EIDW5WERTTRAJEFF4OWYMMFE7K3JI5JJPK6QPW3TSGG5L43PZ6XLCGY";
+const VIDEO = "ISCC:EMDQZKY4SYLUAT5PFMSOEIPBRHFFSRMBHYKNH53GGRNQTSQTXPRI77A";
+const DATA = "ISCC:GADTU3VQPEHTTLEHZFHTQVVS3UWF2EIONAIWAITBVGUSHU53EOW4RNY";
+const INSTANCE = "ISCC:IADV5DADVFGHQNNYPXMCY2IPT6C4BBMS552DHKQUDTVKZM3KT5G2INA";
+
+test("matches iscc-core for every combination of units the app shows", () => {
+  const cases: [string[], string][] = [
+    [[META, SEMANTIC_TEXT, TEXT, DATA, INSTANCE], "ISCC:KAD6UO6XHYVVA3QAG6CAOD7D47R55GBNTY7LTFXVLE5G5MDZB442ZB26RQB2STDYGW4A"],
+    [[META, SEMANTIC_IMAGE, IMAGE, DATA, INSTANCE], "ISCC:KED6UO6XHYVVA3QAG6CAOD7D47R54YIF23GHNL2AAM5G5MDZB442ZB26RQB2STDYGW4A"],
+    [[META, AUDIO, DATA, INSTANCE], "ISCC:KIC6UO6XHYVVA3QAN3MJDHHCASIKKOTOWB4Q6ONMQ5PIYA5JJR4DLOA"],
+    [[VIDEO, DATA, INSTANCE], "ISCC:KMAQZKY4SYLUAT5PHJXLA6IPHGWIOXUMAOUUY6BVXA"],
+    [[META, DATA, INSTANCE], "ISCC:KYCOUO6XHYVVA3QAHJXLA6IPHGWIOXUMAOUUY6BVXA"],
+    [[DATA, INSTANCE], "ISCC:KUADU3VQPEHTTLEHL2GAHKKMPA23Q"],
+  ];
+  for (const [units, expected] of cases) assert.equal(isccCode(units), expected);
+});
+
+test("takes the units in any order", () => {
+  assert.equal(isccCode([INSTANCE, TEXT, DATA, META, SEMANTIC_TEXT]), isccCode([META, SEMANTIC_TEXT, TEXT, DATA, INSTANCE]));
+});
+
+test("needs a Data- and an Instance-Code", () => {
+  assert.equal(isccCode([META, TEXT, DATA]), null);
+  assert.equal(isccCode([META, TEXT, INSTANCE]), null);
+  assert.equal(isccCode([]), null);
+});
+
+test("refuses units that do not combine", () => {
+  assert.equal(isccCode([SEMANTIC_IMAGE, TEXT, DATA, INSTANCE]), null);
+  assert.equal(isccCode([DATA, DATA, INSTANCE]), null);
+  assert.equal(isccCode(["ISCC:KUADU3VQPEHTTLEHL2GAHKKMPA23Q", DATA, INSTANCE]), null);
+});

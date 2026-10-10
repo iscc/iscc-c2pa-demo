@@ -251,6 +251,14 @@ main { flex: 1; min-height: 0; position: relative; }
 .unit .bar[data-unit="content"] { background: var(--unit-content); }
 .unit .bar[data-unit="data"] { background: var(--unit-data); }
 .unit .bar[data-unit="instance"] { background: var(--unit-instance); }
+.unit .bar.stripes { display: flex; flex-direction: column; gap: 1px; background: none; overflow: hidden; } /* the ISCC-CODE: one stripe per unit it holds */
+.unit .bar.stripes:empty { background: var(--rule); }
+.unit .bar.stripes span { flex: 1; }
+.unit .bar.stripes span[data-unit="meta"] { background: var(--unit-meta); }
+.unit .bar.stripes span[data-unit="semantic"] { background: var(--unit-semantic); }
+.unit .bar.stripes span[data-unit="content"] { background: var(--unit-content); }
+.unit .bar.stripes span[data-unit="data"] { background: var(--unit-data); }
+.unit .bar.stripes span[data-unit="instance"] { background: var(--unit-instance); }
 .unit .name { font-size: 12px; line-height: 16px; color: var(--muted); }
 .unit .code { font-family: var(--font-mono); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; user-select: text; margin-top: 2px; }
 .unit .code .prefix { color: var(--muted); }
