@@ -27,14 +27,14 @@ function units(kind: AssetKind): [string, string][] {
   ];
 }
 
-/** One row of the formats table: kind of media, its formats and its units. */
+/** One row of the formats table: kind of media with its formats under its name, and its units. */
 function kindRow(k: KindInfo): string {
   const icon = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k.kind]}</svg>`;
-  const chips = k.formats.map((f) => `<span class="format">${esc(f)}</span>`).join("");
+  const formats = k.formats.map((f) => `<span>${esc(f)}</span>`).join("");
   const cells = units(k.kind)
     .map(([unit, from]) => `<span class="cell">${from ? `<span data-unit="${unit}">${esc(from)}</span>` : ""}</span>`)
     .join("");
-  return `<div class="media">${icon}${esc(k.label)}</div><div class="chips">${chips}</div>${cells}`;
+  return `<div class="media">${icon}<div><div class="name">${esc(k.label)}</div><div class="formats">${formats}</div></div></div>${cells}`;
 }
 
 /** Which experimental features are off: both kinds of Semantic-Code, OCR of scanned PDF pages. */
@@ -53,18 +53,18 @@ function settingsLine(off: Off): string {
 }
 
 /** Table of supported formats, with a bracket under the units that one soft binding carries. The Semantic-Code and
- * OCR are experimental; while one is off, a line points to Settings. */
+ * OCR are experimental; while one is off, a line beside the bracket points to Settings. */
 function formatsTable(kinds: KindInfo[], off: Off): string {
   if (!kinds.length) return "";
-  const head = ["Media", "Formats", "Meta", "Semantic", "Content", "Data", "Instance"]
+  const head = ["Media and formats", "Meta", "Semantic", "Content", "Data", "Instance"]
     .map((h) => `<span class="head">${h}</span>`)
     .join("");
   return `
     <div class="kinds">
       ${head}
       ${kinds.map(kindRow).join("")}
-      <div class="binding"><span class="bracket"></span>one C2PA soft binding</div>
       ${settingsLine(off)}
+      <div class="binding"><span class="bracket"></span>one C2PA soft binding</div>
     </div>`;
 }
 

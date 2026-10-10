@@ -97,7 +97,7 @@ main { flex: 1; min-height: 0; position: relative; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 24px;
+  padding: 16px 24px;
   overflow: auto;
 }
 
@@ -110,7 +110,7 @@ main { flex: 1; min-height: 0; position: relative; }
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 24px 32px;
+  padding: 20px 32px;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   background: var(--white);
@@ -122,21 +122,20 @@ main { flex: 1; min-height: 0; position: relative; }
 .dropzone:hover { border-color: var(--ink); }
 
 .dropzone .ring {
-  width: 72px;
-  height: 72px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   border: 1px solid var(--ink);
   display: grid;
   place-items: center;
-  margin-bottom: 8px;
 }
 
-.dropzone .ring .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--coral); }
+.dropzone .ring .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--coral); }
 .dropzone h1 { font-size: 32px; line-height: 40px; font-weight: 300; }
 .dropzone p { margin: 0; color: var(--muted); }
 .dropzone .banner { margin-top: 16px; text-align: left; }
 
-.startfoot { width: 100%; max-width: 1232px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--rule); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--muted); }
+.startfoot { width: 100%; max-width: 1232px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--rule); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--muted); }
 .startfoot a { text-decoration: none; }
 .startfoot a:hover { text-decoration: underline; }
 .startfoot .spacer { flex: 1; }
@@ -144,24 +143,36 @@ main { flex: 1; min-height: 0; position: relative; }
 .startfoot .cr img { height: 20px; display: block; }
 
 /* Supported formats: one row per kind of media, its formats, and the units it gets. */
-.kinds { width: 100%; max-width: 1120px; margin-top: 24px; display: grid; grid-template-columns: 160px minmax(0, 1fr) repeat(5, 88px); text-align: left; }
+.kinds { width: 100%; max-width: 1120px; margin-top: 16px; display: grid; grid-template-columns: minmax(0, 1fr) repeat(5, 88px); text-align: left; }
 .kinds .head { padding-bottom: 8px; border-bottom: 1px solid var(--rule); font-family: var(--font-mono); font-size: 11px; line-height: 16px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
-.kinds .head:nth-child(n+3) { text-align: center; }
-.kinds .media, .kinds .chips, .kinds .cell { padding: 12px 0; border-bottom: 1px solid var(--rule-soft); display: flex; align-items: center; }
-.kinds .media { gap: 12px; font-size: 16px; font-weight: 500; }
+.kinds .head:nth-child(n+2) { text-align: center; }
+.kinds .media, .kinds .cell { padding: 8px 0; border-bottom: 1px solid var(--rule-soft); display: flex; align-items: center; }
+.kinds .media { gap: 12px; padding-right: 12px; }
+.kinds .media .name { font-size: 16px; line-height: 20px; font-weight: 500; }
+.kinds .media .formats { margin-top: 2px; display: flex; flex-wrap: wrap; gap: 0 8px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--muted); }
 .kinds .media svg { width: 24px; height: 24px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.kinds .chips { flex-wrap: wrap; gap: 6px; padding-right: 16px; }
-.kinds .format { padding: 3px 8px; border: 1px solid var(--rule); border-radius: var(--radius); font-family: var(--font-mono); font-size: 12px; line-height: 16px; }
-.kinds .cell { padding-inline: 1px; }
-.kinds .cell span { flex: 1; padding: 6px 0; border-radius: 2px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; text-align: center; }
-.kinds .cell [data-unit="meta"] { background: var(--unit-meta); color: var(--ink); }
-.kinds .cell [data-unit="semantic"] { background: var(--unit-semantic); color: var(--ink); }
-.kinds .cell [data-unit="content"] { background: var(--unit-content); color: var(--white); }
-.kinds .cell [data-unit="data"] { background: var(--unit-data); color: var(--white); }
-.kinds .cell [data-unit="instance"] { background: var(--unit-instance); color: var(--ink); }
-.kinds .binding { grid-column: 3 / -1; padding-top: 12px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--muted); text-align: center; }
-.kinds .bracket { display: block; height: 8px; margin: 0 1px 6px; border: 1px solid var(--muted); border-top: 0; }
-.kinds .models { grid-column: 1 / -1; padding-top: 12px; font-size: 12px; line-height: 16px; color: var(--muted); text-align: center; }
+.kinds .cell { padding-inline: 2px; }
+/* Unit cards: white, a band of the unit colour on top, the label in near-black below (never text on a unit colour). */
+.kinds .cell span { flex: 1; padding: 4px 0; border: 1px solid var(--rule); border-top: 4px solid; border-radius: 2px; background: var(--white); font-family: var(--font-mono); font-size: 12px; line-height: 16px; text-align: center; }
+.kinds .cell [data-unit="meta"] { border-top-color: var(--unit-meta); }
+.kinds .cell [data-unit="semantic"] { border-top-color: var(--unit-semantic); }
+.kinds .cell [data-unit="content"] { border-top-color: var(--unit-content); }
+.kinds .cell [data-unit="data"] { border-top-color: var(--unit-data); }
+.kinds .cell [data-unit="instance"] { border-top-color: var(--unit-instance); }
+.kinds .binding { grid-column: 2 / -1; padding-top: 10px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--muted); text-align: center; }
+.kinds .bracket { display: block; height: 8px; margin: 0 1px 4px; border: 1px solid var(--muted); border-top: 0; }
+.kinds .models { grid-column: 1; padding: 10px 16px 0 36px; font-size: 12px; line-height: 16px; color: var(--muted); }
+
+/* More room: a larger drop target and airier rows; the compact sizes above fit the 960x640 minimum window. */
+@media (min-height: 800px) {
+  .empty { padding-block: 24px; }
+  .dropzone { gap: 12px; padding-block: 24px; }
+  .dropzone .ring { width: 72px; height: 72px; margin-bottom: 8px; }
+  .dropzone .ring .dot { width: 14px; height: 14px; }
+  .kinds { margin-top: 24px; }
+  .kinds .media, .kinds .cell { padding-block: 14px; }
+  .startfoot { margin-top: 24px; padding-top: 16px; }
+}
 
 .dropoverlay {
   position: absolute;
