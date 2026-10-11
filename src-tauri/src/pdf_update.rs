@@ -98,14 +98,26 @@ fn without_xmp_description(update: &mut IncrementalDocument) -> Result<()> {
 /// the manifest store is reserved first, the file hashed around it, then the signed store
 /// written into its place.
 pub fn signed(builder: &mut Builder, source: &[u8]) -> Result<Vec<u8>> {
+    signed_leaving_out(builder, source, &[])
+}
+
+/// [`signed`], with the data hash leaving out the ranges `extra` of the signed PDF too, as
+/// credentials that do not cover their file do (tests).
+pub(crate) fn signed_leaving_out(
+    builder: &mut Builder,
+    source: &[u8],
+    extra: &[HashRange],
+) -> Result<Vec<u8>> {
     let placeholder = builder.placeholder(formats::PDF)?;
     let mut update = update_of(source)?;
     add_manifest(&mut update, &placeholder)?;
     let mut out = saved(update)?;
     let start = find(&out, &placeholder, source.len())
         .ok_or_else(|| anyhow!("the manifest store is missing from the update"))?;
-    builder
-        .set_data_hash_exclusions(vec![HashRange::new(start as u64, placeholder.len() as u64)])?;
+    let mut exclusions = extra.to_vec();
+    exclusions.push(HashRange::new(start as u64, placeholder.len() as u64));
+    exclusions.sort_by_key(HashRange::start);
+    builder.set_data_hash_exclusions(exclusions)?;
     builder.update_hash_from_stream(formats::PDF, &mut Cursor::new(&out))?;
     let manifest = builder.sign_embeddable(formats::PDF)?;
     ensure!(
@@ -114,6 +126,15 @@ pub fn signed(builder: &mut Builder, source: &[u8]) -> Result<Vec<u8>> {
     );
     out[start..start + manifest.len()].copy_from_slice(&manifest);
     Ok(out)
+}
+
+/// `source` with the signed manifest store `manifest` appended as an update section, laid out as
+/// [`signed`] lays out its placeholder: for the source a manifest store was signed for, this is
+/// the signed PDF again, byte for byte.
+pub fn with_store(source: &[u8], manifest: &[u8]) -> Result<Vec<u8>> {
+    let mut update = update_of(source)?;
+    add_manifest(&mut update, manifest)?;
+    saved(update)
 }
 
 /// Where the source of a PDF signed by an update section ends: before the line feed that starts
@@ -862,7 +883,7 @@ mod tests {
     fn sign_checked(source: &[u8]) -> (Vec<u8>, usize) {
         let out = signed(&mut builder(source), source).unwrap();
         let reader = reader(&out);
-        assert_eq!(reader.validation_state(), ValidationState::Trusted);
+        assert_eq!(reader.validation_state(), ValidationState::Valid);
         let exclusions = inspect::data_hash_exclusions(&reader).unwrap();
         assert_eq!(exclusions.len(), 1);
         (out, exclusions[0].0 as usize)
@@ -1259,7 +1280,7 @@ mod tests {
     }
 
     /// Every PDF below `PDF_CORPUS_DIR` (the files named in its `expected_pdf.json`) that the
-    /// app lets through to signing signs to a Trusted copy whose source is recovered.
+    /// app lets through to signing signs to a valid copy whose source is recovered.
     #[test]
     #[ignore = "needs a local corpus; set PDF_CORPUS_DIR and run with --ignored --nocapture"]
     fn pdf_corpus_sources_are_recovered() {
@@ -1287,7 +1308,7 @@ mod tests {
             let start = exclusions.first().map(|e| e.0 as usize);
             let state = reader.validation_state();
             let end = start.and_then(|start| source_end(&out, start));
-            if state != ValidationState::Trusted || end != Some(source.len()) {
+            if state != ValidationState::Valid || end != Some(source.len()) {
                 wrong.push(format!("{file}: {state:?}, source end {end:?}"));
             }
         }

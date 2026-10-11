@@ -401,7 +401,7 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
 
       <div class="fieldset">
         <div class="legend">Signing credentials</div>
-        <label class="radio"><input type="radio" name="cred" value="demo" ${form.credentials.kind === "demo" ? "checked" : ""} /><span>Built-in demo certificate <span class="hint">(c2pa-rs test key, ES256; trusted only inside this app)</span></span></label>
+        <label class="radio"><input type="radio" name="cred" value="demo" ${form.credentials.kind === "demo" ? "checked" : ""} /><span>Built-in demo certificate <span class="hint">(public c2pa-rs test key, ES256; on no C2PA trust list)</span></span></label>
         <label class="radio"><input type="radio" name="cred" value="custom" ${custom ? "checked" : ""} /><span>My own certificate and key</span></label>
         ${
           custom

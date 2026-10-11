@@ -2,13 +2,16 @@
 
 use std::sync::LazyLock;
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use c2pa::crypto::cose::{CertificateTrustPolicy, TrustAnchorType};
 use serde_json::{json, Value};
 
 /// Official C2PA trust list (conformance-public/trust-list), so conforming products validate as trusted.
 const C2PA_TRUST_LIST: &str = include_str!("../resources/certs/C2PA-TRUST-LIST.pem");
 /// Official C2PA time stamping authority trust list.
 const C2PA_TSA_TRUST_LIST: &str = include_str!("../resources/certs/C2PA-TSA-TRUST-LIST.pem");
-/// Root bundle of the c2pa-rs test certificates, so assets signed with the built-in demo key validate.
+/// Root bundle of the c2pa-rs test certificates, the demo key's among them. Their private keys are
+/// public, so they are no trust anchor here; [`signed_with_test_key`] only tells their signers apart.
 const TEST_ROOT_BUNDLE: &str = include_str!("../resources/certs/test_cert_root_bundle.pem");
 /// Allowed signer EKUs (c2pa-rs `valid_eku_oids.cfg`). Custom trust settings replace the c2pa-rs
 /// defaults, and without this list only the emailProtection EKU is accepted, so signers with the
@@ -32,6 +35,22 @@ pub const ISCC_BINDING_CONTACT: &str = "info@iscc.io";
 pub const ISCC_BINDING_INFO_URL: &str = "https://ieps.iscc.codes/iep-0020/";
 /// Name reported as claim generator in signed manifests.
 pub const CLAIM_GENERATOR_NAME: &str = "ISCC C2PA Demo";
+
+/// Base labels (`labels::parse_label`) of the assertions signing lists in `created_assertions`,
+/// the ones the specification attributes to the signer. c2pa-rs 0.91 lists every assertion but
+/// the hard binding and the actions in `gathered_assertions` by default, which the specification
+/// does not attribute to the signer, and which for the parent ingredient breaks the rule that it
+/// sits in the same list as the actions that reference it.
+pub const CREATED_ASSERTION_LABELS: [&str; 5] = [
+    "c2pa.ingredient",
+    "c2pa.soft-binding",
+    "c2pa.thumbnail.claim",
+    "cawg.metadata",
+    "cawg.training-mining",
+];
+
+/// URI under which [`signed_with_test_key`] checks against the c2pa-rs test root bundle.
+const TEST_ROOT_URI: &str = "urn:c2pa-rs:test-root-bundle";
 
 /// URI of the C2PA trust list, reported for signers that chain to it.
 pub const C2PA_TRUST_URI: &str =
@@ -90,11 +109,6 @@ pub fn base_settings() -> Value {
                     "trust_anchors": TSA_ONLY_ANCHORS.as_str(),
                     "trust_kind": "tsa",
                     "trust_uri": "https://github.com/c2pa-org/conformance-public/blob/main/trust-list/C2PA-TSA-TRUST-LIST.pem"
-                },
-                {
-                    "trust_anchors": TEST_ROOT_BUNDLE,
-                    "trust_kind": "manifest",
-                    "trust_uri": "urn:c2pa-rs:test-root-bundle"
                 }
             ],
             "trust_config": TRUST_CONFIG
@@ -115,9 +129,34 @@ pub fn base_settings() -> Value {
             // `allActionsIncluded: true`.
             "actions": { "auto_all_actions_included": true },
             // The app writes its own claim thumbnail (`thumbnail.rs`) and none for ingredients.
-            "thumbnail": { "enabled": false }
+            "thumbnail": { "enabled": false },
+            "created_assertion_labels": CREATED_ASSERTION_LABELS
         }
     })
+}
+
+/// Whether the certificate chain `chain_pem` (end entity first, as c2pa's
+/// `SignatureInfo::cert_chain` gives it) chains to the c2pa-rs test root bundle: a public test
+/// key, the demo key among them, as which anyone can sign. Such a signer is never trusted here.
+pub fn signed_with_test_key(chain_pem: &str) -> bool {
+    let ders: Vec<Vec<u8>> = pem_blocks(chain_pem)
+        .filter_map(|block| B64.decode(pem_body(block)).ok())
+        .collect();
+    let Some((end_entity, chain)) = ders.split_first() else {
+        return false;
+    };
+    let mut policy = CertificateTrustPolicy::new();
+    policy.add_valid_ekus(TRUST_CONFIG.as_bytes());
+    let anchors = policy.add_trust_anchors(
+        TEST_ROOT_BUNDLE.as_bytes(),
+        TEST_ROOT_URI,
+        TrustAnchorType::Manifest,
+        None,
+    );
+    anchors.is_ok()
+        && policy
+            .check_certificate_trust(chain, end_entity, None)
+            .is_ok()
 }
 
 #[cfg(test)]
@@ -175,6 +214,20 @@ pub(crate) mod tests {
         settings
     }
 
+    /// `settings` plus the c2pa-rs test root bundle as manifest anchor, as a validator that
+    /// trusts the demo key has it.
+    pub(crate) fn with_test_root(mut settings: Value) -> Value {
+        settings["trust"]["anchors"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "trust_anchors": TEST_ROOT_BUNDLE,
+                "trust_kind": "manifest",
+                "trust_uri": TEST_ROOT_URI
+            }));
+        settings
+    }
+
     /// Validation state of `asset` read with `settings` plus the fixture root as manifest anchor.
     fn validation_state(asset: &[u8], settings: Value) -> String {
         let context = Context::new()
@@ -204,6 +257,25 @@ pub(crate) mod tests {
             .unwrap()
             .remove("trust_config");
         assert_eq!(validation_state(&sign_with_c2pa_eku(), settings), "Invalid");
+    }
+
+    #[test]
+    fn the_public_test_key_is_told_apart() {
+        assert!(signed_with_test_key(DEMO_SIGN_CERT));
+        assert!(!signed_with_test_key(EKU_LEAF));
+        assert!(!signed_with_test_key(&format!("{EKU_LEAF}\n{EKU_ROOT}")));
+        assert!(!signed_with_test_key(""));
+    }
+
+    /// Files signed with the demo key validate, but their signer is on no trust list here.
+    #[test]
+    fn the_demo_key_is_not_trusted() {
+        let signed =
+            crate::sign::tests::sign_fixture("no_manifest.jpg", "iscc-c2pa-demo-test-untrusted");
+        let context = Context::new().with_settings(base_settings()).unwrap();
+        let reader = Reader::from_context(context).with_file(&signed).unwrap();
+        assert_eq!(format!("{:?}", reader.validation_state()), "Valid");
+        assert_eq!(crate::inspect::signer_trust_list(&reader), None);
     }
 
     #[test]

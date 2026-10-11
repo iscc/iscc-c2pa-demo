@@ -211,7 +211,7 @@ function ocrAction(slug: UnitSlug, inspection: Inspection): string {
  * the file has no such unit, or for a Semantic-Code that is not shown. A Meta-Code missing for the Content-Code's
  * reason was never tried (a video's tags unread without ffmpeg), so it names no inputs. */
 function row(slug: UnitSlug, inspection: Inspection, view: UnitListView): string {
-  if (!shown(slug, view)) return "";
+  if (!shown(slug, view.semantic)) return "";
   const unit = inspection.iscc.find((u) => u.unit === slug);
   if (unit) return unitRow(unit, unitFrom(unit, inspection));
   const name = unitName(slug, inspection);
@@ -222,16 +222,23 @@ function row(slug: UnitSlug, inspection: Inspection, view: UnitListView): string
   return missingUnitRow(slug, name, error, from, ocrAction(slug, inspection));
 }
 
-/** Whether the unit list shows unit `slug`: every unit but a Semantic-Code that is not shown. */
-function shown(slug: UnitSlug, view: UnitListView): boolean {
-  return slug !== "semantic" || view.semantic;
+/** Whether the unit list shows unit `slug`: every unit but a Semantic-Code that is not shown (`semantic`). */
+function shown(slug: UnitSlug, semantic: boolean): boolean {
+  return slug !== "semantic" || semantic;
+}
+
+/** The computed units the unit list shows, and whether any unit it shows is still being computed. */
+export function shownUnits(inspection: Inspection, semantic: boolean): { units: IsccUnit[]; pending: boolean } {
+  return {
+    units: inspection.iscc.filter((u) => shown(u.unit, semantic)),
+    pending: inspection.pending.some((slug) => shown(slug, semantic)),
+  };
 }
 
 /** Card with the compact ISCC-CODE of the units the list below shows, its bar striped in their colours; while any of
  * them is still computed, it says it waits for them. Absent when the units give none (no Data- or Instance-Code). */
 export function codeCard(inspection: Inspection, view: UnitListView): string {
-  const units = inspection.iscc.filter((u) => shown(u.unit, view));
-  const pending = inspection.pending.some((slug) => shown(slug, view));
+  const { units, pending } = shownUnits(inspection, view.semantic);
   const code = pending ? null : isccCode(units.map((u) => u.iscc));
   if (!pending && !code) return "";
   const stripes = units.map((u) => `<span data-unit="${u.unit}"></span>`).join("");

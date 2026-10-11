@@ -33,6 +33,8 @@ export interface SoftBindingSummary {
   metadata: BindingMetadata | null;
   /** Whether the file is source-preserving (IEP-0020); null unless the block decoded as ISCC. */
   preservation: Preservation | null;
+  /** For part of the asset (a region or a timespan): its units are not compared, and there is no preservation verdict. */
+  scoped: boolean;
 }
 
 /** Result of the IEP-0020 Source Preservation check, with the reason when not preserved. */
@@ -119,6 +121,8 @@ export interface ManifestSummary {
   invalid_reason: InvalidReason | null;
   /** URI of the trust list the active manifest's signer chains to; null when untrusted. */
   trust_list: string | null;
+  /** The signer chains to the c2pa-rs test root bundle, whose private keys are public (the demo key among them). */
+  test_key: boolean;
   validation: ValidationResults | null;
   /** True when the file has a source view: the file without the byte ranges the data hash of an embedded manifest excludes, or the file itself for a sidecar manifest. */
   source_view: boolean;
@@ -325,6 +329,71 @@ export interface Switches {
   licence: string;
 }
 
+/** The C2PA verdict on found credentials for the file as it is (`recover::ForFile`). */
+export type ForFile =
+  /** Their data hash matches the whole file: a manifest store published apart from exactly these bytes. */
+  | { status: "valid"; state: string }
+  /** Rejected for this file; `hash_mismatch` when because their hash does not match. */
+  | { status: "rejected"; reason: InvalidReason; hash_mismatch: boolean }
+  /** c2pa-rs calls them valid, but not through a data hash of their own, which this app does not rely on; why. */
+  | { status: "unchecked"; reason: string };
+
+/** How the ISCC soft binding of found credentials compares with the file (`recover::IsccMatch`, IEP-0020). */
+export interface IsccMatch {
+  /** The soft binding lists this file's Instance-Code: the file has exactly the bytes it was computed from. */
+  exact: boolean;
+  /** Lowest similarity of the Content-Codes it lists to this file's, 0 to 1; null when none of this file's kind. */
+  content: number | null;
+  /** Exact, or a near-identical Content-Code. */
+  near: boolean;
+  /** Soft bindings this app does not check (other algorithms, ISCC blocks for part of the asset). */
+  unchecked: string[];
+}
+
+/** The rebuild check of an exact match: the found manifest store put back into this file (`recover::Rebuild`). */
+export type Rebuild =
+  /** The rebuilt file validates and its hash covers the whole file. */
+  | { status: "passed"; state: string }
+  /** The rebuilt file validates, but its hash leaves `uncovered` bytes (null: boxes or members) of this file out. */
+  | { status: "partial"; state: string; uncovered: number | null }
+  /** The rebuilt file does not validate; `hash_mismatch` when because its hash does not match. */
+  | { status: "failed"; reason: InvalidReason; hash_mismatch: boolean }
+  /** The check cannot be made for these credentials, or was not made; why. */
+  | { status: "unavailable"; reason: string };
+
+/** Credentials on the test network whose soft binding matches the file's ISCC, examined against the file (`lookup::Found`). */
+export interface Found {
+  /** Key of the fetched manifest store, for Restore. */
+  store_id: string;
+  manifest_id: string;
+  /** Hosts of the services that found these exact bytes. */
+  hosts: string[];
+  /** Best similarity score a service gave; for ranking only. */
+  score: number;
+  for_file: ForFile;
+  iscc: IsccMatch;
+  /** The specification attributes the soft binding to the signer (listed in `created_assertions`). */
+  attributed: boolean;
+  /** The rebuild check, for exact matches only. */
+  rebuild: Rebuild | null;
+  /** The active manifest validated with this file as its asset, its soft bindings compared with this file's units. */
+  manifest: ManifestSummary;
+}
+
+/** What a search of the test network found and left out, and which services did not answer (`lookup::Lookup`). */
+export interface Lookup {
+  /** Near-identical matches: exact ones first, then by earliest verified time. */
+  matches: Found[];
+  /** Related content that is not near-identical, most similar first. */
+  related: Found[];
+  left_out: { manifest_id: string; host: string; reason: string }[];
+  /** Candidates not examined (beyond the number fetched). */
+  unchecked: number;
+  failures: { host: string; reason: string }[];
+  /** Lowest Content-Code similarity of a near-identical match, 0 to 1. */
+  near_identical: number;
+}
+
 /** A channel that hands each message to `listener`. */
 function channel<T>(listener: (message: T) => void): Channel<T> {
   const ch = new Channel<T>();
@@ -366,3 +435,11 @@ export const setOcr = (on: boolean) => invoke<Switches>("set_ocr", { on });
 
 export const metaCode = (title: string, description?: string, meta?: string) =>
   invoke<IsccUnit>("meta_code", { title, description: description || null, meta: meta || null });
+
+/** Search the test network for Content Credentials matching `units` of the file at `path` and examine each against
+ * the file; only the units leave the machine. */
+export const findCredentials = (path: string, units: string[]) => invoke<Lookup>("find_credentials", { path, units });
+
+/** Write the file at `path` with the found credentials `storeId` put back to `output`, once they validate there. */
+export const restoreCredentials = (path: string, storeId: string, output: string) =>
+  invoke<void>("restore_credentials", { path, storeId, output });

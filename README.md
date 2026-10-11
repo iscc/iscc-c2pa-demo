@@ -44,6 +44,9 @@ calculate from the file, without registration. With the app you can:
    data mining is allowed.
 3. Check a signed file, changed or not. The app calculates the ISCC again and compares it with the
    one in the Content Credentials, unit by unit.
+4. Find the Content Credentials of a file that has none, on the ISCC test network: the app sends
+   the file's ISCC (never the file), checks every manifest it finds against the file, and puts the
+   credentials back into an unsigned original, which then validates as the signed file again.
 
 ## Motivation
 
@@ -101,15 +104,22 @@ so the download page shows you how to open them the first time.
 
 ## Good to know
 
-- **The app does not look up credentials.** It compares ISCCs, but it does not find the credentials
-  of a stripped copy. That needs a lookup service, which C2PA specifies as the Soft Binding
-  Resolution API.
-- **The built-in certificate is for testing.** Anyone can check the ISCC, but only this app trusts
-  the demo signature. Sign with your own certificate and key for anything real.
+- **Search uses the ISCC test network.** A file without Content Credentials offers "Search Content
+  Credentials", which asks the test store `c2pa-store-test.iscc.io` and the resolver
+  `c2pa-test.iscc.io` (which asks `search-test.iscc.id`) through the C2PA Soft Binding Resolution
+  API. It sends the file's ISCC, which identifies this exact file, with your IP address; never the
+  file. Every manifest found is checked on your computer. C2PA rejects credentials found this way
+  for the file as it is, as the specification says, so the app keeps that verdict apart from its
+  own ISCC check, and only an exact match whose credentials validate once put back into the file
+  is called one. Only near-identical matches are listed; related content stays behind a toggle.
+- **The built-in certificate is for testing.** It is the public c2pa-rs test key: its private key
+  is published, so anyone can sign as this signer, and the app says so ("Valid, signed with a
+  public test key"); no C2PA trust list includes it. Sign with your own certificate and key for
+  anything real.
 - **Signers are checked against the official C2PA trust list.** The app bundles the
-  [C2PA trust list and TSA trust list](https://github.com/c2pa-org/conformance-public/tree/main/trust-list),
-  plus the c2pa-rs test roots of the demo certificate. A certificate that chains to the C2PA trust
-  list shows as "Valid, signer on a trust list". Timestamps are checked against both lists.
+  [C2PA trust list and TSA trust list](https://github.com/c2pa-org/conformance-public/tree/main/trust-list).
+  A certificate that chains to the C2PA trust list shows as "Valid, signer on the C2PA trust
+  list". Timestamps are checked against both lists.
 - **A matching ISCC shows similar content.** It is a strong signal, not proof, that two files hold
   the same or similar content. It says nothing about who made them or who holds the rights.
 - **Video needs ffmpeg, downloaded once.** The MPEG-7 frame signatures behind the Content-Code

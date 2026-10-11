@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use c2pa::assertions::{labels, SoftBinding};
+use c2pa::assertions::{labels, SoftBinding, SoftBindingBlock};
 use c2pa::{Context, Manifest, Reader, ValidationState};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::asset::{self, Asset, AssetContent, Loaded};
-use crate::context::{base_settings, ISCC_SOFT_BINDING_ALG};
+use crate::context::{base_settings, signed_with_test_key, ISCC_SOFT_BINDING_ALG};
 use crate::formats::{self, Format, Kind};
 use crate::iscc::{self, Content, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
@@ -105,6 +105,9 @@ pub struct ManifestSummary {
     pub invalid_reason: Option<InvalidReason>,
     /// URI of the trust list the active manifest's signer chains to; `None` when untrusted.
     pub trust_list: Option<String>,
+    /// The signer chains to the c2pa-rs test root bundle, whose private keys are public (the demo
+    /// key among them): anyone can sign as this signer.
+    pub test_key: bool,
     pub validation: Value,
     /// True when the file has a source view (IEP-0020): the file without the byte ranges the
     /// data hash of an embedded manifest excludes, or the file itself for a sidecar manifest.
@@ -122,7 +125,7 @@ pub struct ManifestSummary {
 }
 
 /// The failure that makes a manifest invalid, in plain language, so the verdict is never bare.
-#[derive(Serialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct InvalidReason {
     /// Plain-language sentence; c2pa's own explanation for codes without one.
     pub text: String,
@@ -192,6 +195,9 @@ pub struct SoftBindingSummary {
     pub metadata: Option<BindingMetadata>,
     /// Whether the file is source-preserving; `None` unless the block decoded as ISCC.
     pub preservation: Option<Preservation>,
+    /// The block is for part of the asset ([`is_part`]): its units are not compared and it gives
+    /// no preservation verdict, because this app computes units of whole files only.
+    pub scoped: bool,
 }
 
 /// Whether a signed file is source-preserving (IEP-0020, Source Preservation), with the reason
@@ -901,6 +907,51 @@ fn summarize(
     view: Option<&SourceView>,
     hashed: bool,
 ) -> ManifestSummary {
+    let mismatch = if reader.is_embedded() {
+        FILE_CHANGED
+    } else {
+        SIDECAR_MISMATCH
+    };
+    ManifestSummary {
+        validation_state: if hashed {
+            format!("{:?}", reader.validation_state())
+        } else {
+            "Pending".to_owned()
+        },
+        invalid_reason: invalid_reason(reader, mismatch).filter(|_| hashed),
+        source_view: view.is_some() || (!hashed && source_view_ranges(reader).is_some()),
+        sidecar: sidecar_name(reader, path),
+        soft_bindings: reader
+            .active_manifest()
+            .map(|m| {
+                let facts = binding_facts(reader, m, view.is_some());
+                soft_bindings(m, compared, view, hashed.then_some(&facts))
+            })
+            .unwrap_or_default(),
+        ..summary_of(reader, json)
+    }
+}
+
+/// Display summary of the active manifest of a manifest store found by search, read with the
+/// file in hand as its asset (`Reader::with_manifest_data_and_stream`), so that its validation is
+/// that of this file. Its soft bindings are compared with `units`, the units of this file; there
+/// is no source view and no preservation verdict, which describe a file and its own credentials.
+pub(crate) fn found_summary(reader: &Reader, units: &[IsccUnit]) -> ManifestSummary {
+    let json = serde_json::from_str::<Value>(&reader.json()).unwrap_or(Value::Null);
+    ManifestSummary {
+        invalid_reason: invalid_reason(reader, FOUND_MISMATCH),
+        soft_bindings: reader
+            .active_manifest()
+            .map(|m| soft_bindings(m, units, None, None))
+            .unwrap_or_default(),
+        ..summary_of(reader, &json)
+    }
+}
+
+/// What every display summary of a manifest store holds, whatever it was read with: the active
+/// manifest as c2pa validated it, without a reason for an invalid state, a source view, a sidecar
+/// or soft bindings, which depend on the file it was read with.
+fn summary_of(reader: &Reader, json: &Value) -> ManifestSummary {
     let label = reader.active_label().unwrap_or_default().to_owned();
     let manifest = reader.active_manifest();
     let assertions: Vec<AssertionSummary> = json
@@ -934,16 +985,15 @@ fn summarize(
         title: manifest.and_then(|m| m.title().map(str::to_owned)),
         claim_generator,
         manifest_count: reader.manifests().len(),
-        validation_state: if hashed {
-            format!("{:?}", reader.validation_state())
-        } else {
-            "Pending".to_owned()
-        },
-        invalid_reason: invalid_reason(reader).filter(|_| hashed),
+        validation_state: format!("{:?}", reader.validation_state()),
+        invalid_reason: None,
         trust_list: signer_trust_list(reader),
+        test_key: manifest
+            .and_then(Manifest::signature_info)
+            .is_some_and(|s| signed_with_test_key(s.cert_chain())),
         validation: serde_json::to_value(reader.validation_results()).unwrap_or(Value::Null),
-        source_view: view.is_some() || (!hashed && source_view_ranges(reader).is_some()),
-        sidecar: sidecar_name(reader, path),
+        source_view: false,
+        sidecar: None,
         signature: manifest
             .and_then(Manifest::signature_info)
             .map(|s| SignatureSummary {
@@ -973,12 +1023,7 @@ fn summarize(
                     .collect()
             })
             .unwrap_or_default(),
-        soft_bindings: manifest
-            .map(|m| {
-                let facts = binding_facts(reader, m, view.is_some());
-                soft_bindings(m, compared, view, hashed.then_some(&facts))
-            })
-            .unwrap_or_default(),
+        soft_bindings: Vec::new(),
         training_mining,
         thumbnail: manifest.map(thumbnail_data_url).unwrap_or_default(),
         assertions,
@@ -986,7 +1031,7 @@ fn summarize(
 }
 
 /// Claim thumbnail of `manifest` as a data URL; empty without one.
-fn thumbnail_data_url(manifest: &Manifest) -> String {
+pub(crate) fn thumbnail_data_url(manifest: &Manifest) -> String {
     manifest
         .thumbnail()
         .and_then(|(format, bytes)| image_data_url(format, &bytes))
@@ -1023,8 +1068,60 @@ pub(crate) fn signer_trust_list(reader: &Reader) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Reason of an invalid manifest; `None` for any other validation state.
-fn invalid_reason(reader: &Reader) -> Option<InvalidReason> {
+/// Labels (with their instance suffix, `c2pa.soft-binding__1`) of the active manifest's own
+/// assertions that the specification attributes to the signer: those a claim lists in
+/// `created_assertions` (not those in `gathered_assertions`), or every assertion of a v1 claim,
+/// which does not tell them apart. Empty when the claim cannot be read.
+pub(crate) fn attributed_labels(reader: &Reader) -> Vec<String> {
+    let Ok(crjson) = reader.to_crjson_value() else {
+        return Vec::new();
+    };
+    let label = reader.active_label();
+    let Some(manifest) = crjson["manifests"]
+        .as_array()
+        .and_then(|list| list.iter().find(|m| m["label"].as_str() == label))
+    else {
+        return Vec::new();
+    };
+    let listed = match manifest.get("claim.v2") {
+        Some(claim) => &claim["created_assertions"],
+        None => &manifest["claim"]["assertions"],
+    };
+    let own = format!(
+        "self#jumbf=/c2pa/{}/c2pa.assertions/",
+        label.unwrap_or_default()
+    );
+    listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let url = r["url"].as_str()?;
+            url.strip_prefix("self#jumbf=c2pa.assertions/")
+                .or_else(|| url.strip_prefix(own.as_str()))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The hard bindings (`c2pa.hash.*`) the active manifest's own claim carries, each with its base
+/// label (`c2pa.hash.bmff` for `c2pa.hash.bmff.v3`) and its assertion as the detailed JSON holds
+/// it. An update manifest carries none of its own.
+pub(crate) fn hard_bindings(reader: &Reader) -> Vec<(String, Value)> {
+    let json: Value = serde_json::from_str(&reader.detailed_json()).unwrap_or(Value::Null);
+    reader
+        .active_label()
+        .and_then(|label| json["manifests"][label]["assertion_store"].as_object())
+        .into_iter()
+        .flatten()
+        .filter(|(label, _)| label.starts_with("c2pa.hash."))
+        .map(|(label, assertion)| (labels::parse_label(label).0.to_owned(), assertion.clone()))
+        .collect()
+}
+
+/// Reason of an invalid manifest, with `mismatch` as the sentence for a hard binding that does
+/// not match; `None` for any other validation state.
+pub(crate) fn invalid_reason(reader: &Reader, mismatch: &str) -> Option<InvalidReason> {
     if reader.validation_state() != ValidationState::Invalid {
         return None;
     }
@@ -1042,8 +1139,8 @@ fn invalid_reason(reader: &Reader) -> Option<InvalidReason> {
         .map(|v| (v.code(), v.explanation(), true));
     let failures: Vec<Failure> = active.chain(ingredients).collect();
     let mut reason = reason_for(&failures);
-    if !reader.is_embedded() && reason.text == FILE_CHANGED {
-        reason.text = SIDECAR_MISMATCH.to_owned();
+    if reason.text == FILE_CHANGED {
+        reason.text = mismatch.to_owned();
     }
     Some(reason)
 }
@@ -1093,6 +1190,11 @@ const FILE_CHANGED: &str = "The file changed after signing: its hash no longer m
 /// Hard-binding mismatch of a sidecar manifest, which also describes an unchanged file: a sidecar
 /// extracted from a copy that embeds it never matches the file without it.
 const SIDECAR_MISMATCH: &str = "The hash in the sidecar does not match this file.";
+
+/// Hard-binding mismatch of a manifest store found by search, read with the file in hand: the
+/// usual outcome, since credentials published apart from their file were made for a copy that
+/// embedded them, and on its own it cannot tell a changed file from credentials of another one.
+const FOUND_MISMATCH: &str = "The hash in these credentials does not match this file.";
 
 /// Plain-language sentence for the failure codes of c2pa-rs 0.91 a reader can act on.
 fn plain_reason(code: &str) -> Option<&'static str> {
@@ -1294,8 +1396,15 @@ fn soft_bindings(
         .collect()
 }
 
+/// Whether a soft-binding block is for part of the asset (a region or a timespan) rather than
+/// the whole asset.
+pub(crate) fn is_part(block: &SoftBindingBlock) -> bool {
+    block.scope.region.is_some() || block.scope.timespan.is_some()
+}
+
 /// One summary per block of a soft-binding assertion; the metadata belongs to the assertion and
-/// is repeated on each block. IEP-0020, Soft Binding Verification: when the file is
+/// is repeated on each block. A block for part of the asset is decoded, not compared. IEP-0020,
+/// Soft Binding Verification: when the file is
 /// source-preserving, the embedded units are compared with those of `view`, because the source
 /// view then is the source. Otherwise they are compared with `compared`: Meta-Code and Content-Code
 /// of the file, which always decodes, with Data-Code and Instance-Code of the source view where
@@ -1311,16 +1420,18 @@ fn summarize_assertion(
     let summarize = |value: &[u8], units: &[IsccUnit]| {
         summarize_soft_binding(sb.alg.clone(), value, units, metadata.clone())
     };
-    let Some(facts) = facts else {
-        return sb
-            .blocks
-            .iter()
-            .map(|block| summarize(&block.value, compared))
-            .collect();
-    };
     sb.blocks
         .iter()
         .map(|block| {
+            if is_part(block) {
+                return SoftBindingSummary {
+                    scoped: true,
+                    ..summarize(&block.value, &[])
+                };
+            }
+            let Some(facts) = facts else {
+                return summarize(&block.value, compared);
+            };
             let instance_equal = view.and_then(|v| {
                 let on_view = summarize(&block.value, v.units());
                 let instance = on_view
@@ -1356,7 +1467,7 @@ struct BindingFacts {
 }
 
 /// Codes of a hard binding that no longer matches the file.
-const HARD_BINDING_MISMATCH: [&str; 5] = [
+pub(crate) const HARD_BINDING_MISMATCH: [&str; 5] = [
     "assertion.dataHash.mismatch",
     "assertion.bmffHash.mismatch",
     "assertion.boxesHash.mismatch",
@@ -1371,21 +1482,32 @@ const ASSERTION_MISMATCH: [&str; 3] = [
     "assertion.inaccessible",
 ];
 
-/// Facts about the active manifest `manifest` from the validator's failure codes and its
-/// ingredients.
-fn binding_facts(reader: &Reader, manifest: &Manifest, source_view: bool) -> BindingFacts {
-    let failures: Vec<&str> = reader
+/// Failure codes of the active manifest, in validator order.
+fn active_failures(reader: &Reader) -> Vec<&str> {
+    reader
         .validation_results()
         .and_then(|r| r.active_manifest())
         .map(|c| c.failure().iter().map(|v| v.code()).collect())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// The first failure that keeps the claim signature from vouching for the active manifest as it
+/// is: the signature or its certificate does not validate (an untrusted signer aside), or an
+/// assertion no longer matches its hash in the claim. `None` when the signature vouches for it.
+pub(crate) fn signature_failure(reader: &Reader) -> Option<&str> {
+    active_failures(reader).into_iter().find(|c| {
+        ((c.starts_with("claimSignature.") || c.starts_with("signingCredential.")) && !tolerated(c))
+            || ASSERTION_MISMATCH.contains(c)
+    })
+}
+
+/// Facts about the active manifest `manifest` from the validator's failure codes and its
+/// ingredients.
+fn binding_facts(reader: &Reader, manifest: &Manifest, source_view: bool) -> BindingFacts {
+    let failures = active_failures(reader);
     BindingFacts {
         source_view,
-        signature_valid: !failures.iter().any(|c| {
-            ((c.starts_with("claimSignature.") || c.starts_with("signingCredential."))
-                && !tolerated(c))
-                || ASSERTION_MISMATCH.contains(c)
-        }),
+        signature_valid: signature_failure(reader).is_none(),
         hard_binding_matches: !failures.iter().any(|c| HARD_BINDING_MISMATCH.contains(c)),
         resigned: manifest
             .ingredients()
@@ -1481,6 +1603,7 @@ fn summarize_soft_binding(
         error,
         metadata,
         preservation: None,
+        scoped: false,
     }
 }
 
@@ -1971,7 +2094,7 @@ mod tests {
         );
         let full = inspect_with(&output, Depth::FULL, &unstopped).unwrap();
         let manifest = full.manifest.unwrap();
-        assert_eq!(manifest.validation_state, "Trusted");
+        assert_eq!(manifest.validation_state, "Valid");
         let sb = &manifest.soft_bindings[0];
         assert_eq!(sb.preservation, Some(Preservation::Changed));
     }
@@ -2329,5 +2452,44 @@ mod tests {
         }))
         .unwrap();
         assert!(binding_metadata(&sb).is_none());
+    }
+
+    /// A block for part of the asset is decoded, but compared with nothing and given no
+    /// preservation verdict, among found credentials (no facts) as in a file's own.
+    #[test]
+    fn a_block_for_part_of_the_asset_is_not_compared() {
+        let codes = [
+            "ISCC:EED6WDMQ2DGHONLM24NCBIEZV5V5SDMQ2DGXONLM5ENCBIE355V5TUQ",
+            "ISCC:IADZUC27FXMNE4P7YLACBSKWIMZSVGZWYMSCN4QMV6MEEKABNLIBAPQ",
+        ];
+        let units: Vec<IsccUnit> = codes
+            .iter()
+            .map(|c| iscc::describe_unit(c).unwrap())
+            .collect();
+        let value = iscc::encode_seq(&codes.map(str::to_owned)).unwrap();
+        let sb: SoftBinding = serde_json::from_value(serde_json::json!({
+            "alg": ISCC_SOFT_BINDING_ALG,
+            "blocks": [
+                { "scope": {}, "value": value },
+                { "scope": { "timespan": { "start": 0, "end": 1000 } }, "value": value },
+            ],
+        }))
+        .unwrap();
+        for facts in [None, Some(&FACTS)] {
+            let summaries = summarize_assertion(&sb, &units, None, facts);
+            let [whole, part] = summaries.as_slice() else {
+                panic!("one summary per block");
+            };
+            assert!(!whole.scoped);
+            assert!(whole.matches.iter().all(|m| m.similarity == Some(1.0)));
+            assert_eq!(whole.preservation.is_some(), facts.is_some());
+            assert!(part.scoped);
+            assert_eq!(part.units.len(), 2);
+            assert!(part
+                .matches
+                .iter()
+                .all(|m| m.computed.is_none() && m.similarity.is_none()));
+            assert_eq!(part.preservation, None);
+        }
     }
 }

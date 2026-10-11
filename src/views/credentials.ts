@@ -17,6 +17,21 @@ import { contentSource, embedding } from "../formats";
 import { esc, formatTime, fullStop, isccHtml, json, percent, shortUri } from "../util";
 import { semanticName } from "./asset";
 
+/** Puts a header and a body together: as a card of their own, or as a part of a larger card (a found manifest). */
+export type Box = (header: string, body: string) => string;
+
+/** A card of its own. */
+const card: Box = (header, body) => `
+    <section class="card">
+      ${header}
+      ${body}
+    </section>`;
+
+/** A card header: the title, and a label in mono at the right. */
+function head(title: string, label = ""): string {
+  return `<header><h2>${esc(title)}</h2><span class="grow"></span>${label ? `<span class="hint mono">${esc(label)}</span>` : ""}</header>`;
+}
+
 const STATE_TEXT: Record<string, string> = {
   Trusted: "Valid, signer on a trust list",
   Valid: "Valid, signer not on a trust list",
@@ -35,22 +50,29 @@ const TRUST_LISTS: Record<string, { name: string; about: string }> = {
     about:
       "Official C2PA list of timestamp services, meant for timestamps only. The C2PA specification keeps it separate from the list for signers, but c2pa-rs accepts signers that chain to it.",
   },
-  "urn:c2pa-rs:test-root-bundle": {
-    name: "the c2pa-rs test list",
-    about:
-      "Test certificates from c2pa-rs, including this demo's signer. Only this app trusts them; other validators report the signer as unknown.",
-  },
 };
 
-/** Validation state label; a trusted signer names the trust list its certificate chains to. */
+/** What a signer with a public c2pa-rs test key is worth, said wherever it appears. */
+export const TEST_KEY =
+  "Signed with a public c2pa-rs test key, like this app's demo key: its private key is published, so anyone can sign as this signer, and no C2PA trust list includes it.";
+
+/** Name of the bundled trust list `uri` names; null for none or an unknown one. */
+export function trustListName(uri: string | null): string | null {
+  return TRUST_LISTS[uri ?? ""]?.name ?? null;
+}
+
+/** Validation state label; a trusted signer names the trust list its certificate chains to, a public test key is
+ * named as such. */
 function stateText(m: ManifestSummary): string {
   const list = TRUST_LISTS[m.trust_list ?? ""];
   if (m.validation_state === "Trusted" && list) return `Valid, signer on ${list.name}`;
+  if (m.validation_state === "Valid" && m.test_key) return "Valid, signed with a public test key";
   return STATE_TEXT[m.validation_state] ?? m.validation_state;
 }
 
-/** Hover text of the validation state: what the trust list is, or its URI when unknown. */
+/** Hover text of the validation state: what the trust list is, or its URI when unknown; what a public test key means. */
 function stateTitle(m: ManifestSummary): string {
+  if (m.validation_state === "Valid" && m.test_key) return TEST_KEY;
   if (m.validation_state !== "Trusted") return "";
   const uri = m.trust_list ?? "";
   return TRUST_LISTS[uri]?.about ?? uri;
@@ -83,7 +105,7 @@ function timestampSentence(ts: TimestampSummary): string {
 }
 
 /** Timestamp row of the status card. */
-function timestampRow(ts: TimestampSummary | undefined): string {
+export function timestampRow(ts: TimestampSummary | undefined): string {
   if (!ts) return "";
   return `<dt>Timestamp</dt><dd><span class="status" data-ts="${esc(ts.status)}"><span class="dot"></span>${esc(TIMESTAMP_TEXT[ts.status] ?? ts.status)}</span><span class="hint">${timestampSentence(ts)}</span></dd>`;
 }
@@ -122,14 +144,7 @@ export function credentialsTab(inspection: Inspection, semantic: boolean): strin
       </div></section>`;
   }
   const m = inspection.manifest;
-  if (!m) {
-    return `
-      <section class="card"><div class="center">
-        <h3>No Content Credentials</h3>
-        <p>This file carries no C2PA manifest. Sign it to add one with an ISCC soft binding.</p>
-        <button class="btn primary" data-goto="sign">Sign this file</button>
-      </div></section>`;
-  }
+  if (!m) return ""; // a file without credentials gets the search of the test network (search.ts)
   return [
     statusCard(m),
     softBindingCard(m, inspection, semantic),
@@ -159,7 +174,7 @@ function statusCard(m: ManifestSummary): string {
         <dl class="kv">
           <dt>Title</dt><dd>${esc(m.title ?? "—")}</dd>
           <dt>Claim generator</dt><dd>${esc(m.claim_generator ?? "—")}</dd>
-          <dt>Signer</dt><dd>${esc(signer)}</dd>
+          <dt>Signer</dt><dd>${esc(signer)}${m.test_key ? `<span class="hint">${esc(TEST_KEY)}</span>` : ""}</dd>
           <dt>Signature</dt><dd>${esc(s?.alg?.toUpperCase() ?? "—")}</dd>
           ${m.validation_state === "Pending" ? "" : timestampRow(s?.timestamp)}
           ${sidecarRow(m.sidecar)}
@@ -209,7 +224,7 @@ function softBindingCard(m: ManifestSummary, inspection: Inspection, semantic: b
             const u = mt.embedded;
             const neutral = beforeSigning && (u.unit === "data" || u.unit === "instance");
             const hidden = u.unit === "semantic" && !semantic;
-            const pending = !hidden && mt.similarity === null && inspection.pending.includes(u.unit);
+            const pending = !hidden && !sb.scoped && mt.similarity === null && inspection.pending.includes(u.unit);
             const shown = hidden ? NOT_COMPARED : verdict(mt, neutral);
             return `
             <tr>
@@ -222,12 +237,12 @@ function softBindingCard(m: ManifestSummary, inspection: Inspection, semantic: b
         return `
         <section class="card">
           <header><h2>Soft binding</h2><span class="grow"></span><span class="hint mono">${esc(sb.alg)}</span></header>
-          ${sb.preservation ? preservationBlock(sb.preservation, inspection) : hashingBlock(m, inspection)}
+          ${sb.preservation ? preservationBlock(sb.preservation, inspection) : sb.scoped ? "" : hashingBlock(m, inspection)}
           <table>
-            <thead><tr><th>Unit</th><th>Embedded in manifest</th><th style="text-align:right">Match with this file</th></tr></thead>
+            <thead><tr><th>Unit</th><th>${sb.scoped ? "Embedded for part of the file" : "Embedded in manifest"}</th><th style="text-align:right">Match with this file</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
-          <div class="note">${matchNote(sb, m, inspection, semantic)}</div>
+          <div class="note">${sb.scoped ? esc(SCOPED_NOTE) : matchNote(sb, m, inspection, semantic)}</div>
           ${bindingMetadata(sb.metadata)}
         </section>`;
       })
@@ -305,12 +320,16 @@ function preservationBlock(p: Preservation, inspection: Inspection): string {
           </div>`;
 }
 
+/** Note under a soft binding for part of the file. */
+const SCOPED_NOTE =
+  "These units are for part of the file (a region or a timespan). This app computes units of whole files only, so it does not compare them.";
+
 /** Match column of a unit that was not compared. */
 const NOT_COMPARED = `<span class="hint">not compared</span>`;
 
 /** Match column: yes or no for the exact Instance-Code, a similarity meter for the other units.
  * A `neutral` unit describes the file before signing, so its difference is no failed match. */
-function verdict(mt: UnitMatch, neutral: boolean): string {
+export function verdict(mt: UnitMatch, neutral: boolean): string {
   if (mt.similarity === null) return NOT_COMPARED;
   const tip = neutral ? ` data-neutral title="Describes the file as it was before signing, not this file"` : "";
   if (mt.embedded.unit === "instance") {
@@ -449,24 +468,15 @@ function thumbnailCard(m: ManifestSummary, inspection: Inspection): string {
     </section>`;
 }
 
-function trainingCard(m: ManifestSummary): string {
+export function trainingCard(m: ManifestSummary, box: Box = card): string {
+  const header = head("Training and data mining", "cawg.training-mining");
   const entries = m.training_mining?.entries;
-  if (!entries) {
-    return `
-      <section class="card">
-        <header><h2>Training and data mining</h2><span class="grow"></span><span class="hint mono">cawg.training-mining</span></header>
-        <div class="note">No CAWG training and data mining assertion.</div>
-      </section>`;
-  }
+  if (!entries) return box(header, `<div class="note">No CAWG training and data mining assertion.</div>`);
   const known = USE_CASES.filter((u) => u.key in entries).map((u) => useRow(u.label, u.key, entries[u.key]));
   const custom = Object.keys(entries)
     .filter((k) => !USE_CASES.some((u) => u.key === k))
     .map((k) => useRow(k, k, entries[k]));
-  return `
-    <section class="card">
-      <header><h2>Training and data mining</h2><span class="grow"></span><span class="hint mono">cawg.training-mining</span></header>
-      <table><tbody>${[...known, ...custom].join("")}</tbody></table>
-    </section>`;
+  return box(header, `<table><tbody>${[...known, ...custom].join("")}</tbody></table>`);
 }
 
 function useRow(label: string, key: string, entry: TrainingEntry | null | undefined): string {
@@ -483,7 +493,7 @@ function useRow(label: string, key: string, entry: TrainingEntry | null | undefi
     </tr>`;
 }
 
-function actionsCard(m: ManifestSummary): string {
+export function actionsCard(m: ManifestSummary, box: Box = card): string {
   const assertion = m.assertions.find((a) => a.label.startsWith("c2pa.actions"));
   const actions = (assertion?.data as { actions?: Record<string, unknown>[] } | undefined)?.actions ?? [];
   if (actions.length === 0) return "";
@@ -499,14 +509,13 @@ function actionsCard(m: ManifestSummary): string {
         </tr>`;
     })
     .join("");
-  return `
-    <section class="card">
-      <header><h2>Actions</h2><span class="grow"></span><span class="hint mono">${esc(assertion?.label ?? "")}</span></header>
-      <table><thead><tr><th>Action</th><th>Digital source type</th><th>Agent</th></tr></thead><tbody>${rows}</tbody></table>
-    </section>`;
+  return box(
+    head("Actions", assertion?.label ?? ""),
+    `<table><thead><tr><th>Action</th><th>Digital source type</th><th>Agent</th></tr></thead><tbody>${rows}</tbody></table>`,
+  );
 }
 
-function ingredientsCard(m: ManifestSummary): string {
+export function ingredientsCard(m: ManifestSummary, box: Box = card): string {
   if (m.ingredients.length === 0) return "";
   const rows = m.ingredients
     .map(
@@ -520,14 +529,14 @@ function ingredientsCard(m: ManifestSummary): string {
       </tr>`,
     )
     .join("");
-  return `
-    <section class="card">
-      <header><h2>Ingredients</h2></header>
-      <table><thead><tr><th>Title</th><th>Relationship</th><th>Format</th><th>Digital source type</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
-    </section>`;
+  return box(
+    head("Ingredients"),
+    `<table><thead><tr><th>Title</th><th>Relationship</th><th>Format</th><th>Digital source type</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>`,
+  );
 }
 
-function validationCard(m: ManifestSummary): string {
+/** The validator's results, failures open; `title` names what they come from. */
+export function validationCard(m: ManifestSummary, box: Box = card, title = "Validation"): string {
   const v = m.validation?.activeManifest;
   const groups: [string, ValidationStatus[], boolean][] = [
     ["Failures", v?.failure ?? [], true],
@@ -546,26 +555,23 @@ function validationCard(m: ManifestSummary): string {
       </details>`,
     )
     .join("");
-  return `
-    <section class="card">
-      <header><h2>Validation</h2><span class="grow"></span><span class="hint">${esc(m.validation?.specVersion ? `spec ${m.validation.specVersion}` : "")}</span></header>
-      ${sections || `<div class="note">${m.validation_state === "Pending" ? "Checked once the file is hashed." : "No validation details available."}</div>`}
-    </section>`;
+  const spec = m.validation?.specVersion ? `spec ${m.validation.specVersion}` : "";
+  const header = `<header><h2>${esc(title)}</h2><span class="grow"></span><span class="hint">${esc(spec)}</span></header>`;
+  const empty = m.validation_state === "Pending" ? "Checked once the file is hashed." : "No validation details available.";
+  return box(header, sections || `<div class="note">${empty}</div>`);
 }
 
-function assertionsCard(assertions: AssertionSummary[]): string {
+export function assertionsCard(assertions: AssertionSummary[], box: Box = card): string {
   if (assertions.length === 0) return "";
-  return `
-    <section class="card">
-      <header><h2>All assertions</h2><span class="grow"></span><span class="hint">${assertions.length}</span></header>
-      ${assertions
-        .map(
-          (a) => `
+  const header = `<header><h2>All assertions</h2><span class="grow"></span><span class="hint">${assertions.length}</span></header>`;
+  const body = assertions
+    .map(
+      (a) => `
         <details>
           <summary><span class="mono">${esc(a.label)}</span></summary>
           <pre class="json">${esc(json(a.data))}</pre>
         </details>`,
-        )
-        .join("")}
-    </section>`;
+    )
+    .join("");
+  return box(header, body);
 }

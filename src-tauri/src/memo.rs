@@ -25,6 +25,11 @@ impl<V: Clone> Memo<V> {
         self.lock().as_ref()?.get(key).cloned()
     }
 
+    /// Forget every result.
+    pub fn clear(&self) {
+        *self.lock() = None;
+    }
+
     /// Keep `value` for the input hashed to `key`; a full memo starts over.
     pub fn keep(&self, key: [u8; 32], value: V) {
         let mut memo = self.lock();

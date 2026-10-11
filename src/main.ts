@@ -10,6 +10,7 @@ import {
   appInfo,
   cancelTasks,
   ffmpegStatus,
+  findCredentials,
   type Inspection,
   initialPath,
   inspectAsset,
@@ -18,6 +19,7 @@ import {
   needsFfmpeg,
   type Progress,
   switches as readSwitches,
+  restoreCredentials,
   type SemanticKind,
   type Switches,
   setOcr,
@@ -29,10 +31,11 @@ import {
 import logoUrl from "./assets/iscc-logo-black-coral.svg";
 import { type SourceChoice, toggleList } from "./sourcetype";
 import { copyText, esc, json, listJoin, splitPath } from "./util";
-import { type Analysis, assetCard, codeCard, patchPending, unitList } from "./views/asset";
+import { type Analysis, assetCard, codeCard, patchPending, shownUnits, unitList } from "./views/asset";
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
 import { CHECK_ICON } from "./views/icons";
 import { type Busy, busyOverlay, downloadProgress, patchProgress, type ToolPrompt, toolOverlay } from "./views/overlay";
+import { type Search, searchTab } from "./views/search";
 import { patchSettingsDownload, type SettingsDialog, type SettingsOperation, settingsOverlay } from "./views/settings";
 import {
   dropFailedUnits,
@@ -67,6 +70,8 @@ interface State {
   switches: Switches | null;
   /** The Settings dialog while it is open. */
   settings: SettingsDialog | null;
+  /** The search of the test network for the credentials of the open file, which has none; null until asked. */
+  search: Search | null;
   error: string | null;
   banner: { text: string; path?: string; note?: string } | null;
   dragging: boolean;
@@ -82,6 +87,7 @@ const state: State = {
   tool: null,
   switches: null,
   settings: null,
+  search: null,
   error: null,
   banner: null,
   dragging: false,
@@ -205,7 +211,10 @@ function workspace(inspection: Inspection): string {
         : `<section class="card"><div class="center"><h3>No manifest store</h3><p>This file has no C2PA data to show.</p></div></section>`;
       break;
     default:
-      panel = credentialsTab(inspection, semantic);
+      panel =
+        inspection.manifest || inspection.manifest_error
+          ? credentialsTab(inspection, semantic)
+          : searchTab(state.search, searchable(inspection, semantic) !== null, inspection, semantic);
   }
   const banner = state.banner
     ? `<div class="banner"><span class="grow">${esc(state.banner.text)}</span>${state.banner.path ? `<button class="btn small" data-reveal="${esc(state.banner.path)}">Show in folder</button>` : ""}<button class="btn small quiet" data-action="dismiss">Dismiss</button></div>${state.banner.note ? `<div class="banner warn"><span class="grow">${esc(state.banner.note)}</span></div>` : ""}`
@@ -494,6 +503,7 @@ async function glance(seq: number, path: string): Promise<boolean> {
     const inspection = await inspectAsset(path, false, () => {});
     if (seq !== loadSeq) return false;
     state.inspection = inspection;
+    resetSearch();
     state.tab = "credentials";
     state.banner = null;
     await resetSignForm(inspection);
@@ -617,6 +627,7 @@ async function submitSign() {
     });
     if (seq !== signSeq) return;
     state.inspection = result.inspection;
+    resetSearch();
     state.analysis = null;
     state.tab = "credentials";
     const { text, note } = signedMessages(result);
@@ -704,6 +715,8 @@ async function onClick(target: HTMLElement) {
     return void pickPem(d.pick as "cert_path" | "key_path");
   }
   if (d.reveal) return void revealItemInDir(d.reveal).catch((e) => console.error(e));
+  if (d.expand) return toggleMatch(d.expand);
+  if (d.restore) return void restore(d.restore);
   if (d.useKey && state.form) {
     syncForm();
     setTrainingUse(state.form, d.useKey, d.use ?? "");
@@ -734,17 +747,25 @@ function stopAnalysis() {
   render();
 }
 
+/** Actions that only call their function. */
+const SIMPLE_ACTIONS: Record<string, () => unknown> = {
+  open: pickFile,
+  "install-tool": installTool,
+  "stop-analysis": stopAnalysis,
+  search,
+  "toggle-related": toggleRelated,
+  settings: openSettings,
+  "close-settings": closeSettings,
+  "cancel-settings": cancelSettings,
+};
+
 /** Top-bar, banner, unit list and overlay actions: open a file, close it, dismiss the messages, download ffmpeg, open
- * a video without it, stop or resume the background pass, open and close Settings, cancel. */
+ * a video without it, stop or resume the background pass, search the test network, open and close Settings, cancel. */
 function onAction(action: string) {
-  if (action === "open") return void pickFile();
-  if (action === "install-tool") return void installTool();
+  const simple = SIMPLE_ACTIONS[action];
+  if (simple) return void simple();
   if (action === "skip-tool" && state.tool) return void load(state.tool.path, { offerFfmpeg: false });
-  if (action === "stop-analysis") return stopAnalysis();
   if (action === "resume-analysis" && state.inspection) return void analyse(state.inspection.path);
-  if (action === "settings") return void openSettings();
-  if (action === "close-settings") return closeSettings();
-  if (action === "cancel-settings") return cancelSettings();
   if (action === "cancel-task" || action === "cancel-tool") {
     cancelRunning();
     return render();
@@ -752,11 +773,98 @@ function onAction(action: string) {
   if (action === "close") {
     cancelRunning();
     state.inspection = null;
+    resetSearch();
     state.form = null;
   }
   if (action === "close" || action === "dismiss") {
     state.banner = null;
     state.error = null;
+    render();
+  }
+}
+
+let searchSeq = 0;
+
+/** Forget the search of the file open before; one still running is dropped when it answers. */
+function resetSearch() {
+  searchSeq++;
+  state.search = null;
+}
+
+/** The units a search sends, as the unit list shows them; null while any is still computed or without the Data- and
+ * Instance-Code the services need. */
+function searchable(inspection: Inspection, semantic: boolean): string[] | null {
+  const { units, pending } = shownUnits(inspection, semantic);
+  const needed = units.some((u) => u.unit === "data") && units.some((u) => u.unit === "instance");
+  return pending || !needed ? null : units.map((u) => u.iscc);
+}
+
+/** Search the test network for credentials matching the open file's ISCC; only the ISCC leaves the machine. */
+async function search() {
+  const inspection = state.inspection;
+  const units = inspection && searchable(inspection, semanticShown(inspection));
+  if (!units) return;
+  const seq = ++searchSeq;
+  state.search = { state: "searching" };
+  render();
+  try {
+    const lookup = await findCredentials(inspection.path, units);
+    // A single match opens at once; with several, the user chooses which to look at.
+    const open = lookup.matches.length === 1 ? [lookup.matches[0].store_id] : [];
+    if (seq === searchSeq) state.search = { state: "done", lookup, open, related: false };
+  } catch (e) {
+    if (seq === searchSeq) state.search = { state: "failed", reason: String(e) };
+  }
+  if (seq === searchSeq) render();
+}
+
+/** Expand or collapse the card of the found manifest `storeId`. */
+function toggleMatch(storeId: string) {
+  const search = state.search;
+  if (search?.state !== "done") return;
+  search.open = search.open.includes(storeId) ? search.open.filter((id) => id !== storeId) : [...search.open, storeId];
+  render();
+}
+
+/** Show or hide the found manifests with related content that is not near-identical. */
+function toggleRelated() {
+  const search = state.search;
+  if (search?.state !== "done") return;
+  search.related = !search.related;
+  render();
+}
+
+/** Write the open file with the found credentials `storeId` put back into a copy the user names, then open that copy:
+ * the backend checks again that they validate there before anything is written. */
+async function restore(storeId: string) {
+  const inspection = state.inspection;
+  if (!inspection || state.busy) return;
+  const { ext } = splitPath(inspection.path);
+  const output = await save({
+    defaultPath: inspection.suggested_output,
+    filters: [{ name: ext.slice(1).toUpperCase() || "File", extensions: [ext.slice(1)] }],
+  });
+  if (!output || state.inspection !== inspection) return;
+  // Like a signing, a restore overtaken by a file opened later, or Close, finishes writing and changes nothing on
+  // screen.
+  const seq = ++signSeq;
+  state.busy = spinner("Restoring Content Credentials");
+  state.error = null;
+  render();
+  try {
+    await restoreCredentials(inspection.path, storeId, output);
+  } catch (e) {
+    if (seq !== signSeq) return;
+    state.busy = null;
+    state.error = `Restoring failed: ${e}`;
+    return render();
+  }
+  if (seq !== signSeq) return;
+  await load(output);
+  if (state.inspection?.path === output) {
+    state.banner = { text: `Content Credentials restored: ${splitPath(output).stem}${ext} validates as the signed file.`, path: output };
+    // The banner and the restored file's credentials start at the top.
+    for (const column of app.querySelectorAll<HTMLElement>(".column")) column.scrollTop = 0;
     render();
   }
 }
@@ -784,7 +892,7 @@ function wireEvents() {
       return;
     }
     const target = (ev.target as HTMLElement).closest<HTMLElement>(
-      "[data-action],[data-tab],[data-copy],[data-goto],[data-pick],[data-reveal],[data-use-key],[data-source-list]",
+      "[data-action],[data-tab],[data-copy],[data-goto],[data-pick],[data-reveal],[data-use-key],[data-source-list],[data-expand],[data-restore]",
     );
     if (target) await onClick(target);
   });

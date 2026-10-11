@@ -234,20 +234,24 @@ fn failure_reason(error: &TimeStampError, timeout: Duration) -> String {
         }
         _ => None,
     };
-    match (transport, error) {
-        (Some(ureq::Error::Timeout(_)), _) => {
-            format!("timed out after {} s", timeout.as_secs_f32())
-        }
-        (Some(ureq::Error::HostNotFound), _) => "host not found".to_owned(),
-        (Some(ureq::Error::ConnectionFailed | ureq::Error::Io(_)), _) => "no connection".to_owned(),
-        (Some(ureq::Error::Tls(_) | ureq::Error::Rustls(_)), _) => {
-            "secure connection failed".to_owned()
-        }
-        (_, TimeStampError::HttpErrorResponse(status, _)) if *status != 200 => {
-            format!("HTTP {status}")
-        }
+    if let Some(reason) = transport.and_then(|e| connection_reason(e, timeout)) {
+        return reason;
+    }
+    match error {
+        TimeStampError::HttpErrorResponse(status, _) if *status != 200 => format!("HTTP {status}"),
         _ => format!("invalid response: {error}"),
     }
+}
+
+/// Short reason for a request that failed to connect or timed out; `None` for other errors.
+pub(crate) fn connection_reason(error: &ureq::Error, timeout: Duration) -> Option<String> {
+    Some(match error {
+        ureq::Error::Timeout(_) => format!("timed out after {} s", timeout.as_secs_f32()),
+        ureq::Error::HostNotFound => "host not found".to_owned(),
+        ureq::Error::ConnectionFailed | ureq::Error::Io(_) => "no connection".to_owned(),
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) => "secure connection failed".to_owned(),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -303,7 +307,7 @@ pub(crate) mod tests {
     }
 
     /// Local server that answers every connection with `reply`.
-    fn serve(reply: &'static str) -> String {
+    pub(crate) fn serve(reply: &'static str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/tsa", listener.local_addr().unwrap());
         std::thread::spawn(move || {

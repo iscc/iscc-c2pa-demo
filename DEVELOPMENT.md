@@ -28,7 +28,11 @@ Opening a file shows:
   [Notes on the soft binding](#notes-on-the-soft-binding));
 - the claim thumbnail of the manifest next to the file's own picture, to compare by eye (see
   [Thumbnail](#thumbnail));
-- the CAWG training and data mining assertion, if present.
+- the CAWG training and data mining assertion, if present;
+- for a file without Content Credentials, a search of the ISCC test network for credentials
+  published for it or for a near-identical copy, each checked here against the file, and Restore,
+  which puts found credentials back into an unsigned original (see
+  [Search and recovery](#search-and-recovery)).
 
 The Sign tab writes a signed copy with:
 
@@ -45,6 +49,13 @@ The Sign tab writes a signed copy with:
 - a claim thumbnail when the file has a picture (see [Thumbnail](#thumbnail));
 - an RFC 3161 timestamp from a time stamping authority, so the manifest proves when it was
   signed (see below).
+
+Every assertion the app writes is listed in the claim's `created_assertions`, the ones the C2PA
+specification attributes to the signer (`builder.created_assertion_labels` in
+`src-tauri/src/context.rs`). c2pa-rs 0.91 lists all but the hard binding and the actions as
+gathered by default, which leaves the soft binding unattributed and puts the parent ingredient in
+another list than the actions that reference it, against the ingredient rule of the 2.5 draft
+(fixed upstream in #2720, not released). `every_assertion_is_listed_as_created` pins it.
 
 ## Stack
 
@@ -66,11 +77,14 @@ The Sign tab writes a signed copy with:
 | Content Credentials pin | `src/assets/content_credentials_{icon,logo}.svg`, copied from [c2pa-conformance-tool](https://github.com/contentauth/c2pa-conformance-tool) (Apache 2.0). The icon and the name are C2PA trademarks; shown unmodified as the presence indicator per the [C2PA UX guidance](https://spec.c2pa.org/specifications/specifications/2.2/ux/UX_Recommendations.html) |
 
 Trust lists compiled into the binary: the public C2PA trust list and TSA trust list from
-`c2pa-org/conformance-public`, and the c2pa-rs test root bundle (sources and licences in
-[`src-tauri/resources/certs/README.md`](src-tauri/resources/certs/README.md)) so files signed with the built-in
-demo key validate as trusted inside the app. The demo key is the c2pa-rs ES256 test certificate;
-other validators will report its signer as unknown. Use "My own certificate and key" in the Sign
-tab to sign with a real credential.
+`c2pa-org/conformance-public` (sources and licences in
+[`src-tauri/resources/certs/README.md`](src-tauri/resources/certs/README.md)). The demo key is the
+c2pa-rs ES256 test certificate. Its private key is public, like those of all c2pa-rs test
+certificates, so anyone can sign as its signer: files signed with it validate as "Valid, signed
+with a public test key", in this app as in any other validator, for files opened and credentials
+found by search alike. The c2pa-rs test root bundle is compiled in only to tell such signers apart
+(`context::signed_with_test_key`, `ManifestSummary::test_key`), never as a trust anchor. Use "My
+own certificate and key" in the Sign tab to sign with a real credential.
 
 ## Build and run
 
@@ -317,6 +331,102 @@ soft-binding assertion that has one.
 The assertion is built in `src-tauri/src/sign.rs` and verified in `src-tauri/src/inspect.rs`
 (`source_view`, `preservation`, `summarize_assertion`); both go through `iscc::encode_seq` /
 `iscc::decode_seq`.
+
+## Search and recovery
+
+A file without Content Credentials offers a search of the ISCC test network
+(`src-tauri/src/lookup.rs`). The app asks the test store (`c2pa-store-test.iscc.io`, the manifests
+uploaded to it, at once) and the resolver (`c2pa-test.iscc.io`, every manifest declared on the
+ISCC Discovery Protocol, a minute or so after its declaration; it asks `search-test.iscc.id` in
+turn) with the soft binding query of the C2PA Soft Binding Resolution API, by POST, so the query
+stays out of URLs and their logs. The query holds the file's units as the left column shows them,
+the Meta-Code left out (the services do not score it). The card says before the first search what
+is sent: the ISCC, which identifies this exact file, with the IP address; never the file.
+
+**Candidates, not answers.** The services' answers decide only which manifest stores are fetched
+(20 taken from each, the 20 best fetched). Each is screened without validation, which hashes
+nothing (`recover::screen`): it is left out, with its reason, when it does not read, holds another
+manifest than the service named, has an `io.iscc.v0` block that is no ISCC-SEQ, or lists more than
+one Instance-Code (a manifest that claims several files; IEP-0020 says it should not). Units
+shorter than 256 bits are ignored for matching, as IEP-0020 says, and named as not checked; the
+decoder (iscc-lib) still rejects a unit of an unknown version, which IEP-0020 says to ignore (none
+exists yet). The 8 most promising (equal Instance-Codes, then the most similar) are examined in
+full (`recover::examine`), four at a time, each of which hashes the file: one whose claim
+signature does not validate (an untrusted signer aside) is left out too. The rebuild check below
+runs for the first three equal Instance-Codes. Stores fetched from both services with the same
+bytes are merged. The rest is counted as not checked.
+
+**Two layers.** The expanded card of a match keeps C2PA validation and the ISCC check apart:
+
+- *C2PA*: the store validated with the file as its asset (`Reader::with_manifest_data_and_stream`;
+  `with_stream("application/c2pa")` would hash the store itself). Credentials published apart from
+  their file were made for the copy that embedded them, so the specification has them rejected for
+  it ("Validating a Match", `assertion.dataHash.mismatch`), and the card carries both warnings of
+  "Displaying Manifest Information": not valid for this file, and their content not to be
+  attributed to the signer for this file. A "valid for this file" counts only through a data hash
+  of the manifest's own claim, which c2pa-rs (since #2643) then takes over the whole file, as a
+  detached store leaves nothing out. Any other is shown as not validated for this file: a BMFF or
+  collection hash counts only once the credentials are put back (below); c2pa-rs 0.91 passes a box
+  hash for a file that lacks the box of the manifest store (a signing-path placeholder) and does
+  not check that its box list is complete (#2668, not released); and an update manifest is
+  validated through the hard binding of an earlier claim.
+- *ISCC* (this app's check, IEP-0020, labelled as not part of C2PA validation): every unit of
+  every `io.iscc.v0` block for the whole asset compared with the file's. An equal Instance-Code means the file has
+  exactly the bytes the soft binding was computed from; it ties none of the manifest's other
+  statements to the file, and the card never names the signer as the one who vouched for it. A
+  soft binding the signer lists as gathered is said to be unattributed. Soft bindings of other
+  algorithms, and ISCC blocks for part of the asset, are listed as not checked, since the
+  specification wants every soft binding of a located manifest to match; a block for part of the
+  asset (a region or a timespan) shows its units without a comparison, here and in the Content
+  Credentials tab, which gives it no preservation verdict either (`inspect::is_part`).
+
+**Near-identical only.** The list shows equal Instance-Codes and Content-Codes at least 92% similar
+(`recover::NEAR_IDENTICAL`, 236 of 256 bits; the C2PA UX Recommendations want fingerprint matches
+"nearly identical"), equal Instance-Codes first, then by earliest verified signing time. Measured on JPEG
+photos and the demo picture: re-encoding, resizing, greyscale, mild changes of colour, brightness
+and contrast and borders of a few percent stay at 92% or above; a different picture of the same
+scene came to 89.8%, a crop of 2% a side to 88%, of 5% to 81%. The rest is behind "Show … with
+related content, not near-identical", worded as another file, never as credentials of this file.
+A time is shown only when a timestamp service on the C2PA trust list confirms it.
+
+**Rebuild check and Restore.** For an equal Instance-Code the app puts the found store back into the file
+with c2pa-rs's own writer (`jumbf_io::save_jumbf_to_stream`; a PDF as an update section,
+`pdf_update::with_store`) and validates the result as an ordinary embedded asset. A rebuild check
+shows no more than the hash covers, so it passes only when the result validates and its hash
+covers the whole file besides the credentials. Only then the card says "Exact match" and offers
+Restore Content Credentials, which writes that file through a temporary file of its own (checked
+again on exactly what is written) and opens it. c2pa-rs's writers are deterministic, so for the
+unsigned original of a signed file the result is the signed file, byte for byte:
+`credentials_put_back_into_the_original_rebuild_the_signed_file` signs one fixture of each of the
+24 formats and checks that the original is rejected as it is, the rebuild passes, and Restore
+writes the signed copy again. The coverage rules: a data hash may leave out the manifest store
+and nothing else, however small (c2pa-rs 0.91 checks that one exclusion is exactly the store and
+lets further ones pass with an informational code), and the store's range no more bytes than
+putting it back added; in a TIFF the count field of the store's IFD entry, which c2pa-rs leaves
+out itself, belongs to the store (`a_data_hash_leaving_out_content_covers_only_part` leaves out
+four bytes of a PDF, where putting the store back adds hundreds of hashed bytes); a BMFF hash must hold a hash of the whole file (no
+Merkle tree) and leave out no box but the manifest store's, `ftyp`, `mfra`, `free` and `skip`; a
+collection hash (ZIP formats) must list every member but the manifest store, since c2pa-rs binds
+the others only through their CRC-32 in the central directory; a box hash is refused. A rebuilt
+file that validates but leaves parts out is shown as such, without Restore: an MP3 signed by
+c2pa-rs 0.91 is one, because its whole ID3 tag, frames of the file included, is left out of the
+hash. A PDF whose metadata the Sign tab wrote into the copy was hashed after that revision, so its
+unsigned original is never an exact match. Release builds abort on a panic, so a manifest store
+that made c2pa-rs panic would close the app; c2pa-rs aims never to panic on any input.
+
+**The public test key.** A found manifest signed with a certificate that chains to the c2pa-rs
+test root bundle (the demo key among them) carries a "public test key" tag and the line that
+anyone can sign as this signer, never a trust verdict: the bundle's private keys are public, and
+the app trusts no such signer (see [Stack](#stack)).
+
+**Why a data hash.** The app keeps c2pa-rs's default hard binding, a data hash, for every format,
+although the specification says JPEG, PNG and GIF *should* use a box hash: c2pa-rs keeps box
+hashes off by default "until BoxHash support is more widely tested", one binding serves all
+formats, and IEP-0020 defines the source view by the data hash's exclusion ranges. A box-hash
+source view (the file without its C2PA box) would be definable; IEP-0020 could add one later.
+
+`LOOKUP_FILE=photo.jpg cargo test --lib live_lookup -- --ignored --nocapture` runs a search from
+the command line and prints what it found.
 
 ## PDF
 

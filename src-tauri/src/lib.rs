@@ -8,6 +8,7 @@ pub mod epub;
 pub mod formats;
 pub mod inspect;
 pub mod iscc;
+pub mod lookup;
 pub mod memo;
 pub mod metadata;
 pub mod numfmt;
@@ -18,6 +19,7 @@ pub mod parallel;
 pub mod pdf;
 pub mod pdf_update;
 pub mod plain;
+pub mod recover;
 pub mod resample;
 pub mod semantic;
 pub mod settings;
@@ -28,7 +30,7 @@ pub mod timestamp;
 pub mod tools;
 pub mod video;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -237,6 +239,28 @@ async fn needs_ffmpeg(path: String) -> bool {
     .unwrap_or(false)
 }
 
+/// Search the test network for Content Credentials matching the ISCC-UNITs `units` of the file at
+/// `path` (sent as an ISCC-SEQ, never the file) and examine each against the file.
+#[tauri::command]
+async fn find_credentials(path: String, units: Vec<String>) -> Result<lookup::Lookup, String> {
+    tauri::async_runtime::spawn_blocking(move || lookup::lookup(Path::new(&path), &units))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Write the file at `path` with the found Content Credentials `store_id` put back into it to
+/// `output`, once they validate there.
+#[tauri::command]
+async fn restore_credentials(path: String, store_id: String, output: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        recover::restore(Path::new(&path), &store_id, Path::new(&output))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("{e:#}"))
+}
+
 /// Whether ffmpeg, which videos need, is installed, and what installing it means.
 #[tauri::command]
 fn ffmpeg_status() -> tools::Status {
@@ -405,7 +429,9 @@ pub fn run() {
             install_ffmpeg,
             switches,
             set_semantic,
-            set_ocr
+            set_ocr,
+            find_credentials,
+            restore_credentials
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

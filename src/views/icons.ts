@@ -1,5 +1,5 @@
 // Icons drawn with the current text colour: a line icon per kind of media (the start screen's formats table and the
-// placeholder of a file without a picture) and the Copy and Check glyphs of the ISCC brand kit's Carbon selection
+// placeholder of a file without a picture) and the Copy, Check and Help glyphs of the ISCC brand kit's Carbon selection
 // (Carbon / IBM, Apache License 2.0, geometry unchanged).
 
 import type { AssetKind } from "../api";
@@ -21,3 +21,6 @@ export const COPY_ICON = `<svg class="glyph" viewBox="0 0 32 32" aria-hidden="tr
 
 /** Carbon "checkmark--outline" (brand kit: Check), shown for a moment after a successful copy. */
 export const CHECK_ICON = `<svg class="glyph" viewBox="0 0 32 32" aria-hidden="true"><polygon points="14 21.414 9 16.413 10.413 15 14 18.586 21.585 11 23 12.415 14 21.414"/><path d="M16,2A14,14,0,1,0,30,16,14,14,0,0,0,16,2Zm0,26A12,12,0,1,1,28,16,12,12,0,0,1,16,28Z"/></svg>`;
+
+/** Carbon "help" (brand kit: Help), for a small button that explains what is next to it. */
+export const HELP_ICON = `<svg class="glyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16,2A14,14,0,1,0,30,16,14,14,0,0,0,16,2Zm0,26A12,12,0,1,1,28,16,12,12,0,0,1,16,28Z"/><circle cx="16" cy="23.5" r="1.5"/><path d="M17,8H15.5A4.49,4.49,0,0,0,11,12.5V13h2v-.5A2.5,2.5,0,0,1,15.5,10H17a2.5,2.5,0,0,1,0,5H15v4.5h2V17a4.5,4.5,0,0,0,0-9Z"/></svg>`;

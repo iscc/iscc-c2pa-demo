@@ -465,6 +465,10 @@ pub fn decode_seq(bytes: &[u8]) -> Result<Vec<String>> {
         if mt > MainType::Instance {
             bail!("ISCC-SEQ contains a composite code or ID");
         }
+        // IEP-0020, Decoding: a Length field above 7 is rejected.
+        if len_index > 7 {
+            bail!("ISCC-SEQ has a Length field above 7");
+        }
         let bits = codec::decode_length(mt, len_index, st);
         let nbytes = (bits / 8) as usize;
         if tail.len() < nbytes {
@@ -511,6 +515,14 @@ mod tests {
         let seq = encode_seq(&units).unwrap();
         assert_eq!(seq.len(), 4 * (2 + 32));
         assert_eq!(decode_seq(&seq).unwrap(), units);
+    }
+
+    /// IEP-0020, Decoding: a Length field above 7 is rejected (a Data-Code header with Length 8).
+    #[test]
+    fn seq_rejects_a_length_above_seven() {
+        let mut seq = vec![0x30, 0x08, 0x00];
+        seq.extend([0u8; 36]);
+        assert!(decode_seq(&seq).is_err());
     }
 
     #[test]

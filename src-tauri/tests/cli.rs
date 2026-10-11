@@ -132,7 +132,7 @@ fn sign_writes_a_trusted_copy_with_prefilled_fields() {
         .unwrap()
         .is_empty());
     let manifest = &result["inspection"]["manifest"];
-    assert_eq!(manifest["validation_state"], "Trusted");
+    assert_eq!(manifest["validation_state"], "Valid");
     assert_eq!(manifest["title"], "no manifest", "title from the file name");
     let entries = &manifest["training_mining"]["entries"];
     assert_eq!(entries["cawg.ai_training"]["use"], "notAllowed");
@@ -175,7 +175,7 @@ fn sign_without_reachable_timestamp_service_notes_it_and_succeeds() {
     assert_eq!(result["timestamp"]["status"], "failed");
     assert_eq!(result["timestamp"]["url"], tsa.as_str());
     let manifest = &result["inspection"]["manifest"];
-    assert_eq!(manifest["validation_state"], "Trusted");
+    assert_eq!(manifest["validation_state"], "Valid");
     assert_eq!(manifest["signature"]["timestamp"]["status"], "none");
 }
 
@@ -311,7 +311,7 @@ fn sign_pdf_refuses_encryption_and_notes_a_digital_signature() {
     assert!(names(&result["units"]).contains(&"Content-Code Text"));
     assert_eq!(
         result["inspection"]["manifest"]["validation_state"],
-        "Trusted"
+        "Valid"
     );
 }
 
@@ -401,7 +401,7 @@ fn video_inspects_and_signs_once_ffmpeg_is_installed() {
         "video has no Semantic-Code"
     );
     let manifest = &result["inspection"]["manifest"];
-    assert_eq!(manifest["validation_state"], "Trusted");
+    assert_eq!(manifest["validation_state"], "Valid");
     let sb = &manifest["soft_bindings"][0];
     assert_eq!(sb["preservation"], "no_source_view");
     assert_eq!(sb["matches"][1]["embedded"]["name"], "Content-Code Video");
@@ -426,7 +426,7 @@ fn mp4_with_sound_only_is_signed_with_its_audio_code() {
     assert_eq!(inspection["format_label"], "MP4 audio");
     assert_eq!(inspection["mime"], "video/mp4");
     let manifest = &inspection["manifest"];
-    assert_eq!(manifest["validation_state"], "Trusted");
+    assert_eq!(manifest["validation_state"], "Valid");
     let sb = &manifest["soft_bindings"][0];
     assert_eq!(sb["matches"][1]["embedded"]["name"], "Content-Code Audio");
     assert_eq!(sb["matches"][1]["similarity"], 1.0);

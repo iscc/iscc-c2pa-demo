@@ -241,17 +241,10 @@ pub fn sign_with(
     if !progress(Stage::Write, None) {
         return Err(Cancelled.into());
     }
-    // c2pa refuses to write onto an existing file, so sign into a sibling temp file and move it
-    // over the output only once signing succeeded; a failure leaves any previous output intact.
-    let tmp = temp_sibling(output)?;
-    let _ = std::fs::remove_file(&tmp);
     let edited_bytes = edited.as_ref().map(|e| e.bytes.as_slice());
-    if let Err(e) = write_signed(&mut builder, format, source, edited_bytes, &tmp) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e.context("signing failed"));
-    }
-    std::fs::rename(&tmp, output)
-        .with_context(|| format!("cannot replace {}", output.display()))?;
+    write_beside(output, |tmp| {
+        write_signed(&mut builder, format, source, edited_bytes, tmp)
+    })?;
     let copy_format = inspect::asset_format(output)?;
     let copy = asset::load_signed_copy(output, copy_format, asset, settings.ocr, &|f| {
         progress(Stage::Output, f)
@@ -424,17 +417,30 @@ fn meta_assertion(meta: MetaInput<'_>) -> Result<Metadata> {
 }
 
 /// True when both paths name the same file, including paths that differ only in case or via links.
-fn same_file(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
     a == b
         || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
-/// Temporary sibling of `output` with the same extension, so c2pa still detects the format.
-fn temp_sibling(output: &Path) -> Result<std::path::PathBuf> {
+/// Write the signed copy through `write` and move it over `output` only once that succeeded, so
+/// a failure leaves any previous output intact. c2pa refuses to write onto an existing file, so
+/// `write` gets a path under the output's name (c2pa detects the format by its extension) in a
+/// fresh folder next to the output, removed afterwards: no file of the user's is in the way.
+fn write_beside(output: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     let name = output
         .file_name()
         .ok_or_else(|| anyhow!("output path has no file name"))?;
-    Ok(output.with_file_name(format!("~{}", name.to_string_lossy())))
+    let dir = output
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix("~signing")
+        .tempdir_in(dir)
+        .with_context(|| format!("cannot write into {}", dir.display()))?;
+    let tmp = staging.path().join(name);
+    write(&tmp).context("signing failed")?;
+    std::fs::rename(&tmp, output).with_context(|| format!("cannot replace {}", output.display()))
 }
 
 /// Record the source as the parent ingredient, read from its file; with the edit intent c2pa
@@ -495,7 +501,7 @@ fn load_credentials(credentials: &Credentials) -> Result<(String, String, String
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::inspect::Preservation;
     use c2pa::ValidationState;
@@ -518,7 +524,7 @@ mod tests {
         }
     }
 
-    fn request(source: &str, output: &Path) -> SignRequest {
+    pub(crate) fn request(source: &str, output: &Path) -> SignRequest {
         let mut training = BTreeMap::new();
         training.insert(
             "cawg.ai_training".to_owned(),
@@ -655,7 +661,7 @@ mod tests {
         let result = sign_no_manifest("iscc-c2pa-demo-test-create");
         let manifest = result.inspection.manifest.expect("manifest present");
         assert_eq!(
-            manifest.validation_state, "Trusted",
+            manifest.validation_state, "Valid",
             "{:?}",
             manifest.validation
         );
@@ -698,6 +704,28 @@ mod tests {
         let fields = &result.inspection.meta_fields;
         assert_eq!(fields.name_source, "manifest");
         assert_eq!(fields.description.as_deref(), Some("Signed in a unit test"));
+    }
+
+    /// Every assertion the app writes is attributed to the signer: c2pa-rs would list all but
+    /// the hard binding and the actions as gathered.
+    #[test]
+    fn every_assertion_is_listed_as_created() {
+        let result = sign_no_manifest("iscc-c2pa-demo-test-created");
+        let reader = reader(Path::new(&result.output));
+        let created = inspect::attributed_labels(&reader);
+        let bases: Vec<&str> = created.iter().map(|l| labels::parse_label(l).0).collect();
+        for label in context::CREATED_ASSERTION_LABELS
+            .into_iter()
+            .chain([labels::ACTIONS, labels::DATA_HASH])
+        {
+            assert!(bases.contains(&label), "{label} not in {created:?}");
+        }
+        let crjson = reader.to_crjson_value().unwrap();
+        let gathered = &crjson["manifests"][0]["claim.v2"]["gathered_assertions"];
+        assert!(
+            gathered.as_array().is_none_or(Vec::is_empty),
+            "gathered: {gathered}"
+        );
     }
 
     #[test]
@@ -805,7 +833,7 @@ mod tests {
         req.source_type = None;
         let result = sign(&req).unwrap();
         let manifest = result.inspection.manifest.expect("manifest present");
-        assert_eq!(manifest.validation_state, "Trusted");
+        assert_eq!(manifest.validation_state, "Valid");
         assert_eq!(manifest.ingredients[0].relationship, "ParentOf");
         assert_eq!(manifest.ingredients[0].digital_source_type, None);
     }
@@ -825,10 +853,21 @@ mod tests {
         assert!(source.exists(), "source must survive a rejected request");
     }
 
+    /// Names in `dir` that start with a tilde.
+    fn tilde_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with('~'))
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn failed_signing_keeps_previous_output() {
-        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-keep");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
         let output = dir.join("kept.jpg");
         std::fs::write(&output, b"previous").unwrap();
         let mut req = request("no_manifest.jpg", &output);
@@ -839,10 +878,7 @@ mod tests {
         };
         assert!(sign(&req).is_err());
         assert_eq!(std::fs::read(&output).unwrap(), b"previous");
-        assert!(
-            !dir.join("~kept.jpg").exists(),
-            "temp file must be cleaned up"
-        );
+        assert!(tilde_names(dir).is_empty(), "nothing temporary left");
 
         req.credentials = Credentials::Demo;
         sign(&req).unwrap();
@@ -850,7 +886,23 @@ mod tests {
             std::fs::read(&output).unwrap().len() > 8,
             "output replaced on success"
         );
-        assert!(!dir.join("~kept.jpg").exists());
+        assert!(tilde_names(dir).is_empty());
+    }
+
+    #[test]
+    fn a_file_named_with_a_tilde_survives_signing_next_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let source = dir.join("~photo.jpg");
+        std::fs::copy(fixture("no_manifest.jpg"), &source).unwrap();
+        let original = std::fs::read(&source).unwrap();
+        let output = dir.join("photo.jpg");
+        let mut req = request("no_manifest.jpg", &output);
+        req.source = source.to_string_lossy().into_owned();
+        sign(&req).unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), original, "source kept");
+        assert!(output.exists());
+        assert_eq!(tilde_names(dir), ["~photo.jpg"], "nothing temporary left");
     }
 
     #[test]
@@ -875,7 +927,7 @@ mod tests {
         assert_eq!(inspection.meta_fields.name_source, "metadata");
         let manifest = inspection.manifest.as_ref().expect("manifest present");
         assert_eq!(
-            manifest.validation_state, "Trusted",
+            manifest.validation_state, "Valid",
             "{:?}",
             manifest.validation
         );
@@ -1045,7 +1097,7 @@ mod tests {
                 .as_ref()
                 .expect("manifest present");
             assert_eq!(
-                manifest.validation_state, "Trusted",
+                manifest.validation_state, "Valid",
                 "{ext}: {:?}",
                 manifest.validation
             );
@@ -1111,7 +1163,7 @@ mod tests {
             // The embedded units are those shown for the source.
             assert_eq!(result.units, source.iscc, "{file}");
             let manifest = result.inspection.manifest.as_ref().unwrap();
-            assert_eq!(manifest.validation_state, "Trusted", "{file}");
+            assert_eq!(manifest.validation_state, "Valid", "{file}");
             let sb = &manifest.soft_bindings[0];
             let similarity = |i: usize| sb.matches[i].similarity.unwrap();
             if sb.preservation != Some(expected) {
@@ -1158,7 +1210,7 @@ mod tests {
             "Meta- and Content-Code"
         );
         let manifest = second.inspection.manifest.as_ref().unwrap();
-        assert_eq!(manifest.validation_state, "Trusted");
+        assert_eq!(manifest.validation_state, "Valid");
         // The second update section leaves the first signed copy whole: it is the source.
         let sb = &manifest.soft_bindings[0];
         assert_eq!(sb.preservation, Some(Preservation::Preserved));
@@ -1192,7 +1244,7 @@ mod tests {
             Some("Added at signing")
         );
         let manifest = copy.manifest.as_ref().unwrap();
-        assert_eq!(manifest.validation_state, "Trusted");
+        assert_eq!(manifest.validation_state, "Valid");
         let sb = &manifest.soft_bindings[0];
         assert_eq!(sb.preservation, Some(Preservation::Preserved));
         assert!(
@@ -1287,7 +1339,7 @@ mod tests {
         )
         .unwrap();
         let manifest = result.inspection.manifest.as_ref().unwrap();
-        assert_eq!(manifest.validation_state, "Trusted");
+        assert_eq!(manifest.validation_state, "Valid");
         // The signature stays in the copy, which starts with the source, so the copy warns again.
         assert!(result.inspection.sign_warning.is_some());
         let source = std::fs::read(fixture("basic-retest.pdf")).unwrap();
@@ -1420,7 +1472,7 @@ mod tests {
     }
 
     /// Sign the fixture `file` with only Data- and Instance-Code into the directory `dir`.
-    fn sign_fixture(file: &str, dir: &str) -> std::path::PathBuf {
+    pub(crate) fn sign_fixture(file: &str, dir: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(dir);
         std::fs::create_dir_all(&dir).unwrap();
         let output = dir.join(file);
@@ -1559,11 +1611,7 @@ mod tests {
         for (file, has_picture) in cases {
             let output = sign_fixture(file, "iscc-c2pa-demo-test-thumbnails");
             let reader = reader(&output);
-            assert_eq!(
-                reader.validation_state(),
-                ValidationState::Trusted,
-                "{file}"
-            );
+            assert_eq!(reader.validation_state(), ValidationState::Valid, "{file}");
             let manifest = reader.active_manifest().unwrap();
             let parent = &manifest.ingredients()[0];
             assert!(
@@ -1655,7 +1703,7 @@ mod tests {
         assert_eq!(failed, &url);
         assert_eq!(reason, "no connection");
         let manifest = result.inspection.manifest.unwrap();
-        assert_eq!(manifest.validation_state, "Trusted");
+        assert_eq!(manifest.validation_state, "Valid");
         assert_eq!(manifest.signature.unwrap().timestamp.status, "none");
     }
 
@@ -1675,7 +1723,7 @@ mod tests {
             sign_with_tsa("iscc-c2pa-demo-test-tsa", crate::timestamp::DEFAULT_TSA_URL).unwrap();
         assert_eq!(result.timestamp, TimestampOutcome::Added);
         let manifest = result.inspection.manifest.unwrap();
-        assert_eq!(manifest.validation_state, "Trusted");
+        assert_eq!(manifest.validation_state, "Valid");
         let timestamp = manifest.signature.unwrap().timestamp;
         assert_eq!(timestamp.status, "trusted");
         assert_eq!(timestamp.tsa.as_deref(), Some("Encypher Corp."));
@@ -1698,7 +1746,9 @@ mod tests {
     /// read several times.
     #[test]
     fn trust_list_is_the_active_signers() {
-        use crate::context::tests::{sign_with_c2pa_eku, with_eku_root, EKU_TRUST_URI};
+        use crate::context::tests::{
+            sign_with_c2pa_eku, with_eku_root, with_test_root, EKU_TRUST_URI,
+        };
         let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-trust-list");
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("eku.jpg");
@@ -1709,7 +1759,8 @@ mod tests {
         req.source = source.to_string_lossy().into_owned();
         sign(&req).unwrap();
 
-        let settings = with_eku_root(context::base_settings());
+        // The demo key's root trusted too, so that the active signer is on a list of its own.
+        let settings = with_test_root(with_eku_root(context::base_settings()));
         let mut c2pa_uris = std::collections::HashSet::new();
         for _ in 0..16 {
             let context = Context::new().with_settings(settings.clone()).unwrap();
@@ -1797,7 +1848,7 @@ mod tests {
 
     /// Sign the fixture `file` into a sidecar next to an untouched copy in `dir`, as
     /// `c2patool --sidecar` does, with a soft binding of the copy's Data- and Instance-Code.
-    fn sign_into_sidecar(file: &str, dir: &Path) -> std::path::PathBuf {
+    pub(crate) fn sign_into_sidecar(file: &str, dir: &Path) -> std::path::PathBuf {
         let copy = dir.join(file);
         std::fs::copy(fixture(file), &copy).unwrap();
         let bytes = std::fs::read(&copy).unwrap();
@@ -1844,7 +1895,7 @@ mod tests {
             assert_eq!(std::fs::read(&copy).unwrap(), original, "{file}");
 
             let manifest = inspect::inspect(&copy).unwrap().manifest.unwrap();
-            assert_eq!(manifest.validation_state, "Trusted", "{file}");
+            assert_eq!(manifest.validation_state, "Valid", "{file}");
             let sidecar = Path::new(file).with_extension("c2pa");
             assert_eq!(manifest.sidecar.as_deref(), sidecar.to_str(), "{file}");
             assert!(manifest.source_view, "{file}");
