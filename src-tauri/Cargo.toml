@@ -25,7 +25,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # Pinned: the unstable_* text handlers may change between c2pa releases.
-c2pa = { version = "=0.91.1", default-features = false, features = [
+c2pa = { version = "=0.91.2", default-features = false, features = [
   "rust_native_crypto",
   "file_io",
   "unstable_plain_text",
