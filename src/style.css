@@ -482,8 +482,28 @@ input[readonly] { background: var(--paper); color: var(--muted); }
 .source .recorded .linkbtn { font-size: 12px; margin-top: 4px; }
 
 .actions { display: flex; align-items: center; gap: 12px; padding: 16px; }
-.actions .msg { flex: 1; font-size: 13px; }
+.actions .msg { flex: 1; font-size: 13px; color: var(--muted); }
 .actions .msg.error { color: var(--ink); }
+.register-note { margin: 0; padding: 0 16px 16px; color: var(--muted); font-size: 12px; line-height: 16px; }
+
+/* Split button: the default signing action, and an arrow opening every action in a menu above it. */
+.split { position: relative; display: inline-flex; flex: 0 0 auto; }
+.split .main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split .more { padding: 0 10px; border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 1px solid rgba(33, 37, 41, 0.35); }
+.split .chevron { width: 10px; height: 6px; display: block; }
+.menu { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 5; width: 360px; max-width: 80vw; padding: 4px; background: var(--white); border: 1px solid var(--rule); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(33, 37, 41, 0.14); }
+.menu button { display: grid; width: 100%; padding: 8px 10px; border: 0; border-radius: 3px; background: none; text-align: left; cursor: pointer; }
+.menu button:hover:not(:disabled), .menu button:focus-visible { background: var(--paper); }
+.menu button:disabled { cursor: default; }
+.menu .t { font-weight: 500; }
+.menu button:disabled .t { color: var(--muted); }
+.menu .d { color: var(--muted); font-size: 12px; line-height: 16px; }
+.menu .d .mono { color: var(--ink); font-size: 11px; }
+
+.register .body > p { margin: 0 0 12px; }
+.register .body > p:last-child { margin-bottom: 0; }
+.register .status { display: inline-flex; align-items: center; gap: 8px; font-weight: 400; color: var(--muted); font-size: 12px; line-height: 16px; }
+
 .actions .msg.error::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--coral); margin-right: 8px; }
 
 /* ---------- Banner / toast ---------- */
@@ -531,7 +551,7 @@ input[readonly] { background: var(--paper); color: var(--muted); }
 .nocreds h3 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 400; display: flex; align-items: center; gap: 8px; }
 .nocreds .buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
 .nocreds .status { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; line-height: 16px; }
-.nocreds .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--rule); border-top-color: var(--coral); animation: spin 0.9s linear infinite; }
+.nocreds .spinner, .register .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--rule); border-top-color: var(--coral); animation: spin 0.9s linear infinite; }
 .nocreds .buttons:has(.spinner) { min-height: 40px; }
 .tip { position: relative; display: inline-flex; padding: 2px; border: 0; background: none; color: var(--muted); cursor: help; border-radius: 50%; }
 .tip:hover, .tip:focus-visible { color: var(--ink); }

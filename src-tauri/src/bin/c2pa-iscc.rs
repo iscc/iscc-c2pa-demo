@@ -1,5 +1,5 @@
-//! Command-line interface to the same core as the desktop app: inspect and sign files, compute a
-//! Meta-Code, list the supported formats, install ffmpeg for video and the semantic models for
+//! Command-line interface to the same core as the desktop app: inspect and sign files, register
+//! a manifest store on the ISCC test network, compute a Meta-Code, list the supported formats, install ffmpeg for video and the semantic models for
 //! the Semantic-Codes. Prints the JSON the UI consumes; errors go to stderr as one line with exit
 //! code 1 (usage errors exit with 2).
 //!
@@ -19,7 +19,7 @@ use iscc_c2pa_demo_lib::iscc::{self, MetaInput};
 use iscc_c2pa_demo_lib::semantic::{SemanticKind, SemanticKinds};
 use iscc_c2pa_demo_lib::settings::Settings;
 use iscc_c2pa_demo_lib::sign::{self, Credentials, SignRequest, TimestampOutcome, TrainingEntry};
-use iscc_c2pa_demo_lib::{timestamp, tools};
+use iscc_c2pa_demo_lib::{register, timestamp, tools};
 use serde::Serialize;
 
 #[derive(Parser)]
@@ -56,6 +56,13 @@ enum Command {
     },
     /// Write a signed copy with an ISCC soft binding; defaults mirror the Sign tab.
     Sign(Box<SignArgs>),
+    /// Upload a file's manifest store (embedded, or its `.c2pa` sidecar) to the ISCC test store,
+    /// which declares its ISCC on the test network. It is public from then on: signer, title,
+    /// description, ISCC and thumbnail.
+    Register {
+        /// Signed file, or a `.c2pa` sidecar.
+        file: PathBuf,
+    },
     /// Compute the Meta-Code of a title, description and ISCC metadata.
     MetaCode {
         #[arg(long)]
@@ -135,6 +142,10 @@ struct SignArgs {
     /// Signed copy to write [default: the first free `-signed` sibling].
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Write the manifest store as a sidecar `<stem>.c2pa` next to the file instead of a signed
+    /// copy; for formats c2pa-rs leaves untouched, without Content Credentials of their own.
+    #[arg(long, conflicts_with = "output")]
+    sidecar: bool,
     /// Title for the manifest and the Meta-Code [default: the file's own title, else the
     /// stored or manifest title, else the file name].
     #[arg(long)]
@@ -292,6 +303,7 @@ fn run(cli: &Cli) -> Result<()> {
             strip_preview(&mut result.inspection, cli.no_preview);
             print(&result, cli.compact)
         }
+        Command::Register { file } => print(&register::register(file)?, cli.compact),
         Command::MetaCode {
             title,
             description,
@@ -450,6 +462,7 @@ fn sign_request(args: &SignArgs, settings: Settings) -> Result<SignRequest> {
         training: training_entries(&args.training)?,
         credentials: credentials(args),
         tsa_url: (!args.no_timestamp).then(|| args.tsa.clone()),
+        sidecar: args.sidecar,
     })
 }
 

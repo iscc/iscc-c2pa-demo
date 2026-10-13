@@ -84,6 +84,9 @@ pub struct Inspection {
     /// What signing does to this file that its owner may not want (breaking a PDF's digital
     /// signature).
     pub sign_warning: Option<&'static str>,
+    /// Why signing cannot write a sidecar next to this file, which then needs a signed copy;
+    /// `None` when it can.
+    pub sidecar_block: Option<String>,
     pub manifest: Option<ManifestSummary>,
     /// Full manifest store as produced by `Reader::json`, for the raw view.
     pub manifest_json: Option<Value>,
@@ -496,6 +499,11 @@ pub fn inspect_loaded(
     // checked with its hashes: c2pa reads the whole file for the hard binding.
     let hashed = loaded.bitstream.is_some();
     let (reader, manifest_error) = manifest_store(path, hashed);
+    // A store that could not be read at all counts as embedded: a broken sidecar is in the way
+    // of a new one anyway.
+    let embedded = reader
+        .as_ref()
+        .map_or(manifest_error.is_some(), Reader::is_embedded);
     let json = reader
         .as_ref()
         .map(|r| serde_json::from_str::<Value>(&r.json()).unwrap_or(Value::Null));
@@ -588,6 +596,7 @@ pub fn inspect_loaded(
         ocr: asset.ocr,
         sign_block: asset.sign_block,
         sign_warning: asset.sign_warning,
+        sidecar_block: crate::sign::sidecar_block(path, format, embedded),
         manifest,
         manifest_json: json,
         manifest_error,
@@ -2081,6 +2090,7 @@ mod tests {
             training: Default::default(),
             credentials: crate::sign::Credentials::Demo,
             tsa_url: None,
+            sidecar: false,
         };
         crate::sign::sign(&request).unwrap();
         let glanced = inspect_with(&output, Depth::GLANCE, &unstopped).unwrap();
@@ -2181,6 +2191,7 @@ mod tests {
             training: Default::default(),
             credentials: crate::sign::Credentials::Demo,
             tsa_url: None,
+            sidecar: false,
         };
         crate::sign::sign(&request).unwrap();
         let depth = Depth::FULL.with_semantic_kinds(SemanticKinds::NONE);

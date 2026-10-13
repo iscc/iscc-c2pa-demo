@@ -26,7 +26,7 @@ use crate::timestamp::connection_reason;
 /// The services asked, in the order their matches are listed.
 pub const SERVICES: [Service; 2] = [
     Service {
-        host: "c2pa-store-test.iscc.io",
+        host: STORE_HOST,
         kind: ServiceKind::Store,
     },
     Service {
@@ -34,6 +34,10 @@ pub const SERVICES: [Service; 2] = [
         kind: ServiceKind::Resolver,
     },
 ];
+
+/// The test store, which keeps uploaded manifest stores and declares their ISCC on the test
+/// network.
+pub const STORE_HOST: &str = "c2pa-store-test.iscc.io";
 
 /// Matches asked of each service, and taken from its answer at most. More than are usually listed,
 /// so that a few uploads with a copied ISCC do not push a genuine manifest out; a crowd of them
@@ -431,7 +435,7 @@ fn similarity(found: &Found) -> f64 {
 }
 
 /// HTTP agent with timeouts, without redirects, reading error statuses as answers.
-fn agent(timeout: Duration) -> ureq::Agent {
+pub(crate) fn agent(timeout: Duration) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_connect(Some(CONNECT_TIMEOUT.min(timeout)))
         .timeout_global(Some(timeout))
@@ -475,12 +479,12 @@ fn body(
 }
 
 /// Why a request failed: the connection, else ureq's own words.
-fn request_error(error: &ureq::Error, timeout: Duration) -> anyhow::Error {
+pub(crate) fn request_error(error: &ureq::Error, timeout: Duration) -> anyhow::Error {
     anyhow!(connection_reason(error, timeout).unwrap_or_else(|| error.to_string()))
 }
 
 /// "HTTP 400: detail" from an error answer, the detail when it has one.
-fn http_reason(status: u16, body: &[u8]) -> String {
+pub(crate) fn http_reason(status: u16, body: &[u8]) -> String {
     let detail = serde_json::from_slice::<serde_json::Value>(body)
         .ok()
         .and_then(|v| v.get("detail").and_then(|d| d.as_str()).map(str::to_owned));

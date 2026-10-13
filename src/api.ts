@@ -198,6 +198,8 @@ export interface Inspection {
   sign_block: string | null;
   /** What signing does to this file that its owner may not want (breaking a PDF's digital signature). */
   sign_warning: string | null;
+  /** Why signing cannot write a sidecar next to this file, which then needs a signed copy; null when it can. */
+  sidecar_block: string | null;
   manifest: ManifestSummary | null;
   manifest_json: unknown;
   manifest_error: string | null;
@@ -258,12 +260,15 @@ export interface SignRequest {
   credentials: Credentials;
   /** Timestamp service (RFC 3161); no timestamp when absent. */
   tsa_url?: string;
+  /** Write a sidecar `<stem>.c2pa` next to the source instead of a signed copy at `output`. */
+  sidecar: boolean;
 }
 
 /** What became of the requested timestamp; the inspection tells whether it is trusted. */
 export type TimestampOutcome = { status: "off" } | { status: "added" } | { status: "failed"; url: string; reason: string };
 
 export interface SignResult {
+  /** The signed copy, or the sidecar written next to the source. */
   output: string;
   units: IsccUnit[];
   iscc_seq_base64: string;
@@ -443,3 +448,15 @@ export const findCredentials = (path: string, units: string[]) => invoke<Lookup>
 /** Write the file at `path` with the found credentials `storeId` put back to `output`, once they validate there. */
 export const restoreCredentials = (path: string, storeId: string, output: string) =>
   invoke<void>("restore_credentials", { path, storeId, output });
+
+/** The test store's answer to an upload: the manifest it keeps, where it serves it, and its declaration on the test
+ * network (`declared` with an ISCC-ID, `pending` while the store retries, `failed`, `skipped`, `disabled`, `withdrawn`). */
+export interface Registration {
+  manifest_id: string;
+  manifest_url: string;
+  declaration: { status: string; iscc_id: string | null; hub: string | null };
+}
+
+/** Upload the manifest store of the file at `path` (embedded, or its sidecar) to the test store, which declares it on
+ * the test network. */
+export const registerManifest = (path: string) => invoke<Registration>("register_manifest", { path });

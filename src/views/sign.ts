@@ -42,10 +42,20 @@ function semanticOption(inspection: Inspection): UnitOption[] {
   return [];
 }
 
+/** What a signing writes: a signed copy whose manifest is then registered on the ISCC test network, a signed copy, or
+ * a sidecar next to the file, which stays as it is. */
+export type SignMode = "register" | "embed" | "sidecar";
+
+/** What registering makes public, said beside every action that registers. */
+export const REGISTER_NOTE =
+  "Registering uploads the manifest store to the public ISCC test network: signer, title, description, ISCC and thumbnail. It stays there. The file itself is never uploaded.";
+
 /** What the Sign tab needs to know about the app besides the file. */
 export interface SignContext {
   /** True while the background pass computes units of this file: signing waits for it. */
   analysing: boolean;
+  /** True while the menu of the signing actions is open. */
+  menu: boolean;
   /** Whether the file's Semantic-Code is offered: its kind is on and the inspection mentions it. */
   semantic: boolean;
 }
@@ -197,8 +207,8 @@ export function dropFailedUnits(form: SignForm, inspection: Inspection) {
   if (inspection.semantic_error) form.units.delete("semantic");
 }
 
-/** Problems that keep the form from being signed; empty when it is complete. */
-export function signProblems(form: SignForm, inspection: Inspection): string[] {
+/** Problems that keep the form from being signed in `mode`; empty when it is complete. */
+export function signProblems(form: SignForm, inspection: Inspection, mode: SignMode): string[] {
   const problems: string[] = [];
   if (inspection.sign_block) problems.push(inspection.sign_block);
   if (!form.title.trim()) problems.push("A title is required.");
@@ -211,9 +221,17 @@ export function signProblems(form: SignForm, inspection: Inspection): string[] {
     problems.push("Choose a certificate and a private key.");
   if (form.timestamp.on && form.timestamp.preset === CUSTOM_TSA && !/^https?:\/\/\S+$/i.test(form.timestamp.custom.trim()))
     problems.push("Enter the timestamp service URL, starting with http:// or https://.");
-  const sourceExt = splitPath(inspection.path).ext.toLowerCase();
-  if (splitPath(form.output).ext.toLowerCase() !== sourceExt) problems.push(`The output must keep the ${sourceExt} extension.`);
+  const output = outputProblem(form, inspection, mode);
+  if (output) problems.push(output);
   return problems;
+}
+
+/** Why signing in `mode` cannot write its output: no sidecar next to this file, or a signed copy with another
+ * extension; null when it can. */
+function outputProblem(form: SignForm, inspection: Inspection, mode: SignMode): string | null {
+  if (mode === "sidecar") return inspection.sidecar_block;
+  const sourceExt = splitPath(inspection.path).ext.toLowerCase();
+  return splitPath(form.output).ext.toLowerCase() === sourceExt ? null : `The output must keep the ${sourceExt} extension.`;
 }
 
 /** Set the training-mining choice `use` for `key` (empty clears it); a constraint text is kept only
@@ -240,9 +258,13 @@ function hostOf(url: string): string {
 }
 
 /** Success message after signing, and a note when the timestamp service failed. */
-export function signedMessages(result: SignResult): { text: string; note: string | null } {
+export function signedMessages(result: SignResult, mode: SignMode): { text: string; note: string | null } {
   const n = result.units.length;
-  let text = `Signed and embedded ${n} ISCC unit${n === 1 ? "" : "s"} into ${result.inspection.file_name}.`;
+  const units = `${n} ISCC unit${n === 1 ? "" : "s"}`;
+  let text =
+    mode === "sidecar"
+      ? `Signed ${units} into ${splitPath(result.output).stem}.c2pa next to ${result.inspection.file_name}, which stays as it is.`
+      : `Signed and embedded ${units} into ${result.inspection.file_name}.`;
   const ts = result.inspection.manifest?.signature?.timestamp;
   if (result.timestamp.status === "added" && ts) {
     const by = ts.tsa ?? "the timestamp service";
@@ -267,7 +289,7 @@ function sourceUri(form: SignForm, inspection: Inspection): string | undefined {
 
 /** Build the request the Rust side expects; without the Semantic-Code unless it is shown (`semantic`), whatever the
  * form still holds. */
-export function toRequest(form: SignForm, inspection: Inspection, semantic: boolean): SignRequest {
+export function toRequest(form: SignForm, inspection: Inspection, semantic: boolean, mode: SignMode): SignRequest {
   return {
     source: inspection.path,
     output: form.output,
@@ -279,6 +301,7 @@ export function toRequest(form: SignForm, inspection: Inspection, semantic: bool
     training: form.training,
     credentials: form.credentials,
     tsa_url: tsaUrl(form.timestamp),
+    sidecar: mode === "sidecar",
   };
 }
 
@@ -432,25 +455,61 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
         </div>
       </div>
 
-      ${signActions(inspection, context.analysing)}
+      ${signActions(form, inspection, context)}
     </form>`;
 }
 
 /** Why the Sign button waits. */
 export const WAITING = "Waiting for the units still being computed.";
 
-/** The submit area: the reason a file cannot be signed in place of the button, or the button
- * with a warning above it when signing does something to the file its owner may not want. The
- * button waits while the background pass computes units of the file (`analysing`). */
-function signActions(inspection: Inspection, analysing: boolean): string {
+const CHEVRON = `<svg class="chevron" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`;
+
+/** The name of each signing action, as its button and menu entry say it. */
+const MODE_LABEL: Record<SignMode, string> = {
+  register: "Sign, embed &amp; register",
+  embed: "Sign &amp; embed",
+  sidecar: "Sign",
+};
+
+/** What signing in `mode` writes, in one line (HTML); for a sidecar, why there is none when it cannot be written. */
+function writes(mode: SignMode, form: SignForm, inspection: Inspection): string {
+  const out = splitPath(form.output);
+  const copy = `<span class="mono">${esc(out.stem + out.ext)}</span>`;
+  if (mode === "register") return `Writes ${copy} and registers its manifest on the ISCC test network.`;
+  if (mode === "embed") return `Writes ${copy}.`;
+  if (inspection.sidecar_block) return esc(inspection.sidecar_block);
+  const { stem } = splitPath(inspection.path);
+  return `Writes <span class="mono">${esc(stem)}.c2pa</span> next to <span class="mono">${esc(inspection.file_name)}</span>, which stays as it is.`;
+}
+
+/** One entry of the menu of signing actions; a sidecar that cannot be written stays listed, disabled, with why. */
+function modeItem(mode: SignMode, form: SignForm, inspection: Inspection): string {
+  const off = mode === "sidecar" && inspection.sidecar_block ? "disabled" : "";
+  return `<button type="button" role="menuitem" data-sign="${mode}" ${off}><span class="t">${MODE_LABEL[mode]}</span><span class="d">${writes(mode, form, inspection)}</span></button>`;
+}
+
+/** The submit area: the reason a file cannot be signed in place of the buttons, or a warning above them when signing
+ * does something to the file its owner may not want. The default action signs, embeds and registers; the arrow beside
+ * it opens every action, each of which runs at once. The buttons wait while the background pass computes units of the
+ * file (`analysing`). No button is a submit button: Enter in a field never signs, let alone registers. */
+function signActions(form: SignForm, inspection: Inspection, context: SignContext): string {
   if (inspection.sign_block) {
     return `<div class="actions"><p class="banner error grow">${esc(inspection.sign_block)}</p></div>`;
   }
   const warning = inspection.sign_warning ? `<p class="banner warn">${esc(inspection.sign_warning)}</p>` : "";
+  const off = context.analysing ? "disabled" : "";
+  const menu = context.menu
+    ? `<div class="menu" role="menu">${(["register", "embed", "sidecar"] as SignMode[]).map((m) => modeItem(m, form, inspection)).join("")}</div>`
+    : "";
   return `
       ${warning}
       <div class="actions">
-        <span class="msg" id="sign-msg">${analysing ? esc(WAITING) : ""}</span>
-        <button type="submit" class="btn primary" id="sign-submit" ${analysing ? "disabled" : ""}>Sign and embed</button>
-      </div>`;
+        <span class="msg" id="sign-msg">${context.analysing ? esc(WAITING) : writes("register", form, inspection)}</span>
+        <div class="split">
+          ${menu}
+          <button type="button" class="btn primary main" id="sign-submit" data-sign="register" ${off}>${MODE_LABEL.register}</button>
+          <button type="button" class="btn primary more" data-action="sign-menu" aria-label="More signing actions" aria-haspopup="menu" aria-expanded="${context.menu}" ${off}>${CHEVRON}</button>
+        </div>
+      </div>
+      <p class="register-note">${esc(REGISTER_NOTE)}</p>`;
 }

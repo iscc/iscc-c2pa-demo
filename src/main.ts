@@ -19,6 +19,7 @@ import {
   needsFfmpeg,
   type Progress,
   switches as readSwitches,
+  registerManifest,
   restoreCredentials,
   type SemanticKind,
   type Switches,
@@ -35,6 +36,7 @@ import { type Analysis, assetCard, codeCard, patchPending, shownUnits, unitList 
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
 import { CHECK_ICON } from "./views/icons";
 import { type Busy, busyOverlay, downloadProgress, patchProgress, type ToolPrompt, toolOverlay } from "./views/overlay";
+import { type RegisterState, registerCard } from "./views/register";
 import { type Search, searchTab } from "./views/search";
 import { patchSettingsDownload, type SettingsDialog, type SettingsOperation, settingsOverlay } from "./views/settings";
 import {
@@ -42,6 +44,7 @@ import {
   metaPreviewHint,
   newSignForm,
   type SignForm,
+  type SignMode,
   setTrainingUse,
   signedMessages,
   signProblems,
@@ -72,6 +75,10 @@ interface State {
   settings: SettingsDialog | null;
   /** The search of the test network for the credentials of the open file, which has none; null until asked. */
   search: Search | null;
+  /** The registration of the open file's manifest store on the test network; null until asked. */
+  registration: RegisterState | null;
+  /** True while the menu of the signing actions is open. */
+  signMenu: boolean;
   error: string | null;
   banner: { text: string; path?: string; note?: string } | null;
   dragging: boolean;
@@ -88,6 +95,8 @@ const state: State = {
   switches: null,
   settings: null,
   search: null,
+  registration: null,
+  signMenu: false,
   error: null,
   banner: null,
   dragging: false,
@@ -203,7 +212,7 @@ function workspace(inspection: Inspection): string {
   let panel: string;
   switch (state.tab) {
     case "sign":
-      panel = state.form ? signTab(state.form, inspection, state.info, { analysing: analysing(), semantic }) : "";
+      panel = state.form ? signTab(state.form, inspection, state.info, { analysing: analysing(), menu: state.signMenu, semantic }) : "";
       break;
     case "raw":
       panel = inspection.manifest_json
@@ -213,7 +222,7 @@ function workspace(inspection: Inspection): string {
     default:
       panel =
         inspection.manifest || inspection.manifest_error
-          ? credentialsTab(inspection, semantic)
+          ? credentialsTab(inspection, semantic, registerCard(state.registration))
           : searchTab(state.search, searchable(inspection, semantic) !== null, inspection, semantic);
   }
   const banner = state.banner
@@ -503,7 +512,7 @@ async function glance(seq: number, path: string): Promise<boolean> {
     const inspection = await inspectAsset(path, false, () => {});
     if (seq !== loadSeq) return false;
     state.inspection = inspection;
-    resetSearch();
+    resetNetwork();
     state.tab = "credentials";
     state.banner = null;
     await resetSignForm(inspection);
@@ -603,34 +612,27 @@ async function pickOutput() {
   }
 }
 
-async function submitSign() {
+/** Sign the open file in `mode`; registering starts once the signed copy is open. */
+async function submitSign(mode: SignMode) {
   const form = state.form;
   const inspection = state.inspection;
   if (!form || !inspection) return;
-  const msg = app.querySelector<HTMLElement>("#sign-msg");
-  const problems = analysing() ? [WAITING] : signProblems(form, inspection);
-  if (problems.length > 0) {
-    if (msg) {
-      msg.textContent = problems.join(" ");
-      msg.className = "msg error";
-    }
-    return;
-  }
+  if (showProblems(analysing() ? [WAITING] : signProblems(form, inspection, mode))) return;
   const seq = ++signSeq;
   const busy = spinner("Signing");
   state.busy = busy;
   state.error = null;
   render();
   try {
-    const result = await signAsset(toRequest(form, inspection, semanticShown(inspection)), (p) => {
+    const result = await signAsset(toRequest(form, inspection, semanticShown(inspection), mode), (p) => {
       if (seq === signSeq) showProgress(busy, p);
     });
     if (seq !== signSeq) return;
     state.inspection = result.inspection;
-    resetSearch();
+    resetNetwork();
     state.analysis = null;
     state.tab = "credentials";
-    const { text, note } = signedMessages(result);
+    const { text, note } = signedMessages(result, mode);
     state.banner = { text, path: result.output, note: note ?? undefined };
     await resetSignForm(result.inspection);
   } catch (e) {
@@ -646,9 +648,35 @@ async function submitSign() {
       render();
     }
   }
-  // A Semantic-Code left out at signing is computed for the copy as for any file opened.
+  if (seq === signSeq) afterSigning(inspection, mode);
+}
+
+/** Once the signed copy of `source` is open: show it from the top, register it when `mode` says so, and compute a
+ * Semantic-Code left out at signing, as for any file opened. Nothing when signing failed and `source` is still open. */
+function afterSigning(source: Inspection, mode: SignMode) {
   const copy = state.inspection;
-  if (seq === signSeq && copy?.pending.length) void analyse(copy.path);
+  if (!copy || copy === source) return;
+  // The banner, the status card and the registration's card start at the top.
+  for (const column of app.querySelectorAll<HTMLElement>(".column")) column.scrollTop = 0;
+  if (mode === "register") void register();
+  if (copy.pending.length) void analyse(copy.path);
+}
+
+/** Show the `problems` that keep the form from being signed beside its buttons; true when there are any. */
+function showProblems(problems: string[]): boolean {
+  const msg = app.querySelector<HTMLElement>("#sign-msg");
+  if (problems.length > 0 && msg) {
+    msg.textContent = problems.join(" ");
+    msg.className = "msg error";
+  }
+  return problems.length > 0;
+}
+
+/** Open or close the menu of the signing actions. */
+function toggleSignMenu() {
+  syncForm();
+  state.signMenu = !state.signMenu;
+  render();
 }
 
 /** Read every form control into `state.form` so a re-render restores it. */
@@ -717,16 +745,19 @@ async function onClick(target: HTMLElement) {
   if (d.reveal) return void revealItemInDir(d.reveal).catch((e) => console.error(e));
   if (d.expand) return toggleMatch(d.expand);
   if (d.restore) return void restore(d.restore);
-  if (d.useKey && state.form) {
-    syncForm();
-    setTrainingUse(state.form, d.useKey, d.use ?? "");
-    return render();
-  }
-  if (d.sourceList && state.form && state.inspection) {
-    syncForm();
-    state.form.source = toggleList(state.inspection.kind, state.form.source);
-    return render();
-  }
+  if (d.sign || d.useKey || d.sourceList) return onFormClick(d);
+}
+
+/** Handle a click on a hook of the sign form: a signing action, a training and data mining choice, or the switch
+ * between the two questions and the full list of source types. */
+function onFormClick(d: DOMStringMap) {
+  const { form, inspection } = state;
+  if (!form || !inspection) return;
+  syncForm();
+  if (d.sign) return void submitSign(d.sign as SignMode);
+  if (d.useKey) setTrainingUse(form, d.useKey, d.use ?? "");
+  else form.source = toggleList(inspection.kind, form.source);
+  render();
 }
 
 /** Stop the running analysis or download in the backend and forget about its result. */
@@ -757,6 +788,8 @@ const SIMPLE_ACTIONS: Record<string, () => unknown> = {
   settings: openSettings,
   "close-settings": closeSettings,
   "cancel-settings": cancelSettings,
+  "sign-menu": toggleSignMenu,
+  register,
 };
 
 /** Top-bar, banner, unit list and overlay actions: open a file, close it, dismiss the messages, download ffmpeg, open
@@ -773,7 +806,7 @@ function onAction(action: string) {
   if (action === "close") {
     cancelRunning();
     state.inspection = null;
-    resetSearch();
+    resetNetwork();
     state.form = null;
   }
   if (action === "close" || action === "dismiss") {
@@ -785,10 +818,30 @@ function onAction(action: string) {
 
 let searchSeq = 0;
 
-/** Forget the search of the file open before; one still running is dropped when it answers. */
-function resetSearch() {
+/** Forget the search and the registration of the file open before; one still running is dropped when it answers. */
+function resetNetwork() {
   searchSeq++;
   state.search = null;
+  state.registration = null;
+}
+
+/** Register the open file's manifest store on the test network; its card shows the answer. One for a file opened
+ * since is dropped when it answers. */
+async function register() {
+  const path = state.inspection?.path;
+  if (!path || state.registration?.state === "running") return;
+  const running: RegisterState = { path, state: "running" };
+  state.registration = running;
+  render();
+  let next: RegisterState;
+  try {
+    next = { path, state: "done", result: await registerManifest(path) };
+  } catch (e) {
+    next = { path, state: "failed", reason: String(e) };
+  }
+  if (state.registration !== running) return;
+  state.registration = next;
+  render();
 }
 
 /** The units a search sends, as the unit list shows them; null while any is still computed or without the Data- and
@@ -892,8 +945,14 @@ function wireEvents() {
       return;
     }
     const target = (ev.target as HTMLElement).closest<HTMLElement>(
-      "[data-action],[data-tab],[data-copy],[data-goto],[data-pick],[data-reveal],[data-use-key],[data-source-list],[data-expand],[data-restore]",
+      "[data-action],[data-tab],[data-copy],[data-goto],[data-pick],[data-reveal],[data-use-key],[data-source-list],[data-expand],[data-restore],[data-sign]",
     );
+    // A click anywhere but on the arrow closes the menu of the signing actions, after which an entry still runs.
+    if (state.signMenu && target?.dataset.action !== "sign-menu") {
+      syncForm();
+      state.signMenu = false;
+      render();
+    }
     if (target) await onClick(target);
   });
 
@@ -920,11 +979,8 @@ function wireEvents() {
     }
   });
 
-  app.addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    syncForm();
-    void submitSign();
-  });
+  // The sign form has no submit button, so Enter in a field does not sign; this keeps the web view from navigating.
+  app.addEventListener("submit", (ev) => ev.preventDefault());
 
   app.addEventListener("keydown", (ev) => {
     const target = ev.target as HTMLElement;
@@ -934,9 +990,11 @@ function wireEvents() {
     }
   });
 
-  // Escape closes Settings, wherever the focus is; it waits like Done while a switch is being changed.
+  // Escape closes Settings, wherever the focus is (it waits like Done while a switch is being changed), else the menu
+  // of the signing actions.
   window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && state.settings) closeSettings();
+    else if (ev.key === "Escape" && state.signMenu) toggleSignMenu();
   });
 
   // Block the web view's default file navigation; Tauri delivers paths through its own event.

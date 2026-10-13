@@ -4,8 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::Cursor;
-use std::path::Path;
+use std::io::{Cursor, Read, Seek};
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -30,6 +30,29 @@ use crate::video::Progress;
 
 /// Action recorded when signing wrote the title, description or ISCC metadata into the copy.
 const EDITED_METADATA: &str = "c2pa.edited.metadata";
+
+/// Extension of a sidecar manifest store, which c2pa-rs loads next to `<stem>.<ext>`.
+pub const SIDECAR_EXTENSION: &str = "c2pa";
+
+/// Formats whose files c2pa-rs leaves as they are when it signs into a sidecar (test
+/// `sidecar_formats_are_those_c2pa_leaves_untouched`); it rewrites every other format first and
+/// binds the manifest to that rewrite.
+const SIDECAR_MIMES: &[&str] = &[
+    formats::JPEG,
+    formats::PNG,
+    formats::WEBP,
+    formats::GIF,
+    formats::TIFF,
+    formats::SVG,
+    formats::TXT,
+    formats::MARKDOWN,
+    formats::WAV,
+    formats::M4A,
+    formats::MP4,
+    formats::MOV,
+    formats::M4V,
+    formats::AVI,
+];
 
 /// Signing request as sent by the UI.
 #[derive(Deserialize, Debug)]
@@ -58,6 +81,10 @@ pub struct SignRequest {
     /// Timestamp service (RFC 3161) to countersign the signature; none when absent.
     #[serde(default)]
     pub tsa_url: Option<String>,
+    /// Write the manifest store as a sidecar `<stem>.c2pa` next to the source, which stays as it
+    /// is, instead of a signed copy at `output` ([`sidecar_block`] says when that is possible).
+    #[serde(default)]
+    pub sidecar: bool,
 }
 
 /// One entry of the CAWG training and data mining assertion.
@@ -83,9 +110,11 @@ pub enum Credentials {
     },
 }
 
-/// Outcome of signing, including a fresh inspection of the output file.
+/// Outcome of signing, including a fresh inspection of the signed file: the signed copy, or the
+/// source with its sidecar.
 #[derive(Serialize, Debug)]
 pub struct SignResult {
+    /// The signed copy, or the sidecar written next to the source.
     pub output: String,
     pub units: Vec<IsccUnit>,
     pub iscc_seq_base64: String,
@@ -144,11 +173,8 @@ pub fn sign_with(
 ) -> Result<SignResult> {
     let kinds = settings.semantic;
     let source = Path::new(&request.source);
-    let output = Path::new(&request.output);
-    if same_file(source, output) {
-        bail!("choose an output path different from the source file");
-    }
     let format = inspect::asset_format(source)?;
+    let output = output_path(request, source, format)?;
     let mime = format.mime;
 
     // IEP-0020: every unit is generated from the source as a whole, including any Content
@@ -241,14 +267,21 @@ pub fn sign_with(
     if !progress(Stage::Write, None) {
         return Err(Cancelled.into());
     }
-    let edited_bytes = edited.as_ref().map(|e| e.bytes.as_slice());
-    write_beside(output, |tmp| {
-        write_signed(&mut builder, format, source, edited_bytes, tmp)
-    })?;
-    let copy_format = inspect::asset_format(output)?;
-    let copy = asset::load_signed_copy(output, copy_format, asset, settings.ocr, &|f| {
-        progress(Stage::Output, f)
-    })?;
+    let copy_progress = |f| progress(Stage::Output, f);
+    let (signed, signed_format, copy) = if request.sidecar {
+        write_sidecar(&mut builder, format, source, &output)?;
+        let copy = asset::load(source, format, settings.ocr, &copy_progress)?;
+        (source, format, copy)
+    } else {
+        let edited_bytes = edited.as_ref().map(|e| e.bytes.as_slice());
+        write_beside(&output, |tmp| {
+            write_signed(&mut builder, format, source, edited_bytes, tmp)
+        })?;
+        let copy_format = inspect::asset_format(&output)?;
+        let copy =
+            asset::load_signed_copy(&output, copy_format, asset, settings.ocr, &copy_progress)?;
+        (output.as_path(), copy_format, copy)
+    };
     // A Semantic-Code left out at signing is left to a later pass, as for any file just opened,
     // unless its kind is off.
     let depth = Depth {
@@ -262,7 +295,7 @@ pub fn sign_with(
         semantic_kinds: kinds,
     };
     let output_progress = |_, f| progress(Stage::Output, f);
-    let inspection = inspect::inspect_loaded(output, copy_format, copy, depth, &output_progress)?;
+    let inspection = inspect::inspect_loaded(signed, signed_format, copy, depth, &output_progress)?;
     Ok(SignResult {
         output: output.to_string_lossy().into_owned(),
         units,
@@ -422,6 +455,105 @@ pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
         || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
+/// Where signing `source` writes: its sidecar `<stem>.c2pa`, or the signed copy `request` names.
+fn output_path(request: &SignRequest, source: &Path, format: &Format) -> Result<PathBuf> {
+    if request.sidecar {
+        if let Some(block) = sidecar_block(source, format, embeds_manifest(source)) {
+            bail!("{block}");
+        }
+        return Ok(source.with_extension(SIDECAR_EXTENSION));
+    }
+    let output = PathBuf::from(&request.output);
+    if same_file(source, &output) {
+        bail!("choose an output path different from the source file");
+    }
+    Ok(output)
+}
+
+/// Why the manifest store of `path` cannot go into a sidecar next to it; `None` when it can.
+/// `embedded`: the file carries a manifest store of its own, which readers take instead of any
+/// sidecar.
+pub fn sidecar_block(path: &Path, format: &Format, embedded: bool) -> Option<String> {
+    if !SIDECAR_MIMES.contains(&format.mime) {
+        return Some(format!(
+            "A sidecar is not possible for {}: c2pa-rs would bind it to a changed copy of the file.",
+            format.label
+        ));
+    }
+    if embedded {
+        return Some(
+            "This file carries Content Credentials inside; readers use those and ignore a sidecar."
+                .into(),
+        );
+    }
+    let sidecar = path.with_extension(SIDECAR_EXTENSION);
+    sidecar.exists().then(|| {
+        let name = sidecar.file_name().unwrap_or_default().to_string_lossy();
+        format!("{name} already exists next to this file.")
+    })
+}
+
+/// Whether the file at `path` embeds a manifest store.
+pub fn embeds_manifest(path: &Path) -> bool {
+    c2pa::jumbf_io::load_jumbf_from_file(path).is_ok()
+}
+
+/// Sign `source` into the sidecar `output` with the manifest of `builder`. c2pa-rs hashes a copy
+/// of the source it prepares itself; the sidecar is written only when that copy is the source byte
+/// for byte, so the manifest binds the file as it stays.
+fn write_sidecar(
+    builder: &mut Builder,
+    format: &Format,
+    source: &Path,
+    output: &Path,
+) -> Result<()> {
+    builder.set_no_embed(true);
+    let mut input =
+        File::open(source).with_context(|| format!("cannot read {}", source.display()))?;
+    let mut copy = tempfile::tempfile().context("cannot create a temporary file")?;
+    let store = builder.save_to_stream(format.mime, &mut input, &mut copy)?;
+    if !same_content(&mut input, &mut copy)? {
+        bail!(
+            "c2pa-rs changed this {} file to sign it, so a sidecar would not fit it",
+            format.label
+        );
+    }
+    if output.exists() {
+        bail!("{} already exists", output.display());
+    }
+    write_beside(output, |tmp| {
+        std::fs::write(tmp, &store).with_context(|| format!("cannot write {}", tmp.display()))
+    })
+}
+
+/// Whether the streams `a` and `b` hold the same bytes, read from their start.
+fn same_content(a: &mut (impl Read + Seek), b: &mut (impl Read + Seek)) -> Result<bool> {
+    a.rewind()?;
+    b.rewind()?;
+    let (mut x, mut y) = (vec![0; 1 << 16], vec![0; 1 << 16]);
+    loop {
+        let n = read_full(a, &mut x)?;
+        if n != read_full(b, &mut y)? || x[..n] != y[..n] {
+            return Ok(false);
+        }
+        if n == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// Fill `buf` from `reader` as far as it goes; fewer bytes only at its end.
+fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
 /// Write the signed copy through `write` and move it over `output` only once that succeeded, so
 /// a failure leaves any previous output intact. c2pa refuses to write onto an existing file, so
 /// `write` gets a path under the output's name (c2pa detects the format by its extension) in a
@@ -555,6 +687,7 @@ pub(crate) mod tests {
             training,
             credentials: Credentials::Demo,
             tsa_url: None,
+            sidecar: false,
         }
     }
 
@@ -1923,5 +2056,144 @@ pub(crate) mod tests {
                 "{file}"
             );
         }
+    }
+
+    /// One file of every format, none with Content Credentials.
+    const ONE_OF_EACH: &[&str] = &[
+        "no_manifest.jpg",
+        "synthetic-123x57.png",
+        "meta-xmp.webp",
+        "demo.gif",
+        "demo.tif",
+        "demo.svg",
+        "demo.txt",
+        "demo.md",
+        "demo.wav",
+        "demo.m4a",
+        "demo.mp3",
+        "demo.flac",
+        "demo.epub",
+        "demo.docx",
+        "demo.pptx",
+        "demo.xlsx",
+        "demo.odt",
+        "demo.ods",
+        "demo.odp",
+        "demo.pdf",
+        "demo.mp4",
+        "demo.mov",
+        "demo.m4v",
+        "demo.avi",
+    ];
+
+    /// Whether c2pa-rs signs `source` into a sidecar without changing the file it binds: a bare
+    /// manifest with the source as parent ingredient, through [`write_sidecar`].
+    fn sidecar_fits(source: &Path, format: &Format, output: &Path) -> bool {
+        let (signer, _) = claim_signer(&Credentials::Demo, None).unwrap();
+        let context = Context::new()
+            .with_settings(base_settings())
+            .unwrap()
+            .with_signer(signer);
+        let mut builder = Builder::from_context(context)
+            .with_definition(json!({ "title": "t", "format": format.mime }))
+            .unwrap();
+        builder.set_intent(BuilderIntent::Edit);
+        add_parent(&mut builder, source, format.mime, None).unwrap();
+        write_sidecar(&mut builder, format, source, output).is_ok()
+    }
+
+    #[test]
+    fn sidecar_formats_are_those_c2pa_leaves_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut seen, mut wrong) = (Vec::new(), Vec::new());
+        for name in ONE_OF_EACH {
+            let source = PathBuf::from(fixture(name));
+            let format = formats::by_path(&source).unwrap();
+            seen.push(format.mime);
+            let output = dir.path().join(format!("{name}.{SIDECAR_EXTENSION}"));
+            if sidecar_fits(&source, format, &output) != SIDECAR_MIMES.contains(&format.mime) {
+                wrong.push(*name);
+            }
+        }
+        assert!(wrong.is_empty(), "SIDECAR_MIMES is wrong for {wrong:?}");
+        for format in formats::FORMATS {
+            assert!(
+                seen.contains(&format.mime),
+                "no fixture for {}",
+                format.mime
+            );
+        }
+    }
+
+    #[test]
+    fn a_sidecar_signs_the_file_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("photo.jpg");
+        std::fs::copy(fixture("no_manifest.jpg"), &source).unwrap();
+        let before = std::fs::read(&source).unwrap();
+        let mut req = request("no_manifest.jpg", &dir.path().join("unused.jpg"));
+        req.source = source.to_string_lossy().into_owned();
+        req.sidecar = true;
+        let result = sign(&req).unwrap();
+        assert_eq!(PathBuf::from(&result.output), dir.path().join("photo.c2pa"));
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+        assert!(!dir.path().join("unused.jpg").exists());
+        let inspection = &result.inspection;
+        assert_eq!(inspection.path, source.to_string_lossy());
+        let manifest = inspection.manifest.as_ref().unwrap();
+        assert_eq!(manifest.validation_state, "Valid");
+        assert_eq!(manifest.sidecar.as_deref(), Some("photo.c2pa"));
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(sb.preservation, Some(Preservation::Preserved));
+        assert_eq!(unit_match(sb, "Instance-Code").similarity, Some(1.0));
+        // The sidecar is now in the way of another one.
+        assert_eq!(
+            inspection.sidecar_block.as_deref(),
+            Some("photo.c2pa already exists next to this file.")
+        );
+        let error = sign(&req).unwrap_err().to_string();
+        assert_eq!(error, "photo.c2pa already exists next to this file.");
+    }
+
+    #[test]
+    fn a_video_with_a_sidecar_validates_as_it_is() {
+        tools::tests::ensure_ffmpeg();
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("clip.mp4");
+        std::fs::copy(fixture("demo.mp4"), &source).unwrap();
+        let mut req = request("demo.mp4", &dir.path().join("unused.mp4"));
+        req.source = source.to_string_lossy().into_owned();
+        req.units = ["meta", "video", "data", "instance"]
+            .map(String::from)
+            .to_vec();
+        req.sidecar = true;
+        let result = sign(&req).unwrap();
+        let manifest = result.inspection.manifest.as_ref().unwrap();
+        assert_eq!(manifest.validation_state, "Valid");
+        assert_eq!(manifest.sidecar.as_deref(), Some("clip.c2pa"));
+        let sb = &manifest.soft_bindings[0];
+        assert_eq!(unit_match(sb, "Content-Code Video").similarity, Some(1.0));
+        assert_eq!(unit_match(sb, "Instance-Code").similarity, Some(1.0));
+    }
+
+    #[test]
+    fn no_sidecar_for_a_file_with_content_credentials_or_a_rewritten_format() {
+        let signed = sign_no_manifest("iscc-c2pa-demo-test-sidecar-block");
+        assert_eq!(
+            signed.inspection.sidecar_block.as_deref(),
+            Some("This file carries Content Credentials inside; readers use those and ignore a sidecar.")
+        );
+        let mp3 = formats::by_path(Path::new("x.mp3")).unwrap();
+        assert_eq!(
+            sidecar_block(Path::new("x.mp3"), mp3, false).as_deref(),
+            Some("A sidecar is not possible for MP3: c2pa-rs would bind it to a changed copy of the file.")
+        );
+        let mut req = request("demo.mp3", Path::new("unused.mp3"));
+        req.units = vec!["data".into(), "instance".into()];
+        req.sidecar = true;
+        assert!(sign(&req)
+            .unwrap_err()
+            .to_string()
+            .starts_with("A sidecar is not possible for MP3"));
     }
 }

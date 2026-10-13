@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Three signing actions behind one split button: **Sign, embed & register** (the default) writes
+  the signed copy and registers its manifest store on the ISCC test network, where the test store
+  keeps it and declares its ISCC, so a copy that loses its Content Credentials can be matched to
+  them; **Sign & embed** writes the signed copy only; **Sign** writes the manifest as a sidecar
+  `<stem>.c2pa` next to the file, which stays as it is, for the formats c2pa-rs leaves untouched
+  (JPEG, PNG, WebP, GIF, TIFF, SVG, TXT, Markdown, WAV, M4A, MP4, MOV, M4V, AVI) and files without
+  embedded Content Credentials. Any file with Content Credentials can be registered from its
+  Content Credentials tab, which shows the store's answer. Registering uploads the manifest store
+  (signer, title, description, ISCC, thumbnail), never the file. Enter in a field of the Sign tab
+  no longer signs. In the CLI: `sign --sidecar` and `register`.
 - Search Content Credentials: a file without them can be looked up on the ISCC test network (the
   test store and the resolver, through the C2PA Soft Binding Resolution API). The file's ISCC,
   which identifies this exact file, is sent with the IP address, by POST and without its

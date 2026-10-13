@@ -134,8 +134,9 @@ export function needsIsccBinding(inspection: Inspection): boolean {
   return !inspection.manifest_error && !(inspection.manifest && hasIsccBinding(inspection.manifest));
 }
 
-/** Whole tab; `semantic` tells whether the file's Semantic-Code is shown, so an embedded one is compared. */
-export function credentialsTab(inspection: Inspection, semantic: boolean): string {
+/** Whole tab; `semantic` tells whether the file's Semantic-Code is shown, so an embedded one is compared; `network` is the
+ * ISCC test network card, shown under the status card. */
+export function credentialsTab(inspection: Inspection, semantic: boolean, network: string): string {
   if (inspection.manifest_error) {
     return `
       <section class="card"><div class="center">
@@ -147,6 +148,7 @@ export function credentialsTab(inspection: Inspection, semantic: boolean): strin
   if (!m) return ""; // a file without credentials gets the search of the test network (search.ts)
   return [
     statusCard(m),
+    network,
     softBindingCard(m, inspection, semantic),
     thumbnailCard(m, inspection),
     trainingCard(m),

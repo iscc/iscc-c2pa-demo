@@ -145,6 +145,44 @@ fn sign_writes_a_trusted_copy_with_prefilled_fields() {
     }
 }
 
+#[test]
+fn sign_sidecar_leaves_the_file_as_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("photo.jpg");
+    std::fs::copy(fixture("no_manifest.jpg"), &source).unwrap();
+    let before = std::fs::read(&source).unwrap();
+    let args = [
+        "sign",
+        source.to_str().unwrap(),
+        "--sidecar",
+        "--no-timestamp",
+        "--no-preview",
+    ];
+    let result = json(&cli(&args));
+    let sidecar = dir.path().join("photo.c2pa");
+    assert_eq!(result["output"], sidecar.to_str().unwrap());
+    assert_eq!(std::fs::read(&source).unwrap(), before);
+    assert_eq!(result["inspection"]["manifest"]["sidecar"], "photo.c2pa");
+    assert_eq!(
+        result["inspection"]["manifest"]["validation_state"],
+        "Valid"
+    );
+    let again = cli(&args);
+    assert_eq!(again.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr).trim(),
+        "error: photo.c2pa already exists next to this file."
+    );
+    let usage = cli(&[
+        "sign",
+        source.to_str().unwrap(),
+        "--sidecar",
+        "--output",
+        "x.jpg",
+    ]);
+    assert_eq!(usage.status.code(), Some(2), "--sidecar writes no copy");
+}
+
 /// The hidden `crjson` command prints c2pa-rs's crJSON, which scripts/conformance.py evaluates.
 #[test]
 fn crjson_prints_the_manifest_store() {

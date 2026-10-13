@@ -20,6 +20,7 @@ pub mod pdf;
 pub mod pdf_update;
 pub mod plain;
 pub mod recover;
+pub mod register;
 pub mod resample;
 pub mod semantic;
 pub mod settings;
@@ -251,6 +252,16 @@ async fn find_credentials(path: String, units: Vec<String>) -> Result<lookup::Lo
 
 /// Write the file at `path` with the found Content Credentials `store_id` put back into it to
 /// `output`, once they validate there.
+/// Upload the manifest store of the file at `path` to the test store, which declares it on the
+/// test network.
+#[tauri::command]
+async fn register_manifest(path: String) -> Result<register::Registration, String> {
+    tauri::async_runtime::spawn_blocking(move || register::register(Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
+}
+
 #[tauri::command]
 async fn restore_credentials(path: String, store_id: String, output: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -431,7 +442,8 @@ pub fn run() {
             set_semantic,
             set_ocr,
             find_credentials,
-            restore_credentials
+            restore_credentials,
+            register_manifest
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

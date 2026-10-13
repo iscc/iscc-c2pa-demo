@@ -34,7 +34,11 @@ Opening a file shows:
   which puts found credentials back into an unsigned original (see
   [Search and recovery](#search-and-recovery)).
 
-The Sign tab writes a signed copy with:
+The Sign tab has three actions behind one split button (see
+[Signing actions and registration](#signing-actions-and-registration)): **Sign, embed & register**
+(the default) writes a signed copy and registers its manifest store on the ISCC test network,
+**Sign & embed** writes the signed copy only, and **Sign** writes the manifest store as a sidecar
+`<stem>.c2pa` next to a file that stays as it is. Each manifest has:
 
 - a `c2pa.soft-binding` assertion using algorithm `io.iscc.v0`, whose value is the ISCC-SEQ
   defined by [IEP-0020](https://ieps.iscc.codes/iep-0020/) (one or more 256-bit ISCC-UNITs,
@@ -121,6 +125,8 @@ The CLI is not part of the installers yet. Build and run it from source with the
 cd src-tauri
 cargo run --features cli --bin c2pa-iscc -- inspect ../photo.jpg --no-preview          # inspection as JSON
 cargo run --features cli --bin c2pa-iscc -- sign ../report.docx --training cawg.ai_training=notAllowed
+cargo run --features cli --bin c2pa-iscc -- sign ../photo.jpg --sidecar                 # photo.c2pa next to it
+cargo run --features cli --bin c2pa-iscc -- register ../photo-signed.jpg                # upload its manifest store
 cargo run --features cli --bin c2pa-iscc -- meta-code --title "A title" --description "Some text"
 cargo run --features cli --bin c2pa-iscc -- formats                                    # supported formats
 cargo run --features cli --bin c2pa-iscc -- tools install                              # ffmpeg, for video
@@ -352,6 +358,40 @@ soft-binding assertion that has one.
 The assertion is built in `src-tauri/src/sign.rs` and verified in `src-tauri/src/inspect.rs`
 (`source_view`, `preservation`, `summarize_assertion`); both go through `iscc::encode_seq` /
 `iscc::decode_seq`.
+
+## Signing actions and registration
+
+The Sign tab ends in a split button. The button signs, embeds and registers; the arrow beside it
+opens a menu of all three actions, each of which runs at once (a menu entry is an action, not a
+setting, so nothing is remembered between files). No button of the form is a submit button, so
+Enter in a field never signs, let alone uploads. The line under the buttons says what registering
+makes public.
+
+**Sign (sidecar).** `SignRequest.sidecar` makes `sign_with` write the manifest store to
+`<stem>.c2pa` next to the source (`write_sidecar`): c2pa-rs signs with `set_no_embed(true)` into a
+copy it prepares itself (`remove_c2pa` first), and the sidecar is written only when that copy is
+the source byte for byte, so the manifest binds the file as it stays. c2pa-rs leaves JPEG, PNG,
+WebP, GIF, TIFF, SVG, TXT, Markdown, WAV, M4A, MP4, MOV, M4V and AVI untouched and rewrites MP3,
+FLAC, EPUB, the Office and OpenDocument formats and PDF; `SIDECAR_MIMES` in `sign.rs` lists the
+first group and `sidecar_formats_are_those_c2pa_leaves_untouched` pins it on a file of every
+format. `Inspection.sidecar_block` says why a file gets no sidecar (its format; Content
+Credentials embedded in it, which readers take instead of a sidecar; a `<stem>.c2pa` already
+there), and the menu shows Sign disabled with that reason. The result's inspection is that of the
+source with its sidecar: valid, source-preserving, every unit equal.
+
+**Register.** `register::register` uploads the manifest store of a file (`register::manifest_store`:
+a `.c2pa` file itself, the store a file embeds, else its sidecar) to the test store with
+`POST /v1/manifests?declare=true`, `Content-Type: application/c2pa`, anonymous, 30 s budget (the
+store declares on the hub during the upload). The answer carries the manifest ID, its address on
+the store and the declaration (`declared` with an ISCC-ID on `staging.iscc.id`, `pending` while the
+store retries, `skipped` without a 256-bit Data-Code and Instance-Code, `failed`, `disabled`,
+`withdrawn`); a declared manifest is found by the resolver a minute or so later. 429 says when to
+try again (`Retry-After`); any other refusal shows the store's `detail`. The same bytes again
+answer with the record the store keeps, so registering twice is harmless. Signing and registering
+are two steps: a failed upload leaves the signed copy, and the card "ISCC test network" under the
+status card of any file with Content Credentials offers Register manifest (also for files signed
+elsewhere) and shows the answer. `registers_on_the_test_store` (ignored) uploads a demo manifest
+to the real test store.
 
 ## Search and recovery
 
