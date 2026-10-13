@@ -35,6 +35,14 @@ pub const ISCC_BINDING_CONTACT: &str = "info@iscc.io";
 pub const ISCC_BINDING_INFO_URL: &str = "https://ieps.iscc.codes/iep-0020/";
 /// Name reported as claim generator in signed manifests.
 pub const CLAIM_GENERATOR_NAME: &str = "ISCC C2PA Demo";
+/// Version of the C2PA specification signed manifests declare they follow (`specVersion` in
+/// `claim_generator_info`, spec 2.4+; the Conformance Program requires it). c2pa-rs 0.91 does not
+/// set it, and its settings have no field for it: the key goes through their map of other
+/// values, which is written into the claim as is (c2pa-rs issue 2828). Never also call
+/// `set_spec_version`: the claim would get the key twice. Not 2.5 yet: it is not released, and
+/// c2pa-rs writes the parent ingredient's validation results with `trustListUri`, which 2.5
+/// deprecates, when the source's signer is on a trust list.
+pub const C2PA_SPEC_VERSION: &str = "2.4.0";
 
 /// Base labels (`labels::parse_label`) of the assertions signing lists in `created_assertions`,
 /// the ones the specification attributes to the signer. c2pa-rs 0.91 lists every assertion but
@@ -123,7 +131,8 @@ pub fn base_settings() -> Value {
         "builder": {
             "claim_generator_info": {
                 "name": CLAIM_GENERATOR_NAME,
-                "version": env!("CARGO_PKG_VERSION")
+                "version": env!("CARGO_PKG_VERSION"),
+                "specVersion": C2PA_SPEC_VERSION
             },
             // The demo records no action besides `c2pa.opened`, so the spec requires
             // `allActionsIncluded: true`.

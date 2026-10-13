@@ -24,6 +24,10 @@
 - Every assertion the app signs is listed as created, so the C2PA specification attributes the
   ISCC soft binding, the claim thumbnail, the parent ingredient and the CAWG assertions to the
   signer. Before, c2pa-rs listed all but the actions as gathered.
+- Signed manifests declare the C2PA specification version they follow, 2.4
+  (`specVersion` in `claim_generator_info`), which the C2PA Conformance Program requires from
+  spec 2.4 on. A new check signs a file of every kind of container and evaluates the manifests
+  with the C2PA Conformance Task Force's asset rubric (`scripts/conformance.py`, in CI).
 - The built-in demo certificate is no longer trusted inside the app: its private key is public,
   so files signed with it show "Valid, signed with a public test key" instead of "Valid, signer
   on the c2pa-rs test list".

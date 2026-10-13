@@ -23,9 +23,14 @@ run = [
 ]
 
 [tasks.test]
-description = "Run the TypeScript tests and the Rust unit and integration tests"
+description = "Run the TypeScript tests, the Rust tests and the conformance check"
 run = [
   "pnpm test",
   "uv run scripts/fetch_resources.py",
   "cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features",
+  "uv run scripts/conformance.py",
 ]
+
+[tasks.conformance]
+description = "Check signed manifests against the C2PA conformance rubrics (pinned download)"
+run = "uv run scripts/conformance.py"

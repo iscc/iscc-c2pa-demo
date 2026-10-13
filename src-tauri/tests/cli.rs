@@ -145,6 +145,20 @@ fn sign_writes_a_trusted_copy_with_prefilled_fields() {
     }
 }
 
+/// The hidden `crjson` command prints c2pa-rs's crJSON, which scripts/conformance.py evaluates.
+#[test]
+fn crjson_prints_the_manifest_store() {
+    let crjson = json(&cli(&["crjson", fixture("CA.jpg").to_str().unwrap()]));
+    let manifest = &crjson["manifests"][0];
+    assert!(manifest["label"]
+        .as_str()
+        .unwrap()
+        .starts_with("contentauth:urn:uuid:"));
+    assert!(manifest["validationResults"].is_object());
+    let none = cli(&["crjson", fixture("no_manifest.jpg").to_str().unwrap()]);
+    assert_eq!(none.status.code(), Some(1));
+}
+
 #[test]
 fn sign_without_reachable_timestamp_service_notes_it_and_succeeds() {
     let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli-tsa");

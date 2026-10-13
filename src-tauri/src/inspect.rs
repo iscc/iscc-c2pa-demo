@@ -888,6 +888,13 @@ fn read_manifest(path: &Path, check: bool) -> c2pa::Result<Reader> {
     Reader::from_context(context).with_file(path)
 }
 
+/// The manifest store of the file at `path` as c2pa-rs writes it in crJSON, the JSON form of
+/// Content Credentials that the C2PA conformance rubrics evaluate, validated with the shared trust
+/// settings.
+pub fn crjson(path: &Path) -> Result<Value> {
+    Ok(read_manifest(path, true)?.to_crjson_value()?)
+}
+
 /// Down-scale the flattened image and encode it as a JPEG data URL.
 fn preview_data_url(rgb: &image::RgbImage) -> Result<String> {
     let jpeg = thumbnail::scaled_jpeg(rgb, thumbnail::PREVIEW_EDGE, PREVIEW_QUALITY)?;

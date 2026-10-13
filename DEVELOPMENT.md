@@ -195,6 +195,27 @@ how far the runner drifted (`cargo test --tests --all-features budget -- --nocap
 `OCR_CORPUS_DIR=DIR cargo test --release --lib ocr_corpus -- --ignored --nocapture` measures OCR
 quality and speed on the page images and truth codes of a quality set (see [OCR](#ocr)).
 
+`uv run scripts/conformance.py` (also `mise run conformance`, and the last step of
+`mise run test` and of CI) checks what signing writes against the C2PA conformance rubrics: it
+builds the CLI, signs 12 fixtures (one per kind of container and hard binding, one with a
+digital source type and a training entry, one over existing Content Credentials) without a
+timestamp, exports each copy as c2pa-rs's crJSON with the CLI's hidden `crjson` command, and
+runs the Conformance Task Force's evaluator with its asset rubric for Conformance Program 0.2.
+Both come from [c2pa-org/conformance-public](https://github.com/c2pa-org/conformance-public)
+at a pinned commit, checked by SHA-256, into `build/conformance/`, where the signed copies and
+their crJSON stay for a look. Every trait must hold on every file, except the known failures the
+script lists with their reason; a known failure that holds everywhere fails the check too. With
+`C2PA_CONFORMANCE_DIR` pointing at a checkout of a newer rubric release, that release's
+rubric runs as well, as a preview in which only the soft-binding traits must hold. Bump
+`COMMIT` and the SHA-256s when a new rubric release reaches conformance-public.
+
+Signed manifests declare C2PA 2.4 (`specVersion` in `claim_generator_info`,
+`context::C2PA_SPEC_VERSION`), which the Conformance Program requires from spec 2.4 on, so the
+rubric for 2.4 runs and the rubrics for 2.2, which reject any later version, do not. Moving to
+2.5 waits for its release and for c2pa-rs: signing a file whose Content Credentials are trusted
+writes the parent ingredient's validation results with `trustListUri`, which 2.5 deprecates in
+favour of `trustListUris`.
+
 Sources and licences of the fixtures are listed in
 [`src-tauri/tests/fixtures/README.md`](src-tauri/tests/fixtures/README.md).
 

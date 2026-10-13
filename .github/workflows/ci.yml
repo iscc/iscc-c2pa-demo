@@ -1,6 +1,6 @@
 # Quality gates on every push to main and every pull request: the pre-commit hooks, clippy and
 # tsc on Linux, the Rust tests on Windows, macOS and Linux (with ffmpeg for the video tests and the
-# semantic models for the Semantic-Code tests).
+# semantic models for the Semantic-Code tests), then the C2PA conformance check.
 name: ci
 
 on:
@@ -99,3 +99,6 @@ jobs:
       # The tests that hold model results to a reference within a budget (Semantic-Codes, OCR)
       # report how far this CPU's instruction set drifts; cargo hides the output of passing tests.
       - run: cargo test --manifest-path src-tauri/Cargo.toml --tests --all-features budget -- --nocapture
+      # Signs a fixture per kind of container with the CLI the tests built and evaluates the
+      # manifests with the C2PA conformance rubric (scripts/conformance.py pins its download).
+      - run: uv run scripts/conformance.py

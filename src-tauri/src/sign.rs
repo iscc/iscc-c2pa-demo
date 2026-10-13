@@ -728,6 +728,23 @@ pub(crate) mod tests {
         );
     }
 
+    /// The claim names the specification version it follows, in `claim_generator_info` only.
+    #[test]
+    fn claim_declares_the_spec_version() {
+        let result = sign_no_manifest("iscc-c2pa-demo-test-spec-version");
+        let crjson = reader(Path::new(&result.output)).to_crjson_value().unwrap();
+        let claim = &crjson["manifests"][0]["claim.v2"];
+        assert_eq!(
+            claim["claim_generator_info"]["specVersion"],
+            context::C2PA_SPEC_VERSION
+        );
+        assert_eq!(claim["claim_generator_info"]["name"], "ISCC C2PA Demo");
+        assert!(
+            claim.get("specVersion").is_none(),
+            "deprecated in the claim"
+        );
+    }
+
     #[test]
     fn meta_assertion_only_with_meta_code_and_without_empty_description() {
         let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-no-meta");

@@ -68,6 +68,9 @@ enum Command {
     },
     /// List the supported file formats.
     Formats,
+    /// Print a file's manifest store as c2pa-rs's crJSON (for scripts/conformance.py).
+    #[command(hide = true)]
+    Crjson { file: PathBuf },
     /// Manage ffmpeg, which video files need, and the semantic models, which the Semantic-Codes
     /// need; each is downloaded once, on request.
     Tools {
@@ -302,6 +305,7 @@ fn run(cli: &Cli) -> Result<()> {
             cli.compact,
         ),
         Command::Formats => print(&formats::FORMATS, cli.compact),
+        Command::Crjson { file } => print(&inspect::crjson(file)?, cli.compact),
         Command::Tools { action } => match action {
             ToolsAction::Status => print(
                 &ToolsStatus {
