@@ -31,6 +31,11 @@ use crate::video::Progress;
 /// Action recorded when signing wrote the title, description or ISCC metadata into the copy.
 const EDITED_METADATA: &str = "c2pa.edited.metadata";
 
+/// Why a request without the Data-Code or the Instance-Code is refused: IEP-0020 requires both in
+/// every ISCC soft binding of the whole asset, the only kind this app writes.
+pub const REQUIRED_UNITS: &str =
+    "an ISCC soft binding needs the Data-Code and the Instance-Code of the source (IEP-0020)";
+
 /// Extension of a sidecar manifest store, which c2pa-rs loads next to `<stem>.<ext>`.
 pub const SIDECAR_EXTENSION: &str = "c2pa";
 
@@ -180,6 +185,9 @@ pub fn sign_with(
     // IEP-0020: every unit is generated from the source as a whole, including any Content
     // Credentials it already carries.
     let selection = UnitSelection::from_slugs(&request.units);
+    if !(selection.data && selection.instance) {
+        bail!("{REQUIRED_UNITS}");
+    }
     if let Some(kind) =
         SemanticKind::of(format.kind).filter(|k| selection.semantic && !kinds.has(*k))
     {
@@ -221,9 +229,6 @@ pub fn sign_with(
         .as_ref()
         .ok_or_else(|| anyhow!("the source is not hashed"))?;
     let units = iscc::units_for(bitstream, asset.content(), meta, semantic, &selection)?;
-    if units.is_empty() {
-        bail!("select at least one ISCC unit for the soft binding");
-    }
     let unit_strings: Vec<String> = units.iter().map(|u| u.iscc.clone()).collect();
     let seq = iscc::encode_seq(&unit_strings)?;
 
@@ -879,11 +884,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn signing_needs_the_data_code_and_the_instance_code() {
+        let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-required-units");
+        std::fs::create_dir_all(&dir).unwrap();
+        for units in [
+            &["meta", "image", "instance"][..],
+            &["meta", "image", "data"],
+            &[],
+        ] {
+            let output = dir.join("required.jpg");
+            let mut req = request("no_manifest.jpg", &output);
+            req.units = units.iter().map(|u| u.to_string()).collect();
+            let err = sign(&req).unwrap_err().to_string();
+            assert_eq!(err, REQUIRED_UNITS, "{units:?}");
+            assert!(!output.exists(), "{units:?}");
+        }
+    }
+
+    #[test]
     fn meta_assertion_only_with_meta_code_and_without_empty_description() {
         let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-no-meta");
         std::fs::create_dir_all(&dir).unwrap();
         let mut req = request("no_manifest.jpg", &dir.join("no-meta.jpg"));
-        req.units = vec!["image".into()];
+        req.units = ["image", "data", "instance"].map(String::from).to_vec();
         let manifest = sign(&req).unwrap().inspection.manifest.unwrap();
         assert!(!manifest
             .assertions
@@ -929,7 +952,7 @@ pub(crate) mod tests {
         let output = dir.join("CA-signed.jpg");
         let mut req = request("CA.jpg", &output);
         req.training.clear();
-        req.units = vec!["image".into(), "instance".into()];
+        req.units = ["image", "data", "instance"].map(String::from).to_vec();
         let result = sign(&req).unwrap();
 
         let manifest = result.inspection.manifest.expect("manifest present");
@@ -937,7 +960,7 @@ pub(crate) mod tests {
         assert_eq!(manifest.ingredients.len(), 1);
         assert_eq!(manifest.ingredients[0].relationship, "ParentOf");
         assert!(manifest.training_mining.is_none());
-        assert_eq!(manifest.soft_bindings[0].units.len(), 2);
+        assert_eq!(manifest.soft_bindings[0].units.len(), 3);
         // The units describe the source as a whole, its old manifest store included, which
         // embedding replaced: the Instance-Code identifies the source, not this file.
         let source = std::fs::read(fixture("CA.jpg")).unwrap();
@@ -2059,7 +2082,7 @@ pub(crate) mod tests {
     }
 
     /// One file of every format, none with Content Credentials.
-    const ONE_OF_EACH: &[&str] = &[
+    pub(crate) const ONE_OF_EACH: &[&str] = &[
         "no_manifest.jpg",
         "synthetic-123x57.png",
         "meta-xmp.webp",

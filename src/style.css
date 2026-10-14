@@ -461,25 +461,44 @@ input[readonly] { background: var(--paper); color: var(--muted); }
 .segmented button:last-child { border-right: 0; }
 .segmented button:hover { color: var(--ink); background: var(--paper); }
 .segmented button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.segmented button[aria-pressed="mixed"] { background: var(--rule); color: var(--ink); } /* the row for all uses: some of them have it */
 
 .usecase { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; padding: 8px 0; border-top: 1px solid var(--rule-soft); }
 .usecase:first-of-type { border-top: 0; }
 .usecase .label { font-weight: 500; }
-.usecase .key { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
 .usecase input { flex: 1 1 100%; }
 
 .radio { display: flex; align-items: baseline; gap: 8px; cursor: pointer; }
 .radio .hint { color: var(--muted); }
 .radio input { margin: 0; accent-color: var(--ink); }
 
-.source .choices { display: flex; flex-direction: column; gap: 6px; }
-.source .question { font-size: 12px; color: var(--muted); }
-.source .variants { display: flex; flex-direction: column; gap: 6px; padding-left: 21px; }
 .source .recorded { margin: 0; padding-top: 12px; border-top: 1px solid var(--rule-soft); display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .source .recorded .term { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
-.source .recorded .definition { color: var(--muted); font-size: 12px; line-height: 16px; }
+.source .recorded .line { display: inline-flex; align-items: center; gap: 4px; }
 .source .recorded .ai { font-size: 12px; line-height: 16px; }
 .source .recorded .linkbtn { font-size: 12px; margin-top: 4px; }
+
+/* Sections that start closed: the header opens and closes them. The ISCC soft binding shows the ISCC-CODE of the
+ * ticked units either way, training and data mining its row for all uses. */
+.fold-head { align-items: center; flex-wrap: wrap; row-gap: 8px; }
+.fold .toggle { padding: 0; border: 0; background: none; text-align: left; font-weight: 500; cursor: pointer; color: var(--ink); }
+.fold .toggle.grow { flex: 1; align-self: stretch; min-width: 8px; }
+.fold .toggle.chev-btn { align-self: stretch; display: flex; align-items: center; padding-left: 8px; }
+/* The choice for all uses sits before the chevron when the header has room; otherwise it takes a line of its own below
+ * the title and the chevron, its buttons sharing the width. */
+.fold { container-type: inline-size; }
+@container (max-width: 580px) {
+  .fold-head .segmented { order: 1; flex: 1 1 100%; }
+  .fold-head .segmented button { flex: 1; }
+}
+/* A setting on one line: label and tooltip left, the control right; the control moves under the label when narrow. */
+.legend.setting { align-items: center; flex-wrap: wrap; row-gap: 8px; }
+.legend.setting select { margin-left: auto; width: min(100%, 320px); font-weight: 400; }
+.fold .toggle .chev { width: 8px; height: 8px; border-right: 1.5px solid var(--ink); border-bottom: 1.5px solid var(--ink); transform: translateY(-2px) rotate(45deg); transition: transform var(--motion-fast) var(--ease); }
+.fold .toggle[aria-expanded="true"] .chev { transform: translateY(2px) rotate(225deg); }
+.binding .unit { grid-template-columns: 4px minmax(0, 1fr); padding: 0; border-bottom: 0; }
+.binding .units-choice:not([hidden]) { display: flex; flex-direction: column; gap: 12px; padding-top: 4px; }
+.check:has(input:disabled) { cursor: default; }
 
 .actions { display: flex; align-items: center; gap: 12px; padding: 16px; }
 .actions .msg { flex: 1; font-size: 13px; color: var(--muted); }
@@ -557,6 +576,10 @@ input[readonly] { background: var(--paper); color: var(--muted); }
 .tip:hover, .tip:focus-visible { color: var(--ink); }
 .tip::after { content: attr(data-tip); position: absolute; left: 50%; top: calc(100% + 8px); transform: translateX(-50%); width: max-content; max-width: min(360px, 60vw); padding: 8px 12px; border-radius: 4px; background: var(--ink); color: var(--paper); font-size: 12px; line-height: 18px; font-weight: 400; text-align: left; white-space: normal; opacity: 0; pointer-events: none; transition: opacity 160ms ease-out; z-index: 10; }
 .tip:hover::after, .tip:focus-visible::after { opacity: 1; }
+/* In the sign form the icons follow short labels near the left edge, so their tooltips open to the right. */
+.form .tip { vertical-align: -3px; margin-left: 4px; font-weight: 400; }
+.form .legend > .tip, .source .recorded .line .tip { margin-left: -4px; }
+.form .tip::after { left: -8px; transform: none; max-width: 320px; }
 .nocreds .privacy { margin: 12px 0 0; max-width: 72ch; color: var(--muted); font-size: 12px; line-height: 18px; }
 .nocreds .privacy .host { white-space: nowrap; }
 
@@ -575,12 +598,16 @@ input[readonly] { background: var(--paper); color: var(--muted); }
 .match-head .signer .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .match-head .sub { margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tag { flex: none; padding: 0 6px; border: 1px solid var(--rule); border-radius: 2px; color: var(--muted); font-family: var(--font-mono); font-size: 11px; line-height: 16px; font-weight: 400; }
-.match-head .label { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; line-height: 16px; font-weight: 500; white-space: nowrap; }
+/* The kind of match on top, the scores or checks it rests on under it. */
+.match-head .label { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 12px; line-height: 16px; white-space: nowrap; }
+.match-head .label .kind { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; font-weight: 500; }
+.match-head .label .evidence { max-width: 240px; color: var(--muted); white-space: normal; text-align: right; }
 .match-head .label .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--rule); }
 .match-head .label[data-state="exact"] .dot { background: var(--lime); }
 .match-head .label[data-state="instance"] .dot { background: var(--sky); }
 .match-head .label[data-state="failed"] .dot { background: var(--coral); }
 .match-head .label[data-state="similar"] .dot { background: var(--navy); }
+.match-head .label[data-state="related"] .dot { background: none; box-shadow: inset 0 0 0 1.5px var(--navy); }
 .match-head .chev { width: 8px; height: 8px; border-right: 1.5px solid var(--ink); border-bottom: 1.5px solid var(--ink); transform: translateY(-2px) rotate(45deg); transition: transform var(--motion-fast) var(--ease); }
 .match-head[aria-expanded="true"] .chev { transform: translateY(2px) rotate(225deg); }
 .part { border-top: 1px solid var(--rule-soft); }
@@ -603,12 +630,29 @@ input[readonly] { background: var(--paper); color: var(--muted); }
 .verdict[data-state="failed"] { border-left-color: var(--coral); }
 .restore { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 0 16px 16px 32px; }
 .restore .hint { color: var(--muted); font-size: 12px; line-height: 16px; }
-.unit-table { table-layout: fixed; }
-.unit-table col.name { width: 34%; }
-.unit-table col.match { width: 156px; }
-.unit-table .mono.fit { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.unit-table .mono.fit .prefix { color: var(--muted); }
-.related-toggle { align-self: flex-start; font-size: 13px; }
+/* A found manifest's units against this file's, at the top of its card: one strip of tiles, "-Code" dropped when the card is narrow. */
+.match-body { container-type: inline-size; }
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
+.tile { min-width: 0; padding: 12px 16px; border-right: 1px solid var(--rule-soft); }
+.tile:last-child { border-right: 0; }
+.tile-name { display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 20px; white-space: nowrap; }
+.tile-value { margin-top: 4px; font-size: 20px; line-height: 28px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tile-bar { height: 4px; margin-top: 6px; border-radius: 2px; background: var(--rule-soft); overflow: hidden; }
+.tile-bar i { display: block; height: 100%; border-radius: 2px; }
+.tile-bar[data-unit="meta"] i { background: var(--unit-meta); }
+.tile-bar[data-unit="semantic"] i { background: var(--unit-semantic); }
+.tile-bar[data-unit="content"] i { background: var(--unit-content); }
+.tile-bar[data-unit="data"] i { background: var(--unit-data); }
+.tile-bar[data-unit="instance"] i { background: var(--unit-instance); }
+.tile-bar.weak i { background: var(--rule); }
+.tile-note { margin-top: 6px; font-size: 12px; line-height: 16px; color: var(--muted); }
+.strip-scope { margin: 12px 16px 0; }
+@container (max-width: 620px) {
+  .tile { padding: 12px 10px; }
+  .tile-name { gap: 6px; font-size: 12px; }
+  .tile-name .suffix { display: none; }
+  .tile-value { font-size: 16px; }
+}
 .search-notes { margin: 0; color: var(--muted); font-size: 12px; line-height: 18px; }
 
 td.unit-name { white-space: nowrap; }

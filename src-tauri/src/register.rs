@@ -73,7 +73,7 @@ pub fn manifest_store(path: &Path) -> Result<Vec<u8>> {
         .is_some_and(|e| e.eq_ignore_ascii_case(SIDECAR_EXTENSION));
     if !is_sidecar {
         match c2pa::jumbf_io::load_jumbf_from_file(path) {
-            Ok(store) => return Ok(store),
+            Ok(store) => return Ok(without_padding(store)),
             Err(c2pa::Error::JumbfNotFound) => {}
             Err(e) => return Err(e).context("cannot read the manifest store"),
         }
@@ -87,6 +87,21 @@ pub fn manifest_store(path: &Path) -> Result<Vec<u8>> {
         bail!("this file has no Content Credentials to register");
     }
     std::fs::read(&sidecar).with_context(|| format!("cannot read {}", sidecar.display()))
+}
+
+/// The manifest store `store` without the zeros after its JUMBF superbox. A PDF signed by
+/// incremental update holds its store in the space reserved for it, padded with zeros, and the
+/// test store takes the superbox alone.
+fn without_padding(mut store: Vec<u8>) -> Vec<u8> {
+    let declared = store
+        .get(..4)
+        .map(|size| u32::from_be_bytes([size[0], size[1], size[2], size[3]]) as usize);
+    if let Some(size) = declared.filter(|&size| size >= 8 && size < store.len()) {
+        if store[size..].iter().all(|&b| b == 0) {
+            store.truncate(size);
+        }
+    }
+    store
 }
 
 /// The registration in a 200 answer, else why the store did not take the upload.
@@ -179,6 +194,40 @@ mod tests {
         let upper = sidecar.with_extension("C2PA");
         std::fs::rename(&sidecar, &upper).unwrap();
         assert_eq!(manifest_store(&upper).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_signed_pdf_gives_its_manifest_store_without_padding() {
+        let dir = tempfile::tempdir().unwrap();
+        let signed = dir.path().join("demo-signed.pdf");
+        crate::recover::tests::sign_as_is(
+            Path::new(&format!(
+                "{}/tests/fixtures/demo.pdf",
+                env!("CARGO_MANIFEST_DIR")
+            )),
+            &signed,
+        );
+        let embedded = c2pa::jumbf_io::load_jumbf_from_file(&signed).unwrap();
+        let store = manifest_store(&signed).unwrap();
+        assert!(is_jumbf(&store));
+        let size = u32::from_be_bytes(store[..4].try_into().unwrap()) as usize;
+        assert_eq!(size, store.len(), "one superbox and nothing after it");
+        assert!(
+            embedded.len() > size,
+            "c2pa-rs pads the store it signs for a PDF"
+        );
+        assert_eq!(&embedded[..size], &store[..]);
+    }
+
+    #[test]
+    fn padding_goes_and_other_bytes_stay() {
+        let mut store = vec![0, 0, 0, 12, b'j', b'u', b'm', b'b', 1, 2, 3, 4];
+        assert_eq!(without_padding(store.clone()), store);
+        let bare = store.clone();
+        store.extend([0; 5]);
+        assert_eq!(without_padding(store.clone()), bare);
+        store.push(7);
+        assert_eq!(without_padding(store.clone()), store);
     }
 
     #[test]

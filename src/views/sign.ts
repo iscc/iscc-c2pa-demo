@@ -2,10 +2,12 @@
 // the timestamp service.
 
 import type { AppInfo, Credentials, Inspection, IsccUnit, SignRequest, SignResult, TrainingEntry, TsaPreset } from "../api";
+import { isccCode } from "../composite";
 import { contentSource, embedding } from "../formats";
 import { chosenCode, newSourceChoice, type SourceChoice, termUri } from "../sourcetype";
 import { esc, fullStop, isccHtml, splitPath } from "../util";
 import { USE_CASES } from "./credentials";
+import { helpTip } from "./icons";
 import { sourceFieldset } from "./source";
 
 const SIGNING_ALGS = ["es256", "es384", "es512", "ps256", "ps384", "ps512", "ed25519"];
@@ -49,6 +51,14 @@ export type SignMode = "register" | "embed" | "sidecar";
 /** What registering makes public, said beside every action that registers. */
 export const REGISTER_NOTE =
   "Registering uploads the manifest store to the public ISCC test network: signer, title, description, ISCC and thumbnail. It stays there. The file itself is never uploaded.";
+
+/** What the ISCC soft binding section adds to the manifest. */
+const BINDING_HELP =
+  "A c2pa.soft-binding assertion with the algorithm io.iscc.v0 (IEP-0020): the ticked ISCC-UNITs of this file, which find its manifest again from any copy.";
+
+/** What the training and data mining section adds to the manifest. */
+const TRAINING_HELP =
+  "A cawg.training-mining assertion with cawg.ai_training, cawg.ai_generative_training, cawg.data_mining and cawg.ai_inference. Leave all unset to omit it.";
 
 /** What the Sign tab needs to know about the app besides the file. */
 export interface SignContext {
@@ -122,19 +132,22 @@ function unitOptions(inspection: Inspection, semantic: boolean): UnitOption[] {
       slug: "data",
       unit: "data",
       title: "Data-Code",
-      desc: "Similarity hash of the file's bytes. Tolerates small byte-level edits, not re-encoding.",
+      desc: "Similarity hash of the file's bytes. Tolerates small byte-level edits, not re-encoding. Required by IEP-0020.",
     },
     {
       slug: "instance",
       unit: "instance",
       title: "Instance-Code",
-      desc: `Cryptographic hash of the file's bytes, the identity of this exact file. ${afterSigning(inspection)}`,
+      desc: `Cryptographic hash of the file's bytes, the identity of this exact file. Required by IEP-0020. ${afterSigning(inspection)}`,
     },
   ];
 }
 
 /** Value of the timestamp select that reveals the URL field. */
 const CUSTOM_TSA = "custom";
+
+/** Value of the timestamp select that signs without a timestamp. */
+export const NO_TIMESTAMP = "off";
 
 /** Timestamp choice: on or off, a preset URL or `CUSTOM_TSA`, and the custom URL. */
 export interface TimestampChoice {
@@ -150,6 +163,9 @@ export interface SignForm {
   /** How the source was made, as answered or picked from the full list. */
   source: SourceChoice;
   units: Set<string>;
+  /** Which sections that start closed are open: the ISCC soft binding shows its units, training and data mining its
+   * uses one by one. */
+  open: Record<Fold, boolean>;
   training: Record<string, TrainingEntry>;
   credentials: Credentials;
   timestamp: TimestampChoice;
@@ -157,6 +173,27 @@ export interface SignForm {
   metaPreview: IsccUnit | null;
   /** Why the backend could not compute the Meta-Code preview for a non-empty title. */
   metaError: string | null;
+}
+
+/** The sections of the form that start closed. */
+export type Fold = "binding" | "training";
+
+/** The header of a section that starts closed: its title, the space after it and the chevron open and close it; the
+ * info tooltip explains it, and `control` (the choice for all uses) sits before the chevron. */
+function foldHeader(fold: Fold, open: boolean, title: string, help: string, control = ""): string {
+  const hidden = `data-fold="${fold}" aria-expanded="${open}" tabindex="-1" aria-hidden="true"`;
+  return `
+        <div class="legend fold-head">
+          <button type="button" class="toggle" data-fold="${fold}" aria-expanded="${open}">${title}</button>${helpTip(help)}
+          <button type="button" class="toggle grow" ${hidden}></button>
+          ${control}
+          <button type="button" class="toggle chev-btn" ${hidden}><span class="chev"></span></button>
+        </div>`;
+}
+
+/** A setting on one line: its label and tooltip on the left, its control on the right. */
+function settingLine(id: string, label: string, help: string, control: string): string {
+  return `<div class="legend setting"><label for="${id}">${label}</label>${helpTip(help)}${control}</div>`;
 }
 
 /** What signing does with a title and description that a PDF does not carry itself. */
@@ -185,7 +222,8 @@ export function newSignForm(inspection: Inspection, presets: TsaPreset[]): SignF
     title: inspection.meta_fields.name,
     description: inspection.meta_fields.description ?? "",
     source: newSourceChoice(),
-    units: new Set(["meta", ...(semantic ? ["semantic"] : []), inspection.kind, "data", "instance"]),
+    units: new Set(["meta", ...(semantic ? ["semantic"] : []), inspection.kind, ...REQUIRED_UNITS]),
+    open: { binding: false, training: false },
     training: {},
     credentials: { kind: "demo" },
     timestamp: { on: presets.length > 0, preset: presets[0]?.url ?? CUSTOM_TSA, custom: "" },
@@ -212,7 +250,6 @@ export function signProblems(form: SignForm, inspection: Inspection, mode: SignM
   const problems: string[] = [];
   if (inspection.sign_block) problems.push(inspection.sign_block);
   if (!form.title.trim()) problems.push("A title is required.");
-  if (form.units.size === 0) problems.push("Select at least one ISCC unit.");
   if (form.units.has("meta") && !form.title.trim()) problems.push("The Meta-Code needs a title.");
   for (const [key, entry] of Object.entries(form.training)) {
     if (entry.use === "constrained" && !entry.constraint_info?.trim()) problems.push(`Describe the constraint for ${key}.`);
@@ -234,9 +271,16 @@ function outputProblem(form: SignForm, inspection: Inspection, mode: SignMode): 
   return splitPath(form.output).ext.toLowerCase() === sourceExt ? null : `The output must keep the ${sourceExt} extension.`;
 }
 
-/** Set the training-mining choice `use` for `key` (empty clears it); a constraint text is kept only
- * while the choice is "constrained". */
+/** The key of the row that sets every use at once. */
+export const ALL_USES = "*";
+
+/** Set the training-mining choice `use` for `key`, or for every use with `ALL_USES` (empty clears it); a constraint
+ * text is kept only while the choice is "constrained". */
 export function setTrainingUse(form: SignForm, key: string, use: string) {
+  if (key === ALL_USES) {
+    for (const u of USE_CASES) setTrainingUse(form, u.key, use);
+    return;
+  }
   if (!use) delete form.training[key];
   else form.training[key] = { use, constraint_info: use === "constrained" ? (form.training[key]?.constraint_info ?? "") : undefined };
   if (use !== "constrained" && form.training[key]) delete form.training[key].constraint_info;
@@ -305,36 +349,25 @@ export function toRequest(form: SignForm, inspection: Inspection, semantic: bool
   };
 }
 
-/** Timestamp fieldset: on/off, a preset service or a custom URL. */
+/** Timestamp fieldset: one select of no timestamp, the preset services and a custom URL, whose field shows under it. */
 function timestampFieldset(choice: TimestampChoice, info: AppInfo | null): string {
-  const presets = info?.tsa_presets ?? [];
-  const options = presets
-    .map((p) => {
-      const label = `${p.name} — ${p.trusted ? "on" : "not on"} the C2PA trust list`;
-      return `<option value="${esc(p.url)}" ${p.url === choice.preset ? "selected" : ""}>${esc(label)}</option>`;
-    })
-    .join("");
-  const custom = choice.preset === CUSTOM_TSA;
-  const off = choice.on ? "" : "disabled";
+  const selected = choice.on ? choice.preset : NO_TIMESTAMP;
+  const option = (value: string, label: string) =>
+    `<option value="${esc(value)}" ${value === selected ? "selected" : ""}>${esc(label)}</option>`;
+  const presets = (info?.tsa_presets ?? []).map((p) => option(p.url, `${p.name} — ${p.trusted ? "on" : "not on"} the C2PA trust list`));
+  const select = `<select id="f-tsa" name="ts_preset">${option(NO_TIMESTAMP, "No timestamp")}${presets.join("")}${option(CUSTOM_TSA, "Custom URL…")}</select>`;
+  const help = `An RFC 3161 timestamp proves when the file was signed. Only a hash of the signature is sent. If the service does not answer within ${info?.tsa_timeout_secs ?? 10} s, the file is signed without a timestamp.`;
+  const url =
+    selected === CUSTOM_TSA
+      ? `<div class="field">
+          <label for="f-tsa-url">Service URL</label>
+          <input type="text" class="mono" id="f-tsa-url" name="ts_custom" value="${esc(choice.custom)}" placeholder="https://" />
+        </div>`
+      : "";
   return `
       <div class="fieldset">
-        <div class="legend">Timestamp <span class="hint mono">RFC 3161 · proves when the file was signed</span></div>
-        <label class="radio"><input type="checkbox" name="ts_on" ${choice.on ? "checked" : ""} /><span>Add a timestamp</span></label>
-        <div class="field">
-          <label for="f-tsa">Timestamp service</label>
-          <select id="f-tsa" name="ts_preset" ${off}>
-            ${options}<option value="${CUSTOM_TSA}" ${custom ? "selected" : ""}>Custom URL…</option>
-          </select>
-        </div>
-        ${
-          custom
-            ? `<div class="field">
-          <label for="f-tsa-url">Service URL</label>
-          <input type="text" class="mono" id="f-tsa-url" name="ts_custom" value="${esc(choice.custom)}" placeholder="https://" ${off} />
-        </div>`
-            : ""
-        }
-        <span class="hint">Only a hash of the signature is sent. If the service does not answer within ${info?.tsa_timeout_secs ?? 10} s, the file is signed without a timestamp.</span>
+        ${settingLine("f-tsa", "Timestamp", help, select)}
+        ${url}
       </div>`;
 }
 
@@ -354,57 +387,141 @@ function optionCode(o: UnitOption, form: SignForm, inspection: Inspection): stri
   return muted(`not available: ${esc(inspection.semantic_error)}`);
 }
 
+/** Units every ISCC soft binding of the app carries: IEP-0020 requires the Data-Code and the Instance-Code of the
+ * source in a block for the whole asset. */
+const REQUIRED_UNITS = ["data", "instance"];
+
+/** One unit option as a checkbox; a required unit is ticked and locked, and a hidden input sends it. */
+function unitCheck(o: UnitOption, form: SignForm, inspection: Inspection): string {
+  const required = REQUIRED_UNITS.includes(o.slug);
+  const unavailable = o.slug === "semantic" && !semanticAvailable(inspection);
+  const checked = required || (form.units.has(o.slug) && !unavailable);
+  const name = required ? "" : `name="unit" value="${o.slug}"`;
+  const sent = required ? `<input type="hidden" name="unit" value="${o.slug}" />` : "";
+  return `
+      <label class="check"${required ? ` title="Required by IEP-0020"` : ""}>
+        <input type="checkbox" ${name} ${checked ? "checked" : ""} ${required || unavailable ? "disabled" : ""} />${sent}
+        <span class="title"><span class="swatch" data-unit="${o.unit}"></span>${esc(o.title)}${helpTip(o.desc)}</span>
+        ${optionCode(o, form, inspection)}
+      </label>`;
+}
+
+/** The code a ticked unit option signs: the Meta-Code preview, else the unit the inspection computed; null while it
+ * has none yet. */
+function optionIscc(o: UnitOption, form: SignForm, inspection: Inspection): string | null {
+  if (o.slug === "meta") return form.metaPreview?.iscc ?? null;
+  return inspection.iscc.find((u) => u.name === o.title)?.iscc ?? null;
+}
+
+/** The ISCC-CODE line of the soft binding section: one stripe per ticked unit and the code they make, or what it
+ * waits for. */
+export function bindingSummary(form: SignForm, inspection: Inspection, semantic: boolean): string {
+  const ticked = unitOptions(inspection, semantic).filter((o) => form.units.has(o.slug));
+  const codes = ticked.map((o) => optionIscc(o, form, inspection));
+  const missing = ticked.find((_, i) => codes[i] === null);
+  const code = missing ? null : isccCode(codes as string[]);
+  const stripes = ticked.map((o) => `<span data-unit="${o.unit}"></span>`).join("");
+  const why = missing?.slug === "meta" ? `Meta-Code ${metaPreviewHint(form)}` : "waits for the units still being computed";
+  const line = code ? `<div class="code">${isccHtml(code)}</div>` : `<div class="code" style="color:var(--muted)">${esc(why)}</div>`;
+  return `
+        <div class="unit" data-binding-summary>
+          <span class="bar stripes">${code ? stripes : ""}</span>
+          <div>
+            <div class="name">ISCC-CODE of the ${ticked.length} ticked units</div>
+            ${line}
+          </div>
+        </div>`;
+}
+
+/** The ISCC soft binding section: its header opens and closes it, the ISCC-CODE of the ticked units shows either way,
+ * the unit options only while it is open (they stay in the form while closed, so their values are kept). */
+function bindingFieldset(form: SignForm, inspection: Inspection, semantic: boolean): string {
+  const checks = unitOptions(inspection, semantic)
+    .map((o) => unitCheck(o, form, inspection))
+    .join("");
+  return `
+      <div class="fieldset fold binding">
+        ${foldHeader("binding", form.open.binding, "ISCC soft binding", BINDING_HELP)}
+        ${bindingSummary(form, inspection, semantic)}
+        <div class="units-choice" ${form.open.binding ? "" : "hidden"}>${checks}</div>
+      </div>`;
+}
+
+const USE_CHOICES = [
+  ["", "Unset"],
+  ["allowed", "Allowed"],
+  ["notAllowed", "Not allowed"],
+  ["constrained", "Constrained"],
+];
+
+/** The choices of one row as a segmented control; `pressed` says per choice whether it holds for the row: "true",
+ * "false", or "mixed" in the row for all uses when it holds for some of them. */
+function useSegments(key: string, pressed: (use: string) => string): string {
+  const buttons = USE_CHOICES.map(
+    ([v, l]) => `<button type="button" data-use-key="${key}" data-use="${v}" aria-pressed="${pressed(v)}">${l}</button>`,
+  ).join("");
+  return `<div class="segmented">${buttons}</div>`;
+}
+
+/** One use with its choice, and the details a constraint needs. */
+function useRow(form: SignForm, label: string, key: string): string {
+  const entry = form.training[key];
+  const current = entry?.use ?? "";
+  const constraint =
+    current === "constrained"
+      ? `<input type="text" name="constraint:${key}" placeholder="Constraint details (required)" value="${esc(entry?.constraint_info ?? "")}" />`
+      : "";
+  return `
+      <div class="usecase">
+        <div class="label">${esc(label)}</div>
+        ${useSegments(key, (v) => String(current === v))}
+        ${constraint}
+      </div>`;
+}
+
+/** The details field of the row for all uses: only while the section is closed and every use is constrained, and
+ * only when they share their details; otherwise a pointer to the rows of their own. */
+function allUsesConstraint(form: SignForm, uses: string[]): string {
+  if (form.open.training || !uses.every((u) => u === "constrained")) return "";
+  const details = new Set(USE_CASES.map((u) => form.training[u.key]?.constraint_info ?? ""));
+  if (details.size > 1) return `<span class="hint">The constraint details differ per use; open the section to edit them.</span>`;
+  const [shared] = details;
+  return `<input type="text" name="constraint:${ALL_USES}" placeholder="Constraint details for all uses (required)" value="${esc(shared)}" />`;
+}
+
+/** The training and data mining section: its header holds the choice for all uses, which presses a choice all uses
+ * share and marks one only some of them have as mixed; each use on its own while it is open. */
+function trainingFieldset(form: SignForm): string {
+  const uses = USE_CASES.map((u) => form.training[u.key]?.use ?? "");
+  const pressed = (v: string) => {
+    const n = uses.filter((u) => u === v).length;
+    return n === uses.length ? "true" : n > 0 ? "mixed" : "false";
+  };
+  const all = useSegments(ALL_USES, pressed);
+  const rows = form.open.training ? `<div>${USE_CASES.map((u) => useRow(form, u.label, u.key)).join("")}</div>` : "";
+  return `
+      <div class="fieldset fold">
+        ${foldHeader("training", form.open.training, "Training and data mining", TRAINING_HELP, all)}
+        ${allUsesConstraint(form, uses)}
+        ${rows}
+      </div>`;
+}
+
 /** Render the sign form. */
 export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | null, context: SignContext): string {
   const hasManifest = Boolean(inspection.manifest);
   const custom = form.credentials.kind === "custom" ? form.credentials : null;
 
-  const unitChecks = unitOptions(inspection, context.semantic)
-    .map((o) => {
-      const unavailable = o.slug === "semantic" && !semanticAvailable(inspection);
-      return `
-      <label class="check">
-        <input type="checkbox" name="unit" value="${o.slug}" ${form.units.has(o.slug) && !unavailable ? "checked" : ""} ${unavailable ? "disabled" : ""} />
-        <span class="title"><span class="swatch" data-unit="${o.unit}"></span>${esc(o.title)}</span>
-        <span class="desc">${esc(o.desc)}</span>
-        ${optionCode(o, form, inspection)}
-      </label>`;
-    })
-    .join("");
-
-  const useRows = USE_CASES.map((u) => {
-    const entry = form.training[u.key];
-    const current = entry?.use ?? "";
-    const seg = [
-      ["", "Unset"],
-      ["allowed", "Allowed"],
-      ["notAllowed", "Not allowed"],
-      ["constrained", "Constrained"],
-    ]
-      .map(([v, l]) => `<button type="button" data-use-key="${u.key}" data-use="${v}" aria-pressed="${current === v}">${l}</button>`)
-      .join("");
-    const constraint =
-      current === "constrained"
-        ? `<input type="text" name="constraint:${u.key}" placeholder="Constraint details (required)" value="${esc(entry?.constraint_info ?? "")}" />`
-        : "";
-    return `
-      <div class="usecase">
-        <div><div class="label">${esc(u.label)}</div><div class="key">${esc(u.key)}</div></div>
-        <div class="segmented">${seg}</div>
-        ${constraint}
-      </div>`;
-  }).join("");
-
   return `
     <form class="card form" id="sign-form" autocomplete="off">
       <div class="fieldset">
-        <div class="legend">Manifest <span class="hint">${hasManifest ? "this file and its Content Credentials become the parent ingredient of a new manifest (c2pa.opened)" : "this file becomes the parent ingredient of a new manifest (c2pa.opened)"}</span></div>
+        <div class="legend">Manifest${helpTip(hasManifest ? "This file and its Content Credentials become the parent ingredient of a new manifest (c2pa.opened)." : "This file becomes the parent ingredient of a new manifest (c2pa.opened).")}</div>
         <div class="field">
-          <label for="f-title">Title</label>
+          <label for="f-title">Title${helpTip("Feeds the Meta-Code and is stored in the manifest (cawg.metadata).")}</label>
           <input type="text" id="f-title" name="title" value="${esc(form.title)}" required />
         </div>
         <div class="field">
-          <label for="f-description">Description <span class="hint">(optional, feeds the Meta-Code)</span></label>
+          <label for="f-description">Description <span class="hint">(optional)</span>${helpTip("Feeds the Meta-Code, together with the title.")}</label>
           <input type="text" id="f-description" name="description" value="${esc(form.description)}" />
         </div>
         <span class="hint" data-writes-metadata ${writesMetadata(form, inspection) ? "" : "hidden"}>${esc(WRITES_METADATA)}</span>
@@ -412,20 +529,17 @@ export function signTab(form: SignForm, inspection: Inspection, info: AppInfo | 
 
       ${hasManifest ? "" : sourceFieldset(form.source, inspection.kind)}
 
-      <div class="fieldset">
-        <div class="legend">ISCC soft binding <span class="hint mono">c2pa.soft-binding · io.iscc.v0</span></div>
-        ${unitChecks}
-      </div>
+      ${bindingFieldset(form, inspection, context.semantic)}
+
+      ${trainingFieldset(form)}
 
       <div class="fieldset">
-        <div class="legend">Training and data mining <span class="hint mono">cawg.training-mining · leave all unset to omit the assertion</span></div>
-        <div>${useRows}</div>
-      </div>
-
-      <div class="fieldset">
-        <div class="legend">Signing credentials</div>
-        <label class="radio"><input type="radio" name="cred" value="demo" ${form.credentials.kind === "demo" ? "checked" : ""} /><span>Built-in demo certificate <span class="hint">(public c2pa-rs test key, ES256; on no C2PA trust list)</span></span></label>
-        <label class="radio"><input type="radio" name="cred" value="custom" ${custom ? "checked" : ""} /><span>My own certificate and key</span></label>
+        ${settingLine(
+          "f-cred",
+          "Signing credentials",
+          "The built-in demo certificate is the public c2pa-rs test key (ES256). It is on no C2PA trust list, so viewers show the signer as untrusted. Your own certificate chain and private key are PEM files.",
+          `<select id="f-cred" name="cred"><option value="demo" ${custom ? "" : "selected"}>Built-in demo certificate</option><option value="custom" ${custom ? "selected" : ""}>My own certificate and key</option></select>`,
+        )}
         ${
           custom
             ? `

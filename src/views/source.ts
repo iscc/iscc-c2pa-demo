@@ -1,9 +1,10 @@
-// Sign tab, "How was this … made?": two plain questions (or the full IPTC list) and the term they record on the
+// Sign tab, "How was this … made?": two plain questions as dropdowns (or the full IPTC list) and the term they record on the
 // parent ingredient of a source without Content Credentials.
 
 import type { AssetKind } from "../api";
 import { AFTER, chosenCode, type OfferedOrigin, originsFor, type SourceChoice, TERMS, termOf } from "../sourcetype";
 import { esc, fullStop } from "../util";
+import { helpTip } from "./icons";
 
 /** What the questions call a file of `kind`. */
 function noun(kind: AssetKind): string {
@@ -15,43 +16,49 @@ export function sourceFieldset(choice: SourceChoice, kind: AssetKind): string {
   const listed = choice.term !== null;
   return `
       <div class="fieldset source">
-        <div class="legend">How was this ${noun(kind)} made? <span class="hint mono">digitalSourceType</span></div>
+        <div class="legend">How was this ${noun(kind)} made?${helpTip("Recorded as the digitalSourceType of the parent ingredient, one of the IPTC digital source types.")}</div>
         ${listed ? termList(choice.term ?? "") : questions(choice, kind)}
         ${recorded(chosenCode(kind, choice), listed)}
       </div>`;
 }
 
-/** The two questions; the second only once the first is answered with an origin that asks it. */
+/** The two questions as dropdowns; the second only once the first is answered with an origin that asks it. */
 function questions(choice: SourceChoice, kind: AssetKind): string {
   const origins = originsFor(kind);
   const current = origins.find((o) => o.id === choice.origin);
-  const rows = [radio("source_origin", "", "Don't say", "", !current), ...origins.map((o) => originRow(o, choice))].join("");
+  const options = [option("", "Don't say", "", !current), ...origins.map((o) => option(o.id, o.label, o.hint, o === current))].join("");
   const after = current?.asksAfter ? afterQuestion(choice.after, kind) : "";
   return `
-        <div class="choices"><div class="question">Where does it come from?</div>${rows}</div>
+        <div class="field">
+          <label for="f-source-origin">Where does it come from?</label>
+          <select id="f-source-origin" name="source_origin">${options}</select>
+          ${current ? variantSelect(current, choice.variant) : ""}
+        </div>
         ${after}`;
 }
 
-/** One origin, with its variants under it while it is chosen and has more than one. */
-function originRow(origin: OfferedOrigin, choice: SourceChoice): string {
-  const on = origin.id === choice.origin;
-  const row = radio("source_origin", origin.id, origin.label, origin.hint, on);
-  if (!on || origin.variants.length < 2) return row;
-  const picked = origin.variants.find((v) => v.id === choice.variant) ?? origin.variants[0];
-  const variants = origin.variants.map((v) => radio("source_variant", v.id, v.label, "", v === picked)).join("");
-  return `${row}<div class="variants">${variants}</div>`;
+/** The variants of the chosen origin, as a second dropdown under it; nothing when it has only one. */
+function variantSelect(origin: OfferedOrigin, variant: string): string {
+  if (origin.variants.length < 2) return "";
+  const picked = origin.variants.find((v) => v.id === variant) ?? origin.variants[0];
+  const options = origin.variants.map((v) => option(v.id, v.label, "", v === picked)).join("");
+  return `<select name="source_variant" aria-label="${esc(origin.label)}, more precisely">${options}</select>`;
 }
 
 /** The second question, with examples for files of `kind`. */
 function afterQuestion(after: string, kind: AssetKind): string {
-  const rows = AFTER.map((a) => radio("source_after", a.id, a.label, a.hints[kind] ?? "", a.id === after)).join("");
-  return `<div class="choices"><div class="question">What happened to it afterwards?</div>${rows}</div>`;
+  const options = AFTER.map((a) => option(a.id, a.label, a.hints[kind] ?? "", a.id === after)).join("");
+  return `
+        <div class="field">
+          <label for="f-source-after">What happened to it afterwards?</label>
+          <select id="f-source-after" name="source_after">${options}</select>
+        </div>`;
 }
 
-/** A radio button with its label and, muted after it, examples. */
-function radio(name: string, value: string, label: string, hint: string, checked: boolean): string {
-  const examples = hint ? ` <span class="hint">· ${esc(hint)}</span>` : "";
-  return `<label class="radio"><input type="radio" name="${name}" value="${esc(value)}" ${checked ? "checked" : ""} /><span>${esc(label)}${examples}</span></label>`;
+/** A dropdown option with its label and, after it, examples. */
+function option(value: string, label: string, hint: string, selected: boolean): string {
+  const text = hint ? `${label} · ${hint}` : label;
+  return `<option value="${esc(value)}" ${selected ? "selected" : ""}>${esc(text)}</option>`;
 }
 
 /** Every active IPTC term in its group, by IPTC's name. */
@@ -70,13 +77,12 @@ function recorded(code: string | null, listed: boolean): string {
   const toggle = `<button type="button" class="linkbtn" data-source-list="${listed ? "questions" : "list"}">${listed ? "answer the questions instead" : "choose the term yourself"}</button>`;
   const t = code ? termOf(code) : undefined;
   if (!t) {
-    return `<p class="recorded"><span class="definition">Nothing is recorded: the C2PA specification lets an ingredient leave it out.</span>${toggle}</p>`;
+    return `<p class="recorded"><span class="line">Nothing is recorded${helpTip("The C2PA specification lets an ingredient leave it out.")}</span>${toggle}</p>`;
   }
   const ai = t.ai ? `<span class="ai">Content Credentials viewers show such files as made with generative AI.</span>` : "";
   return `
         <p class="recorded">
-          <span>Recorded as <span class="term">${esc(t.code)}</span></span>
-          <span class="definition">${esc(t.name)}. ${esc(t.definition)}${fullStop(t.definition)}</span>
+          <span class="line">Recorded as <span class="term">${esc(t.code)}</span>${helpTip(`${t.name}. ${t.definition}${fullStop(t.definition)}`)}</span>
           ${ai}${toggle}
         </p>`;
 }

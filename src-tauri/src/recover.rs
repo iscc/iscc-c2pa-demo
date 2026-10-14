@@ -232,8 +232,9 @@ fn iscc_attributed(reader: &Reader) -> bool {
 
 /// The hard binding of a found manifest's own claim, as far as this app tells kinds apart.
 enum Binding {
-    /// A data hash: byte ranges of the file.
-    Data,
+    /// A data hash: byte ranges of the file, the longest of which it leaves out (`reserved`)
+    /// holds the manifest store.
+    Data { reserved: u64 },
     /// A BMFF hash, with its assertion.
     Bmff(Value),
     /// A collection hash, as c2pa-rs binds ZIP formats (EPUB, OOXML, ODF), with its assertion.
@@ -255,7 +256,11 @@ impl Binding {
                 .map(|(_, a)| a.clone())
         };
         if find(labels::DATA_HASH).is_some() {
-            Binding::Data
+            let exclusions = inspect::data_hash_exclusions(reader).unwrap_or_default();
+            let reserved = exclusions.iter().map(|&(_, length)| length).max();
+            Binding::Data {
+                reserved: reserved.unwrap_or(0),
+            }
         } else if let Some(bmff) = find(labels::BMFF_HASH) {
             Binding::Bmff(bmff)
         } else if let Some(collection) = find(labels::COLLECTION_HASH) {
@@ -270,7 +275,7 @@ impl Binding {
     /// Why a verdict through this binding is not relied on; `None` for a data hash.
     fn doubt(&self) -> Option<&'static str> {
         Some(match self {
-            Binding::Data => return None,
+            Binding::Data { .. } => return None,
             Binding::Bmff(_) => {
                 "their hash is a BMFF hash, which this app relies on only with the credentials put back"
             }
@@ -318,7 +323,7 @@ fn is_hash_mismatch(reason: &InvalidReason) -> bool {
 }
 
 /// The soft-binding assertions of `manifest`, or why one does not read.
-fn soft_bindings_of(manifest: &Manifest) -> Result<Vec<SoftBinding>, String> {
+pub(crate) fn soft_bindings_of(manifest: &Manifest) -> Result<Vec<SoftBinding>, String> {
     manifest
         .assertions()
         .iter()
@@ -384,7 +389,10 @@ fn iscc_blocks(bindings: &[SoftBinding]) -> Result<IsccBlocks, String> {
 /// manifest is left out: it needs an `io.iscc.v0` block, every block must be an ISCC-SEQ, and all
 /// of them together may list at most one Instance-Code, or the manifest claims more than one file
 /// (IEP-0020 says it should not; this app leaves such a manifest out).
-fn iscc_match(bindings: &[SoftBinding], units: &[IsccUnit]) -> Result<IsccMatch, String> {
+pub(crate) fn iscc_match(
+    bindings: &[SoftBinding],
+    units: &[IsccUnit],
+) -> Result<IsccMatch, String> {
     let blocks = iscc_blocks(bindings)?;
     if blocks.whole.is_empty() && blocks.parts.is_empty() {
         return Err("its active manifest has no ISCC soft binding".to_owned());
@@ -462,7 +470,7 @@ fn rebuild_check(file: &InHand, store: &[u8], binding: &Binding) -> Rebuild {
 /// fragments, which this app does not use.
 fn unsupported(binding: &Binding) -> Option<&'static str> {
     match binding {
-        Binding::Data | Binding::Collection(_) => None,
+        Binding::Data { .. } | Binding::Collection(_) => None,
         Binding::Bmff(bmff) if has_value(&bmff["hash"]) && !has_value(&bmff["merkle"]) => None,
         Binding::Bmff(_) => Some("their BMFF hash holds no hash of the whole file"),
         Binding::Boxes => Some(BOX_HASH_UNCHECKED),
@@ -484,13 +492,13 @@ fn has_value(value: &Value) -> bool {
 /// ([`verdict`]).
 fn rebuilt(file: &InHand, store: &[u8], binding: &Binding, out: &mut File) -> Result<Rebuild> {
     let source_len = std::fs::metadata(file.path)?.len();
-    write_rebuilt(file, store, out)?;
+    write_rebuilt(file, store, binding, out)?;
     let added = out.metadata()?.len().saturating_sub(source_len);
     out.rewind()?;
     let context = Context::new().with_settings(base_settings())?;
     let reader = Reader::from_context(context).with_stream(file.format.mime, &mut *out)?;
     let uncovered = match binding {
-        Binding::Data => {
+        Binding::Data { .. } => {
             let tiff_count = if file.format.mime == formats::TIFF {
                 tiff_count_field(out)
             } else {
@@ -508,12 +516,17 @@ fn rebuilt(file: &InHand, store: &[u8], binding: &Binding, out: &mut File) -> Re
     Ok(verdict(&reader, uncovered))
 }
 
-/// Write the file in hand with `store` put back into it to `out`: by c2pa-rs's writer for the
-/// format, or for a PDF as an update section, the way this app signs PDFs.
-fn write_rebuilt(file: &InHand, store: &[u8], out: &mut File) -> Result<()> {
+/// Write the file in hand with `store`, bound by `binding`, put back into it to `out`: by c2pa-rs's
+/// writer for the format, or for a PDF as an update section in the space its data hash leaves
+/// out, the way this app signs PDFs.
+fn write_rebuilt(file: &InHand, store: &[u8], binding: &Binding, out: &mut File) -> Result<()> {
     if file.format.mime == formats::PDF {
         let source = std::fs::read(file.path)?;
-        out.write_all(&pdf_update::with_store(&source, store)?)?;
+        let reserved = match binding {
+            Binding::Data { reserved } => usize::try_from(*reserved)?,
+            _ => 0,
+        };
+        out.write_all(&pdf_update::with_store(&source, store, reserved)?)?;
         return Ok(());
     }
     let mut source = File::open(file.path)?;
@@ -729,7 +742,7 @@ pub fn restore(path: &Path, store_id: &str, output: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::Cursor;
     use std::path::PathBuf;
 
@@ -755,7 +768,7 @@ mod tests {
 
     /// Sign `source` into `output` as the Sign tab does by default, with the file's own title and
     /// description, so that a PDF gets no metadata revision and its source stays the file itself.
-    fn sign_as_is(source: &Path, output: &Path) {
+    pub(crate) fn sign_as_is(source: &Path, output: &Path) {
         let inspection = inspect::inspect(source).unwrap();
         let mut req = sign::tests::request("no_manifest.jpg", output);
         req.source = source.to_string_lossy().into_owned();
@@ -766,11 +779,9 @@ mod tests {
         sign::sign(&req).unwrap();
     }
 
-    /// The manifest store embedded in `signed` and the label of its active manifest.
+    /// The manifest store of `signed` as it is registered, and the label of its active manifest.
     fn store_of(signed: &Path) -> (Vec<u8>, String) {
-        let mime = inspect::asset_format(signed).unwrap().mime;
-        let mut file = File::open(signed).unwrap();
-        let store = c2pa::jumbf_io::load_jumbf_from_stream(mime, &mut file)
+        let store = crate::register::manifest_store(signed)
             .unwrap_or_else(|e| panic!("{}: {e}", signed.display()));
         let context = Context::new().with_settings(base_settings()).unwrap();
         let reader = Reader::from_context(context).with_file(signed).unwrap();
@@ -1115,8 +1126,9 @@ mod tests {
         let dir = fresh_dir("iscc-c2pa-demo-test-leaving-out");
         let path = dir.join("changed.pdf");
         std::fs::write(&path, &changed).unwrap();
+        let binding = Binding::of(&read(&store, &in_hand(&path), false).unwrap());
         assert_eq!(
-            rebuild_check(&in_hand(&path), &store, &Binding::Data),
+            rebuild_check(&in_hand(&path), &store, &binding),
             Rebuild::Partial {
                 state: "Valid".into(),
                 uncovered: Some(4)

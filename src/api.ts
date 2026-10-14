@@ -449,6 +449,17 @@ export const findCredentials = (path: string, units: string[]) => invoke<Lookup>
 export const restoreCredentials = (path: string, storeId: string, output: string) =>
   invoke<void>("restore_credentials", { path, storeId, output });
 
+/** The copy written without Content Credentials, and whether it is the file that was signed byte for byte (its
+ * Instance-Code equals the one their ISCC soft binding lists); null without an ISCC soft binding. */
+export interface Stripped {
+  output: string;
+  original: boolean | null;
+}
+
+/** Write the file at `path` without its embedded Content Credentials to the first free `<stem>-stripped<ext>` next to
+ * it, for tests and demos of their recovery. */
+export const stripCredentials = (path: string) => invoke<Stripped>("strip_credentials", { path });
+
 /** The test store's answer to an upload: the manifest it keeps, where it serves it, and its declaration on the test
  * network (`declared` with an ISCC-ID, `pending` while the store retries, `failed`, `skipped`, `disabled`, `withdrawn`). */
 export interface Registration {

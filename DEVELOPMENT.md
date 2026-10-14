@@ -249,7 +249,10 @@ The app follows [IEP-0020](https://ieps.iscc.codes/iep-0020/) in full.
 
 **What is embedded.** Every unit is computed from the file handed to the signer exactly as it is,
 including any Content Credentials it already carries. These are the units the left panel shows for
-that file, and the ones iscc-sdk computes for it. No ISCC code path knows anything about C2PA.
+that file, and the ones iscc-sdk computes for it. No ISCC code path knows anything about C2PA. The
+Data-Code and the Instance-Code are always among them, as IEP-0020 requires for a soft binding of
+the whole asset: the Sign tab does not let them be unticked, `sign --units` adds them, and the
+signing core refuses a request without them.
 
 One exception, so that the units describe the file as it is without its Content Credentials: a PDF
 whose title, description or ISCC metadata at signing are not its own (or that has no title of its
@@ -401,8 +404,10 @@ uploaded to it, at once) and the resolver (`c2pa-test.iscc.io`, every manifest d
 ISCC Discovery Protocol, a minute or so after its declaration; it asks `search-test.iscc.id` in
 turn) with the soft binding query of the C2PA Soft Binding Resolution API, by POST, so the query
 stays out of URLs and their logs. The query holds the file's units as the left column shows them,
-the Meta-Code left out (the services do not score it). The card says before the first search what
-is sent: the ISCC, which identifies this exact file, with the IP address; never the file.
+the Meta-Code left out: the services score it too (up to 85), but a title, or a file name in
+its place, would bring candidates that share only the name, and it tells them more about the
+file. The card says before the first search what is sent: the ISCC, which identifies this exact
+file, with the IP address; never the file.
 
 **Candidates, not answers.** The services' answers decide only which manifest stores are fetched
 (20 taken from each, the 20 best fetched). Each is screened without validation, which hashes
@@ -485,6 +490,20 @@ although the specification says JPEG, PNG and GIF *should* use a box hash: c2pa-
 hashes off by default "until BoxHash support is more widely tested", one binding serves all
 formats, and IEP-0020 defines the source view by the data hash's exclusion ranges. A box-hash
 source view (the file without its C2PA box) would be definable; IEP-0020 could add one later.
+
+**Stripped copies for tests and demos.** Recovery needs a file whose credentials are gone. The app
+is no tool to remove credentials, so this is out of sight: an Alt-click (Option on a Mac) on the
+verdict of the Content Credentials card of a file with embedded credentials asks to confirm, then
+writes `<stem>-stripped<ext>` (or the next free name) next to it and opens it; the hidden CLI
+command `c2pa-iscc strip FILE` does the same and prints the JSON (`src-tauri/src/strip.rs`). A PDF
+signed here loses the update section that holds its manifest store; a RIFF file (WebP, WAV, AVI)
+becomes its source view with the RIFF size put right, because c2pa-rs 0.91's RIFF removal leaves
+the C2PA chunk in place (it removes the chunk only while writing a new store); every other format
+goes through `jumbf_io::remove_jumbf_from_file`. Whether the copy is the file that was signed is
+computed from its Instance-Code against the removed ISCC soft binding, and the banner says so. For
+one fixture of each format (`strip::tests`) it is for JPEG, PNG, WebP, GIF, TXT, Markdown, WAV,
+M4A, PDF, MP4, MOV and M4V; TIFF, SVG, MP3, FLAC, AVI and the ZIP formats come out changed, so
+recovery finds them as near-identical at best.
 
 `LOOKUP_FILE=photo.jpg cargo test --lib live_lookup -- --ignored --nocapture` runs a search from
 the command line and prints what it found.

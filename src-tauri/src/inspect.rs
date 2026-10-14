@@ -244,6 +244,11 @@ pub struct UnitMatch {
 /// First `<stem>-signed<ext>`, `<stem>-signed-2<ext>`, ... next to `path` that does not exist,
 /// so the default output never silently overwrites an earlier result.
 pub fn suggested_output(path: &Path) -> PathBuf {
+    free_sibling(path, "signed")
+}
+
+/// First `<stem>-<label><ext>`, `<stem>-<label>-2<ext>`, ... next to `path` that does not exist.
+pub fn free_sibling(path: &Path, label: &str) -> PathBuf {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -258,7 +263,7 @@ pub fn suggested_output(path: &Path) -> PathBuf {
         } else {
             format!("-{n}")
         };
-        path.with_file_name(format!("{stem}-signed{suffix}{ext}"))
+        path.with_file_name(format!("{stem}-{label}{suffix}{ext}"))
     };
     (1..)
         .map(candidate)
@@ -662,7 +667,11 @@ fn source_view_ranges(reader: &Reader) -> Option<Vec<(u64, u64)>> {
 /// The ranges cut from a file for its source view, given its exclusion ranges `ranges`: for a
 /// PDF whose manifest store came in an update section that adds nothing else, everything from
 /// that update section on, so that the source view is the PDF before it (IEP-0020); else `ranges`.
-fn pdf_view_ranges(path: &Path, format: &Format, ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+pub(crate) fn pdf_view_ranges(
+    path: &Path,
+    format: &Format,
+    ranges: Vec<(u64, u64)>,
+) -> Vec<(u64, u64)> {
     let [(start, _)] = ranges[..] else {
         return ranges;
     };
@@ -738,7 +747,7 @@ pub fn kept_ranges(len: u64, exclusions: &[(u64, u64)]) -> Vec<(u64, u64)> {
 }
 
 /// The source view of a file as a reader: the file's bytes within `kept` ranges, in order.
-struct ViewReader {
+pub(crate) struct ViewReader {
     file: File,
     kept: Vec<(u64, u64)>,
     /// Index of the range being read, and the position in the file.
@@ -748,7 +757,7 @@ struct ViewReader {
 
 impl ViewReader {
     /// The source view of the file at `path` without the `(start, length)` exclusion ranges.
-    fn open(path: &Path, exclusions: &[(u64, u64)]) -> Result<Self> {
+    pub(crate) fn open(path: &Path, exclusions: &[(u64, u64)]) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
         let kept = kept_ranges(file.metadata()?.len(), exclusions);
         Ok(ViewReader {

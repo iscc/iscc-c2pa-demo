@@ -3,7 +3,7 @@
 // the progress of that download. The modal card and the progress bar serve the Settings dialog too.
 
 import type { Download, ToolStatus } from "../api";
-import { esc, formatBytes } from "../util";
+import { esc, formatBytes, splitPath } from "../util";
 
 /** A task the UI waits for. */
 export interface Busy {
@@ -90,6 +90,16 @@ export function toolOverlay(prompt: ToolPrompt): string {
     "Video needs ffmpeg",
     `<p>The Content-Code Video comes from MPEG-7 frame signatures, which ffmpeg computes; ffmpeg also reads the tags behind the Meta-Code. Without it, the app shows the video's Content Credentials, Data-Code and Instance-Code only. The app downloads the build iscc-sdk uses and checks it against its BLAKE3 hash before it runs.</p>${toolFacts(status)}`,
     `<button class="btn small quiet" data-action="skip-tool">Open without ffmpeg</button><button class="btn small primary" data-action="install-tool">Download and continue</button>`,
+  );
+}
+
+/** The confirmation of the hidden Remove Content Credentials for the file at `path`, for tests and demos of recovery. */
+export function stripOverlay(path: string): string {
+  const { stem, ext } = splitPath(path);
+  return dialog(
+    "Remove Content Credentials",
+    `<p>Writes a copy of <span class="mono">${esc(stem + ext)}</span> without its embedded Content Credentials next to it, as <span class="mono">${esc(`${stem}-stripped${ext}`)}</span> or the next free name, and opens it. The file itself stays as it is.</p><p class="hint">For tests and demos of Recover Content Credentials.</p>`,
+    `<button class="btn small quiet" data-action="cancel-strip">Cancel</button><button class="btn small primary" data-action="strip">Remove</button>`,
   );
 }
 

@@ -4,8 +4,9 @@
 // details. The wording keeps the two layers apart: C2PA validation decides whether credentials belong to a file; the
 // ISCC check only says how the file compares with the soft binding, and never speaks for the signer.
 
-import type { Found, Inspection, InvalidReason, Lookup, ManifestSummary, SoftBindingSummary, TimestampSummary } from "../api";
-import { esc, isccHtml, listJoin, percent } from "../util";
+import type { Found, Inspection, InvalidReason, Lookup, ManifestSummary, SoftBindingSummary, TimestampSummary, UnitMatch } from "../api";
+import { type ScoredUnit, type Scores, SOFT, TIERS, type Tier, tier, tierRank, UNRANKED, WEAK } from "../tiers";
+import { esc, listJoin, percent } from "../util";
 import {
   actionsCard,
   assertionsCard,
@@ -16,9 +17,8 @@ import {
   trainingCard,
   trustListName,
   validationCard,
-  verdict,
 } from "./credentials";
-import { HELP_ICON, kindIcon } from "./icons";
+import { helpTip, kindIcon } from "./icons";
 
 /** A part of a found manifest's card, below a thin rule. */
 const part: Box = (header, body) => `<div class="part">${header}${body}</div>`;
@@ -66,29 +66,103 @@ function contentText(found: Found): string {
   return found.iscc.content === null ? "" : `Content-Code ${percent(found.iscc.content)}`;
 }
 
-/** How a found manifest matches this file, for its summary row: the label and its state. */
-function matchLabel(found: Found): [string, string] {
-  const rebuild = found.rebuild?.status;
-  if (rebuild === "passed" || (found.for_file.status === "valid" && found.iscc.exact)) return ["Exact match", "exact"];
-  if (found.for_file.status === "valid") return ["Hash matches this file", "exact"];
-  if (found.iscc.exact && rebuild === "failed") return ["Instance-Code equal, rebuild failed", "failed"];
-  if (found.iscc.exact && rebuild === "partial") return ["Instance-Code equal, hash covers part", "instance"];
-  if (found.iscc.exact) return ["Instance-Code equal", "instance"];
-  const content = contentText(found);
-  const kind = found.iscc.near ? "Similar" : "Related";
-  return [content ? `${kind} · ${content}` : kind, found.iscc.near ? "similar" : "related"];
+/** Short names of the units a kind of match is read from. */
+const SHORT_NAME: Partial<Record<ScoredUnit, string>> = { meta: "Meta", semantic: "Semantic", content: "Content", data: "Data" };
+
+/** The unit of `mt` when it counts for the kind of match: compared with this file's (a Semantic-Code only while this
+ * file's is shown), and not the Instance-Code, which counts only as equal or not. */
+function scoredUnit(mt: UnitMatch, semantic: boolean): ScoredUnit | null {
+  const unit = mt.embedded.unit as ScoredUnit;
+  if (mt.similarity === null || !(unit in SHORT_NAME)) return null;
+  return unit === "semantic" && !semantic ? null : unit;
 }
 
-/** The summary row of a found manifest: claim thumbnail, signer, title and verified day, how it matches; it expands
- * the card. The signer comes first, and the title in quotes is the signer's. */
-function summaryRow(found: Found, open: boolean, inspection: Inspection): string {
+/** The similarity of each unit of the ISCC soft binding to this file's, the lowest where several blocks list one, and
+ * the Instance-Code as 1 when equal. */
+function unitScores(found: Found, semantic: boolean): Scores {
+  const scores: Scores = found.iscc.exact ? { instance: 1 } : {};
+  for (const sb of found.manifest.soft_bindings.filter((b) => b.supported && !b.error && !b.scoped)) {
+    for (const mt of sb.matches) {
+      const unit = scoredUnit(mt, semantic);
+      if (unit) scores[unit] = Math.min(scores[unit] ?? 1, mt.similarity ?? 0);
+    }
+  }
+  return scores;
+}
+
+/** `units` with their similarity, as a match's evidence: "Semantic 95.7% · Content 82%". */
+function unitList(scores: Scores, units: ScoredUnit[]): string {
+  return units.map((u) => `${SHORT_NAME[u]} ${percent(scores[u] ?? 0)}`).join(" · ");
+}
+
+/** The units a kind of match rests on, those at 60% or more; the closest one when no unit is. */
+function evidence(scores: Scores): string {
+  const listed = (Object.keys(SHORT_NAME) as ScoredUnit[]).filter((u) => scores[u] !== undefined);
+  const backing = listed.filter((u) => (scores[u] ?? 0) >= WEAK);
+  const closest = [...listed].sort((a, b) => (scores[b] ?? 0) - (scores[a] ?? 0)).slice(0, 1);
+  return unitList(scores, backing.length > 0 ? backing : closest);
+}
+
+/** The Content-Code and Data-Code where they are below 70%, which make an equal Instance-Code incoherent. */
+function disagreeing(scores: Scores): ScoredUnit[] {
+  const units: ScoredUnit[] = ["content", "data"];
+  return units.filter((u) => (scores[u] ?? 1) < SOFT);
+}
+
+/** What the rebuild check adds to an exact match, whose name already says the Instance-Code is equal. */
+function exactDetail(found: Found): string {
+  const r = found.rebuild?.status;
+  if (r === "passed") return "Rebuild check passed";
+  if (r === "failed") return "Rebuild check failed";
+  if (r === "partial") return "Hash covers part of the file";
+  return "Instance-Code equal";
+}
+
+/** The kind of match of a found manifest (`tiers.ts`), the rule that gives it, the scores or checks it rests on, and
+ * the state that colours it. */
+interface Kind {
+  tier: Tier | null;
+  name: string;
+  rule: string;
+  detail: string;
+  state: string;
+}
+
+/** The state of each kind of match, for the dot of the summary row; a kind left out is weak (grey). */
+const KIND_STATE: Partial<Record<Tier, string>> = {
+  exact: "instance",
+  near: "similar",
+  reencoded: "similar",
+  adaptation: "related",
+  corroborated: "related",
+  incoherent: "failed",
+};
+
+/** How a found manifest matches this file: its kind from the unit scores, with what C2PA and the rebuild check add. */
+function matchKind(found: Found, scores: Scores): Kind {
+  const t = tier(scores);
+  const { name, rule } = t ? TIERS[t] : UNRANKED;
+  const valid = found.for_file.status === "valid";
+  const rebuild = found.rebuild?.status;
+  let detail = evidence(scores);
+  if (valid) detail = "Hash matches this file";
+  else if (t === "exact") detail = exactDetail(found);
+  else if (t === "incoherent") detail = `Instance-Code equal · ${unitList(scores, disagreeing(scores))}`;
+  let state = (t && KIND_STATE[t]) || "weak";
+  if (valid || (t === "exact" && rebuild === "passed")) state = "exact";
+  else if (rebuild === "failed") state = "failed";
+  return { tier: t, name, rule, detail, state };
+}
+
+/** The summary row of a found manifest: claim thumbnail, signer, title and verified day, and its kind of match with
+ * the scores it rests on; it expands the card. The signer comes first, and the title in quotes is the signer's. */
+function summaryRow(found: Found, open: boolean, inspection: Inspection, kind: Kind): string {
   const m = found.manifest;
   const thumb = m.thumbnail ? `<img src="${esc(m.thumbnail)}" alt="" draggable="false" />` : kindIcon(inspection.kind);
   const time = verifiedTime(m);
   const when = time ? `<span title="${esc(time)}">${esc(minute(time))}, verified</span>` : "no verified time";
   const title = m.title ? `“${esc(m.title)}” · ` : "";
   const tag = m.test_key ? `<span class="tag" title="${esc(TEST_KEY)}">public test key</span>` : "";
-  const [label, state] = matchLabel(found);
   return `
     <button type="button" class="match-head" data-expand="${esc(found.store_id)}" aria-expanded="${open}">
       <span class="thumb">${thumb}</span>
@@ -96,7 +170,10 @@ function summaryRow(found: Found, open: boolean, inspection: Inspection): string
         <span class="signer"><span class="name">${esc(signerName(m))}</span>${tag}</span>
         <span class="sub">${title}${when}</span>
       </span>
-      <span class="label" data-state="${state}"><span class="dot"></span>${esc(label)}</span>
+      <span class="label" data-state="${kind.state}" title="${esc(`${kind.name}: ${kind.rule}`)}">
+        <span class="kind"><span class="dot"></span>${esc(kind.name)}</span>
+        <span class="evidence">${esc(kind.detail)}</span>
+      </span>
       <span class="chev" aria-hidden="true"></span>
     </button>`;
 }
@@ -122,9 +199,9 @@ function codeLine(reason: InvalidReason): string {
  * ("Displaying Manifest Information"), next to the lack of validity. */
 const NOT_ATTRIBUTED = "Their content must not be attributed to the signer for this file.";
 
-/** Why credentials found by search are rejected when their hash does not match. */
+/** Why recovered credentials are rejected when their hash does not match. */
 const MISMATCH_EXPECTED =
-  "For credentials found by search this is expected: the hash alone cannot tell whether this file was changed or the credentials belong to other content.";
+  "For recovered credentials this is expected: the hash alone cannot tell whether this file was changed or the credentials belong to other content.";
 
 /** The rebuild check's outcome when it did not pass, as sentences (HTML). */
 function rebuildNote(found: Found, mime: string): string {
@@ -215,60 +292,84 @@ function compareBox(m: ManifestSummary, inspection: Inspection): string {
   );
 }
 
-/** The ISCC verdict: equal Instance-Code, or how similar the Content-Code is, `near` the lowest near-identical
- * similarity; never in the signer's name. */
-function isccVerdict(found: Found, near: number): string {
-  const content = contentText(found);
-  if (found.iscc.exact) {
+/** The ISCC verdict: the kind of match and the rule that gives it, then what an equal Instance-Code proves, or how
+ * the Content-Code compares with `near`, the lowest near-identical similarity; never in the signer's name. */
+function isccVerdict(found: Found, near: number, kind: Kind): string {
+  const title = `${kind.name}: ${kind.rule}`;
+  const exact =
+    "This file has exactly the bytes the ISCC soft binding of these credentials was computed from (a BLAKE3 hash of 256 bits). That alone ties none of their other statements to this file; only C2PA validation, above, can.";
+  if (kind.tier === "incoherent") {
     return verdictBlock(
-      "exact",
-      "Instance-Code equal",
-      "This file has exactly the bytes the ISCC soft binding of these credentials was computed from (a BLAKE3 hash of 256 bits). That alone ties none of their other statements to this file; only C2PA validation, above, can.",
+      "failed",
+      title,
+      esc(`Their other units do not fit that Instance-Code, so the soft binding does not describe one file. ${exact}`),
     );
   }
+  if (found.iscc.exact) return verdictBlock("exact", title, esc(exact));
+  const content = contentText(found);
   if (found.iscc.near) {
     return verdictBlock(
       "similar",
-      `Similar file: ${content}, Instance-Code differs`,
-      "Their ISCC soft binding was computed from another file with near-identical content, perhaps the one this file was re-encoded or resized from. What differs is not covered by these credentials.",
+      title,
+      esc(
+        `With ${content}, their ISCC soft binding was computed from another file with near-identical content, perhaps the one this file was re-encoded or resized from. What differs is not covered by these credentials.`,
+      ),
     );
   }
   const detail = content
-    ? `The Content-Code is below the ${percent(near)} this app requires for near-identical. Their ISCC soft binding was computed from another file; how the two relate is not recorded.`
+    ? `${content}, below the ${percent(near)} of a near-identical match. Their ISCC soft binding was computed from another file; how the two relate is not recorded.`
     : "Their ISCC soft binding was computed from another file and lists no Content-Code this app can compare; how the two relate is not recorded.";
-  return verdictBlock("related", `Related content: ${content || "no comparable Content-Code"}`, esc(detail));
+  return verdictBlock("related", title, esc(detail));
 }
 
-/** One soft binding's units next to this file's; a Semantic-Code is compared only while the file's is shown. */
-function unitTable(sb: SoftBindingSummary, semantic: boolean): string {
-  const rows = sb.matches
-    .map((mt) => {
-      const u = mt.embedded;
-      const shown = u.unit === "semantic" && !semantic ? `<span class="hint">not compared</span>` : verdict(mt, false);
-      return `
-            <tr>
-              <td class="unit-name"><span class="swatch" data-unit="${u.unit}"></span>${esc(u.name)}</td>
-              <td><span class="mono fit" title="${esc(u.iscc)}">${isccHtml(u.iscc)}</span></td>
-              <td class="num">${shown}</td>
-            </tr>`;
-    })
-    .join("");
+/** The first part of each unit's name in the comparison strip; "-Code" follows it while the card is wide enough. */
+const CELL_NAME: Record<string, string> = { meta: "Meta", semantic: "Semantic", content: "Content", data: "Data", instance: "Instance" };
+
+/** What a tile shows for `mt`: the value, the share of its meter (0 to 1) and a note. A Semantic-Code is compared only
+ * while this file's is shown; the Instance-Code is equal or not. */
+function cellValue(mt: UnitMatch, semantic: boolean): [string, number, string] {
+  const unit = mt.embedded.unit;
+  if (unit === "semantic" && !semantic) return ["—", 0, "not compared"];
+  if (mt.similarity === null) return ["—", 0, "not comparable"];
+  if (unit === "instance") return mt.similarity === 1 ? ["Match", 1, "the same bytes"] : ["No match", 0, "other bytes"];
+  return [percent(mt.similarity), mt.similarity, unit === "semantic" ? "experimental" : ""];
+}
+
+/** One unit of a soft binding against this file's, as a tile: name, value, a meter in the unit's colour, grey below
+ * 60%, where a unit counts for no kind of match, and a note. */
+function unitCell(mt: UnitMatch, semantic: boolean): string {
+  const unit = mt.embedded.unit;
+  const [value, share, note] = cellValue(mt, semantic);
+  const weak = unit !== "instance" && share < WEAK ? " weak" : "";
   return `
-          <table class="unit-table">
-            <colgroup><col class="name" /><col /><col class="match" /></colgroup>
-            <thead><tr><th>Unit</th><th>${sb.scoped ? "For part of the file" : "In these credentials"}</th><th style="text-align:right">This file</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>`;
+            <div class="tile">
+              <div class="tile-name" title="${esc(mt.embedded.iscc)}"><span class="swatch" data-unit="${unit}"></span><span>${CELL_NAME[unit] ?? esc(mt.embedded.name)}<span class="suffix">-Code</span></span></div>
+              <div class="tile-value">${value}</div>
+              <div class="tile-bar${weak}" data-unit="${unit}"><i style="width:${Math.round(share * 100)}%"></i></div>
+              <div class="tile-note">${note || "&nbsp;"}</div>
+            </div>`;
 }
 
-/** This app's ISCC check (IEP-0020): the verdict, each ISCC soft binding's units against this file's, and what keeps
- * the match from being complete or attributed to the signer. */
-function isccBox(found: Found, near: number, semantic: boolean): string {
-  const tables = found.manifest.soft_bindings
+/** One soft binding's units against this file's, as a strip of tiles. */
+function unitStrip(sb: SoftBindingSummary, semantic: boolean): string {
+  const scope = sb.scoped ? `<p class="hint strip-scope">For part of the file</p>` : "";
+  return `${scope}<div class="strip">${sb.matches.map((mt) => unitCell(mt, semantic)).join("")}</div>`;
+}
+
+/** Each ISCC soft binding's units against this file's, as strips of tiles. */
+function unitStrips(found: Found, semantic: boolean): string {
+  return found.manifest.soft_bindings
     .filter((sb) => sb.supported && !sb.error)
-    .map((sb) => unitTable(sb, semantic))
+    .map((sb) => unitStrip(sb, semantic))
     .join("");
-  const notes = ["Compared with this file's units as the left column shows them."];
+}
+
+/** This app's ISCC check (IEP-0020): the verdict for the units compared at the top of the card, and what keeps the
+ * match from being complete or attributed to the signer. */
+function isccBox(found: Found, near: number, kind: Kind): string {
+  const notes = [
+    "The tiles at the top compare their units with this file's as the left column shows them; a grey bar is below 60%, where a unit counts for no kind of match.",
+  ];
   if (!found.attributed) {
     notes.push(
       "These credentials list the soft binding among gathered assertions, which the C2PA specification does not attribute to the signer.",
@@ -279,7 +380,7 @@ function isccBox(found: Found, near: number, semantic: boolean): string {
   }
   return part(
     head("ISCC check by this app", "IEP-0020 draft, not part of C2PA validation"),
-    `${isccVerdict(found, near)}${tables}<div class="note">${esc(notes.join(" "))}</div>`,
+    `${isccVerdict(found, near, kind)}<div class="note">${esc(notes.join(" "))}</div>`,
   );
 }
 
@@ -318,14 +419,16 @@ interface Against {
   near: number;
 }
 
-/** The expanded card of a found manifest: C2PA first, then the picture, the ISCC check and the details. */
-function details(found: Found, { inspection, semantic, near }: Against): string {
+/** The expanded card of a found manifest: its units against this file's first, then C2PA, the picture, the ISCC
+ * check and the details. */
+function details(found: Found, { inspection, semantic, near }: Against, kind: Kind): string {
   const m = found.manifest;
   return `
     <div class="match-body">
+      ${unitStrips(found, semantic)}
       ${part(head("C2PA"), `${c2paVerdict(found, inspection.mime)}${restoreRow(found)}`)}
       ${compareBox(m, inspection)}
-      ${isccBox(found, near, semantic)}
+      ${isccBox(found, near, kind)}
       ${signerBox(found)}
       ${trainingCard(m, part)}
       ${actionsCard(m, part)}
@@ -337,16 +440,18 @@ function details(found: Found, { inspection, semantic, near }: Against): string 
 
 /** One found manifest as a card; `open` expands it. */
 function matchCard(found: Found, open: boolean, against: Against): string {
+  const kind = matchKind(found, unitScores(found, against.semantic));
   return `
     <section class="card match" data-open="${open}">
-      ${summaryRow(found, open, against.inspection)}
-      ${open ? details(found, against) : ""}
+      ${summaryRow(found, open, against.inspection, kind)}
+      ${open ? details(found, against, kind) : ""}
     </section>`;
 }
 
-/** How the list is made, behind the help button of its heading. */
-const ORDER =
-  "Found by this file's ISCC on the ISCC test network. Each manifest store was fetched and checked here; the services' own scores only decide which are fetched. Listed are near-identical matches, those with an equal Instance-Code first, then by earliest verified signing time.";
+/** How the list is made, behind the help button of its heading; `near` is the lowest near-identical similarity. */
+function order(near: number): string {
+  return `Found by this file's ISCC on the ISCC test network. Each manifest store was fetched and checked here; the services' own scores only decide which are fetched. First come near-identical matches (Content-Code at ${percent(near)} or more), those with an equal Instance-Code first, then by earliest verified signing time; then files with related content, the strongest kind of match first. Each names its kind of match from the units that agree, by the tiers of iscc-hub's ranking: high at 85%, agreeing at 70%, backing up at 60%.`;
+}
 
 /** What the search left out and which services did not answer, as one muted paragraph; empty when nothing was. */
 function notes(lookup: Lookup): string {
@@ -366,25 +471,25 @@ function notes(lookup: Lookup): string {
 function warning(listed: Found[]): string {
   if (listed.length === 0) return "";
   const unless = listed.some((f) => f.for_file.status === "valid") ? ", unless a card says their hash matches it" : "";
-  return `<p class="found-warning">${esc(`Credentials found by search are not valid for this file as it is${unless}, and their content must not be attributed to their signers for this file. Open one for C2PA's verdict and this app's checks.`)}</p>`;
+  return `<p class="found-warning">${esc(`Recovered credentials are not valid for this file as it is${unless}, and their content must not be attributed to their signers for this file. Open one for C2PA's verdict and this app's checks.`)}</p>`;
 }
 
-/** What a search found: the near-identical matches as cards (those in `open` expanded), the related ones behind a
- * toggle (`related` shows them), and what was left out. */
-export function foundList(lookup: Lookup, open: string[], related: boolean, inspection: Inspection, semantic: boolean): string {
+/** `list` sorted by kind of match, the strongest first, keeping its order within a kind. */
+function byKind(list: Found[], semantic: boolean): Found[] {
+  const rank = new Map(list.map((f) => [f, tierRank(tier(unitScores(f, semantic)))]));
+  return [...list].sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0));
+}
+
+/** What a search found, as cards (those in `open` expanded): the near-identical matches, then those with related
+ * content by kind of match, and what was left out. */
+export function foundList(lookup: Lookup, open: string[], inspection: Inspection, semantic: boolean): string {
   const against = { inspection, semantic, near: lookup.near_identical };
   const card = (f: Found) => matchCard(f, open.includes(f.store_id), against);
-  const n = lookup.matches.length;
+  const listed = [...lookup.matches, ...byKind(lookup.related, semantic)];
+  const n = listed.length;
   const heading =
     n > 0
-      ? `<div class="found-head"><h3>${n === 1 ? "1 match" : `${n} matches`} on the ISCC test network</h3><button type="button" class="tip" aria-label="${esc(ORDER)}" data-tip="${esc(ORDER)}">${HELP_ICON}</button></div>`
+      ? `<div class="found-head"><h3>${n === 1 ? "1 match" : `${n} matches`} on the ISCC test network</h3>${helpTip(order(lookup.near_identical))}</div>`
       : "";
-  const r = lookup.related.length;
-  const toggle =
-    r > 0
-      ? `<button type="button" class="linkbtn related-toggle" data-action="toggle-related">${related ? "Hide" : "Show"} ${r === 1 ? "1 file" : `${r} files`} with related content, not near-identical</button>`
-      : "";
-  const relatedCards = related ? lookup.related.map(card).join("") : "";
-  const listed = related ? [...lookup.matches, ...lookup.related] : lookup.matches;
-  return `<div class="found-list">${heading}${warning(listed)}${lookup.matches.map(card).join("")}${toggle}${relatedCards}${notes(lookup)}</div>`;
+  return `<div class="found-list">${heading}${warning(listed)}${listed.map(card).join("")}${notes(lookup)}</div>`;
 }

@@ -25,6 +25,7 @@ pub mod resample;
 pub mod semantic;
 pub mod settings;
 pub mod sign;
+pub mod strip;
 pub mod svg;
 pub mod thumbnail;
 pub mod timestamp;
@@ -272,6 +273,16 @@ async fn restore_credentials(path: String, store_id: String, output: String) -> 
     .map_err(|e| format!("{e:#}"))
 }
 
+/// Write a copy of the file at `path` without its embedded Content Credentials next to it, for
+/// tests and demos of their recovery; the UI keeps it out of sight.
+#[tauri::command]
+async fn strip_credentials(path: String) -> Result<strip::Stripped, String> {
+    tauri::async_runtime::spawn_blocking(move || strip::strip(Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
+}
+
 /// Whether ffmpeg, which videos need, is installed, and what installing it means.
 #[tauri::command]
 fn ffmpeg_status() -> tools::Status {
@@ -443,6 +454,7 @@ pub fn run() {
             set_ocr,
             find_credentials,
             restore_credentials,
+            strip_credentials,
             register_manifest
         ])
         .run(tauri::generate_context!())

@@ -3,6 +3,7 @@
 // (Carbon / IBM, Apache License 2.0, geometry unchanged).
 
 import type { AssetKind } from "../api";
+import { esc } from "../util";
 
 const PATHS: Record<AssetKind, string> = {
   image: `<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>`,
@@ -24,3 +25,8 @@ export const CHECK_ICON = `<svg class="glyph" viewBox="0 0 32 32" aria-hidden="t
 
 /** Carbon "help" (brand kit: Help), for a small button that explains what is next to it. */
 export const HELP_ICON = `<svg class="glyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16,2A14,14,0,1,0,30,16,14,14,0,0,0,16,2Zm0,26A12,12,0,1,1,28,16,12,12,0,0,1,16,28Z"/><circle cx="16" cy="23.5" r="1.5"/><path d="M17,8H15.5A4.49,4.49,0,0,0,11,12.5V13h2v-.5A2.5,2.5,0,0,1,15.5,10H17a2.5,2.5,0,0,1,0,5H15v4.5h2V17a4.5,4.5,0,0,0,0-9Z"/></svg>`;
+
+/** An info icon that shows `text` in a tooltip on hover and keyboard focus. */
+export function helpTip(text: string): string {
+  return `<button type="button" class="tip" aria-label="${esc(text)}" data-tip="${esc(text)}">${HELP_ICON}</button>`;
+}

@@ -22,10 +22,12 @@ import {
   registerManifest,
   restoreCredentials,
   type SemanticKind,
+  type Stripped,
   type Switches,
   setOcr,
   setSemantic,
   signAsset,
+  stripCredentials,
   type ToolStatus,
   type UnitSlug,
 } from "./api";
@@ -35,13 +37,17 @@ import { copyText, esc, json, listJoin, splitPath } from "./util";
 import { type Analysis, assetCard, codeCard, patchPending, shownUnits, unitList } from "./views/asset";
 import { credentialsTab, needsIsccBinding } from "./views/credentials";
 import { CHECK_ICON } from "./views/icons";
-import { type Busy, busyOverlay, downloadProgress, patchProgress, type ToolPrompt, toolOverlay } from "./views/overlay";
+import { type Busy, busyOverlay, downloadProgress, patchProgress, stripOverlay, type ToolPrompt, toolOverlay } from "./views/overlay";
 import { type RegisterState, registerCard } from "./views/register";
 import { type Search, searchTab } from "./views/search";
 import { patchSettingsDownload, type SettingsDialog, type SettingsOperation, settingsOverlay } from "./views/settings";
 import {
+  ALL_USES,
+  bindingSummary,
   dropFailedUnits,
+  type Fold,
   metaPreviewHint,
+  NO_TIMESTAMP,
   newSignForm,
   type SignForm,
   type SignMode,
@@ -79,6 +85,8 @@ interface State {
   registration: RegisterState | null;
   /** True while the menu of the signing actions is open. */
   signMenu: boolean;
+  /** True while the hidden Remove Content Credentials asks for confirmation. */
+  stripAsk: boolean;
   error: string | null;
   banner: { text: string; path?: string; note?: string } | null;
   dragging: boolean;
@@ -97,6 +105,7 @@ const state: State = {
   search: null,
   registration: null,
   signMenu: false,
+  stripAsk: false,
   error: null,
   banner: null,
   dragging: false,
@@ -136,6 +145,7 @@ function render() {
       <div class="dropoverlay ${state.dragging ? "active" : ""}"><div class="ring">Drop to inspect</div></div>
       ${state.busy ? busyOverlay(state.busy) : ""}
       ${state.tool ? toolOverlay(state.tool) : ""}
+      ${state.stripAsk && inspection ? stripOverlay(inspection.path) : ""}
       ${state.settings ? settingsOverlay(state.settings, state.switches, Boolean(state.busy)) : ""}
     </main>`;
   app.querySelectorAll<HTMLElement>(".column").forEach((c, i) => {
@@ -474,6 +484,7 @@ interface LoadOptions {
 async function load(path: string, { offerFfmpeg = true, keepSettings = false }: LoadOptions = {}) {
   if (state.tool?.download || state.settings?.operation) return;
   state.tool = null;
+  state.stripAsk = false;
   if (!keepSettings) state.settings = null;
   const ext = splitPath(path).ext.slice(1).toLowerCase();
   if (state.info && !state.info.extensions.includes(ext)) {
@@ -556,11 +567,14 @@ async function resetSignForm(inspection: Inspection) {
   if (inspection.content_error) form.units.delete(inspection.kind);
 }
 
-/** Update only the Meta-Code preview line inside the form, and whether the title and description get written into a PDF
- * copy, preserving focus. */
+/** Update only the Meta-Code preview line inside the form, the ISCC-CODE of the ticked units, and whether the title and
+ * description get written into a PDF copy, preserving focus. */
 function patchMetaPreview() {
+  const { form, inspection } = state;
   const writes = app.querySelector<HTMLElement>("[data-writes-metadata]");
-  if (writes && state.form && state.inspection) writes.hidden = !writesMetadata(state.form, state.inspection);
+  if (writes && form && inspection) writes.hidden = !writesMetadata(form, inspection);
+  const summary = app.querySelector<HTMLElement>("[data-binding-summary]");
+  if (summary && form && inspection) summary.outerHTML = bindingSummary(form, inspection, semanticShown(inspection));
   const el = app.querySelector<HTMLElement>("[data-meta-code]");
   const code = state.form?.metaPreview?.iscc;
   if (!el) return;
@@ -690,7 +704,7 @@ function syncForm() {
   form.source = readSource(data, form.source);
   form.units = new Set(data.getAll("unit").map(String));
   for (const key of Object.keys(form.training)) {
-    const info = data.get(`constraint:${key}`);
+    const info = data.get(`constraint:${key}`) ?? data.get(`constraint:${ALL_USES}`);
     if (info !== null) form.training[key].constraint_info = String(info);
   }
   const cred = String(data.get("cred") ?? "demo");
@@ -714,13 +728,12 @@ function readSource(data: FormData, prev: SourceChoice): SourceChoice {
   };
 }
 
-/** The timestamp choice in `data`; disabled controls are missing there and keep `prev`. */
+/** The timestamp choice in `data`: "No timestamp" turns it off and keeps the service chosen before; the URL field is
+ * missing unless a custom URL is chosen, and keeps `prev`. */
 function readTimestamp(data: FormData, prev: TimestampChoice): TimestampChoice {
-  return {
-    on: data.has("ts_on"),
-    preset: String(data.get("ts_preset") ?? prev.preset),
-    custom: String(data.get("ts_custom") ?? prev.custom),
-  };
+  const preset = String(data.get("ts_preset") ?? NO_TIMESTAMP);
+  const on = preset !== NO_TIMESTAMP;
+  return { on, preset: on ? preset : prev.preset, custom: String(data.get("ts_custom") ?? prev.custom) };
 }
 
 /** Handle a click on an element carrying one of the `data-*` hooks of the markup. */
@@ -745,17 +758,18 @@ async function onClick(target: HTMLElement) {
   if (d.reveal) return void revealItemInDir(d.reveal).catch((e) => console.error(e));
   if (d.expand) return toggleMatch(d.expand);
   if (d.restore) return void restore(d.restore);
-  if (d.sign || d.useKey || d.sourceList) return onFormClick(d);
+  if (d.sign || d.useKey || d.sourceList || d.fold) return onFormClick(d);
 }
 
-/** Handle a click on a hook of the sign form: a signing action, a training and data mining choice, or the switch
- * between the two questions and the full list of source types. */
+/** Handle a click on a hook of the sign form: a signing action, a training and data mining choice, opening or closing
+ * the ISCC soft binding section, or the switch between the two questions and the full list of source types. */
 function onFormClick(d: DOMStringMap) {
   const { form, inspection } = state;
   if (!form || !inspection) return;
   syncForm();
   if (d.sign) return void submitSign(d.sign as SignMode);
   if (d.useKey) setTrainingUse(form, d.useKey, d.use ?? "");
+  else if (d.fold) form.open[d.fold as Fold] = !form.open[d.fold as Fold];
   else form.source = toggleList(inspection.kind, form.source);
   render();
 }
@@ -784,12 +798,13 @@ const SIMPLE_ACTIONS: Record<string, () => unknown> = {
   "install-tool": installTool,
   "stop-analysis": stopAnalysis,
   search,
-  "toggle-related": toggleRelated,
   settings: openSettings,
   "close-settings": closeSettings,
   "cancel-settings": cancelSettings,
   "sign-menu": toggleSignMenu,
   register,
+  strip,
+  "cancel-strip": cancelStrip,
 };
 
 /** Top-bar, banner, unit list and overlay actions: open a file, close it, dismiss the messages, download ffmpeg, open
@@ -864,7 +879,7 @@ async function search() {
     const lookup = await findCredentials(inspection.path, units);
     // A single match opens at once; with several, the user chooses which to look at.
     const open = lookup.matches.length === 1 ? [lookup.matches[0].store_id] : [];
-    if (seq === searchSeq) state.search = { state: "done", lookup, open, related: false };
+    if (seq === searchSeq) state.search = { state: "done", lookup, open };
   } catch (e) {
     if (seq === searchSeq) state.search = { state: "failed", reason: String(e) };
   }
@@ -876,14 +891,6 @@ function toggleMatch(storeId: string) {
   const search = state.search;
   if (search?.state !== "done") return;
   search.open = search.open.includes(storeId) ? search.open.filter((id) => id !== storeId) : [...search.open, storeId];
-  render();
-}
-
-/** Show or hide the found manifests with related content that is not near-identical. */
-function toggleRelated() {
-  const search = state.search;
-  if (search?.state !== "done") return;
-  search.related = !search.related;
   render();
 }
 
@@ -922,6 +929,57 @@ async function restore(storeId: string) {
   }
 }
 
+/** Offer to remove the open file's embedded Content Credentials: the hidden way to make a stripped copy for tests and
+ * demos of recovery (an Alt-click on the verdict of the Content Credentials card). */
+function askStrip() {
+  if (!state.inspection || state.busy || state.tool || state.settings) return;
+  state.stripAsk = true;
+  render();
+}
+
+/** Close the offer to remove the open file's Content Credentials. */
+function cancelStrip() {
+  state.stripAsk = false;
+  render();
+}
+
+/** Write the open file without its embedded Content Credentials next to it, then open that copy. */
+async function strip() {
+  const inspection = state.inspection;
+  state.stripAsk = false;
+  if (!inspection || state.busy) return render();
+  // Like a restore, a removal overtaken by a file opened later, or Close, finishes writing and changes nothing on screen.
+  const seq = ++signSeq;
+  state.busy = spinner("Removing Content Credentials");
+  state.error = null;
+  render();
+  let stripped: Stripped;
+  try {
+    stripped = await stripCredentials(inspection.path);
+  } catch (e) {
+    if (seq !== signSeq) return;
+    state.busy = null;
+    state.error = `Removing failed: ${e}`;
+    return render();
+  }
+  if (seq !== signSeq) return;
+  await load(stripped.output);
+  if (state.inspection?.path === stripped.output) {
+    state.banner = { text: strippedText(stripped), path: stripped.output };
+    for (const column of app.querySelectorAll<HTMLElement>(".column")) column.scrollTop = 0;
+    render();
+  }
+}
+
+/** What the banner says about a copy written without Content Credentials. */
+function strippedText(stripped: Stripped): string {
+  const { stem, ext } = splitPath(stripped.output);
+  const text = `Content Credentials removed: ${stem}${ext}`;
+  if (stripped.original === true) return `${text} is byte for byte the file that was signed (equal Instance-Code).`;
+  if (stripped.original === false) return `${text}. Removing them changed other bytes too: its Instance-Code differs from the signed one.`;
+  return `${text}.`;
+}
+
 /** Copy `text` and let the button say for a moment whether that worked: "Copied", or a check on an icon button. */
 async function copyWithFeedback(button: HTMLElement, text: string) {
   const ok = await copyText(text);
@@ -937,6 +995,11 @@ let metaTimer: number | undefined;
 
 function wireEvents() {
   app.addEventListener("click", async (ev) => {
+    // The hidden Remove Content Credentials: an Alt-click (Option on a Mac) on the verdict of embedded credentials.
+    if (ev.altKey && (ev.target as HTMLElement).closest("[data-strip]")) {
+      ev.preventDefault();
+      return askStrip();
+    }
     // External links open in the system browser; the web view itself never navigates away.
     const link = (ev.target as HTMLElement).closest<HTMLAnchorElement>("a.ext");
     if (link) {
@@ -945,7 +1008,7 @@ function wireEvents() {
       return;
     }
     const target = (ev.target as HTMLElement).closest<HTMLElement>(
-      "[data-action],[data-tab],[data-copy],[data-goto],[data-pick],[data-reveal],[data-use-key],[data-source-list],[data-expand],[data-restore],[data-sign]",
+      "[data-action],[data-tab],[data-copy],[data-goto],[data-pick],[data-reveal],[data-use-key],[data-source-list],[data-fold],[data-expand],[data-restore],[data-sign]",
     );
     // A click anywhere but on the arrow closes the menu of the signing actions, after which an entry still runs.
     if (state.signMenu && target?.dataset.action !== "sign-menu") {
@@ -973,7 +1036,7 @@ function wireEvents() {
     const target = ev.target as HTMLInputElement;
     if (target.name === "semantic") return void switchSemantic(target.value as SemanticKind, target.checked);
     if (target.name === "ocr") return void switchOcr(target.checked);
-    if (["cred", "alg", "ts_on", "ts_preset", "source_origin", "source_variant", "source_after", "source_term"].includes(target.name)) {
+    if (["unit", "cred", "alg", "ts_preset", "source_origin", "source_variant", "source_after", "source_term"].includes(target.name)) {
       syncForm();
       render();
     }
@@ -994,6 +1057,7 @@ function wireEvents() {
   // of the signing actions.
   window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && state.settings) closeSettings();
+    else if (ev.key === "Escape" && state.stripAsk) cancelStrip();
     else if (ev.key === "Escape" && state.signMenu) toggleSignMenu();
   });
 

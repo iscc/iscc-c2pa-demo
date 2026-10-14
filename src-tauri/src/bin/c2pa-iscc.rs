@@ -19,7 +19,7 @@ use iscc_c2pa_demo_lib::iscc::{self, MetaInput};
 use iscc_c2pa_demo_lib::semantic::{SemanticKind, SemanticKinds};
 use iscc_c2pa_demo_lib::settings::Settings;
 use iscc_c2pa_demo_lib::sign::{self, Credentials, SignRequest, TimestampOutcome, TrainingEntry};
-use iscc_c2pa_demo_lib::{register, timestamp, tools};
+use iscc_c2pa_demo_lib::{register, strip, timestamp, tools};
 use serde::Serialize;
 
 #[derive(Parser)]
@@ -78,6 +78,10 @@ enum Command {
     /// Print a file's manifest store as c2pa-rs's crJSON (for scripts/conformance.py).
     #[command(hide = true)]
     Crjson { file: PathBuf },
+    /// Write a copy of a file without its embedded Content Credentials next to it, as
+    /// `<stem>-stripped<ext>`, for tests and demos of their recovery.
+    #[command(hide = true)]
+    Strip { file: PathBuf },
     /// Manage ffmpeg, which video files need, and the semantic models, which the Semantic-Codes
     /// need; each is downloaded once, on request.
     Tools {
@@ -153,8 +157,9 @@ struct SignArgs {
     /// Description for the Meta-Code [default: the one the title came with].
     #[arg(long)]
     description: Option<String>,
-    /// ISCC units to embed: meta, semantic, image, text, audio or video, data, instance [default:
-    /// all of them but the Semantic-Code, without a unit that cannot be computed].
+    /// ISCC units to embed: meta, semantic, image, text, audio or video, data, instance; data and
+    /// instance are always added, as IEP-0020 requires them [default: all of them but the
+    /// Semantic-Code, without a unit that cannot be computed].
     #[arg(long, value_delimiter = ',', value_parser = ["meta", "semantic", "image", "text", "audio", "video", "data", "instance"])]
     units: Option<Vec<String>>,
     /// Also embed the experimental Semantic-Code of an image or a text; its model must be
@@ -318,6 +323,7 @@ fn run(cli: &Cli) -> Result<()> {
         ),
         Command::Formats => print(&formats::FORMATS, cli.compact),
         Command::Crjson { file } => print(&inspect::crjson(file)?, cli.compact),
+        Command::Strip { file } => print(&strip::strip(file)?, cli.compact),
         Command::Tools { action } => match action {
             ToolsAction::Status => print(
                 &ToolsStatus {
@@ -440,7 +446,7 @@ fn sign_request(args: &SignArgs, settings: Settings) -> Result<SignRequest> {
         .clone()
         .or_else(|| fields.description.clone());
     let units = match &args.units {
-        Some(units) => units.clone(),
+        Some(units) => with_required(units),
         None => default_units(
             &source,
             args.title.is_some(),
@@ -464,6 +470,17 @@ fn sign_request(args: &SignArgs, settings: Settings) -> Result<SignRequest> {
         tsa_url: (!args.no_timestamp).then(|| args.tsa.clone()),
         sidecar: args.sidecar,
     })
+}
+
+/// `units` with the Data-Code and the Instance-Code added where missing: IEP-0020 requires both.
+fn with_required(units: &[String]) -> Vec<String> {
+    let mut all = units.to_vec();
+    for unit in ["data", "instance"] {
+        if !all.iter().any(|u| u == unit) {
+            all.push(unit.into());
+        }
+    }
+    all
 }
 
 /// Every unit for the asset's kind; the Meta-Code only when it can be computed from the title,

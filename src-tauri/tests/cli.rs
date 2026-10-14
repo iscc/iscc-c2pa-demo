@@ -197,6 +197,36 @@ fn crjson_prints_the_manifest_store() {
     assert_eq!(none.status.code(), Some(1));
 }
 
+/// The hidden `strip` command writes a copy without the embedded Content Credentials.
+#[test]
+fn strip_writes_a_copy_without_credentials() {
+    let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli-strip");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let signed = dir.join("photo.jpg");
+    let sign = cli(&[
+        "sign",
+        fixture("no_manifest.jpg").to_str().unwrap(),
+        "--output",
+        signed.to_str().unwrap(),
+        "--no-timestamp",
+        "--no-preview",
+    ]);
+    assert!(sign.status.success());
+    let result = json(&cli(&["strip", signed.to_str().unwrap()]));
+    let output = dir.join("photo-stripped.jpg");
+    assert_eq!(result["output"], output.to_str().unwrap());
+    assert_eq!(result["original"], true);
+    assert_eq!(
+        std::fs::read(&output).unwrap(),
+        std::fs::read(fixture("no_manifest.jpg")).unwrap()
+    );
+    let none = cli(&["strip", output.to_str().unwrap()]);
+    assert_eq!(none.status.code(), Some(1));
+    let help = String::from_utf8(cli(&["--help"]).stdout).unwrap();
+    assert!(!help.contains("strip"), "strip stays out of the help");
+}
+
 #[test]
 fn sign_without_reachable_timestamp_service_notes_it_and_succeeds() {
     let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli-tsa");
@@ -326,6 +356,26 @@ fn errors_exit_with_one_line_and_usage_errors_with_two() {
     assert_eq!(both.status.code(), Some(2));
     assert_eq!(cli(&["sign"]).status.code(), Some(2));
     assert_eq!(cli(&["nonsense"]).status.code(), Some(2));
+}
+
+#[test]
+fn sign_always_embeds_the_data_code_and_the_instance_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let only_content = json(&cli(&[
+        "sign",
+        fixture("no_manifest.jpg").to_str().unwrap(),
+        "--output",
+        dir.path().join("only-content.jpg").to_str().unwrap(),
+        "--units",
+        "image",
+        "--no-timestamp",
+        "--no-preview",
+    ]));
+    assert_eq!(
+        names(&only_content["units"]),
+        ["Content-Code Image", "Data-Code", "Instance-Code"],
+        "data and instance are always added"
+    );
 }
 
 #[test]

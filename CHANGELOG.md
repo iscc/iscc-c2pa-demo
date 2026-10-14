@@ -12,7 +12,7 @@
   Content Credentials tab, which shows the store's answer. Registering uploads the manifest store
   (signer, title, description, ISCC, thumbnail), never the file. Enter in a field of the Sign tab
   no longer signs. In the CLI: `sign --sidecar` and `register`.
-- Search Content Credentials: a file without them can be looked up on the ISCC test network (the
+- Recover Content Credentials: a file without them can be looked up on the ISCC test network (the
   test store and the resolver, through the C2PA Soft Binding Resolution API). The file's ISCC,
   which identifies this exact file, is sent with the IP address, by POST and without its
   Meta-Code; never the file. The card says so before the first search. Each
@@ -22,8 +22,11 @@
   validation), the signer (a public test key named as such), a verified time only from a trusted
   timestamp, the claim thumbnail next to the file, and every detail of the manifest, in one
   expandable card per match. Near-identical matches only (an equal Instance-Code, or a
-  Content-Code at least 92% similar), equal Instance-Codes first, then the earliest; related content
-  behind a toggle; manifests that do not read, hold another manifest, fail their signature or
+  Content-Code at least 92% similar) first, equal Instance-Codes first, then the earliest; then
+  related content, the strongest kind of match first. Each card names its kind of match (Exact,
+  Near-identical, Re-encoded, Adaptation, Corroborated, Title only, Isolated, Incoherent, from
+  iscc-hub's tiered ranking) with the scores it rests on, and opens with one tile per unit;
+  manifests that do not read, hold another manifest, fail their signature or
   claim several files are left out, with the reason.
 - Restore Content Credentials: for a match with an equal Instance-Code, the app puts the found
   credentials back into the file and validates the result; when it validates ("Exact match"),

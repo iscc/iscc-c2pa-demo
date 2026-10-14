@@ -104,14 +104,15 @@ so the download page shows you how to open them the first time.
 
 ## Good to know
 
-- **Search uses the ISCC test network.** A file without Content Credentials offers "Search Content
-  Credentials", which asks the test store `c2pa-store-test.iscc.io` and the resolver
+- **Recovery uses the ISCC test network.** A file without Content Credentials offers "Recover
+  Content Credentials", which asks the test store `c2pa-store-test.iscc.io` and the resolver
   `c2pa-test.iscc.io` (which asks `search-test.iscc.id`) through the C2PA Soft Binding Resolution
   API. It sends the file's ISCC, which identifies this exact file, with your IP address; never the
   file. Every manifest found is checked on your computer. C2PA rejects credentials found this way
   for the file as it is, as the specification says, so the app keeps that verdict apart from its
   own ISCC check, and only an exact match whose credentials validate once put back into the file
-  is called one. Only near-identical matches are listed; related content stays behind a toggle.
+  is called one. Near-identical matches come first, then related content, each card naming its
+  kind of match.
 - **The built-in certificate is for testing.** It is the public c2pa-rs test key: its private key
   is published, so anyone can sign as this signer, and the app says so ("Valid, signed with a
   public test key"); no C2PA trust list includes it. Sign with your own certificate and key for

@@ -130,10 +130,14 @@ pub(crate) fn signed_leaving_out(
 
 /// `source` with the signed manifest store `manifest` appended as an update section, laid out as
 /// [`signed`] lays out its placeholder: for the source a manifest store was signed for, this is
-/// the signed PDF again, byte for byte.
-pub fn with_store(source: &[u8], manifest: &[u8]) -> Result<Vec<u8>> {
+/// the signed PDF again, byte for byte. The store is padded with zeros to `reserved` bytes, the
+/// space its data hash leaves out, as c2pa-rs fills a placeholder; a store taken out of the
+/// signed PDF without that padding fits again.
+pub fn with_store(source: &[u8], manifest: &[u8], reserved: usize) -> Result<Vec<u8>> {
+    let mut padded = manifest.to_vec();
+    padded.resize(reserved.max(manifest.len()), 0);
     let mut update = update_of(source)?;
-    add_manifest(&mut update, manifest)?;
+    add_manifest(&mut update, &padded)?;
     saved(update)
 }
 

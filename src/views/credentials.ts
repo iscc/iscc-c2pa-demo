@@ -161,13 +161,15 @@ export function credentialsTab(inspection: Inspection, semantic: boolean, networ
     .join("");
 }
 
+/** The verdict, signer and manifest facts. An Alt-click on the verdict of embedded credentials (`data-strip`) offers to
+ * remove them, for tests and demos of recovery; nothing shows that it can. */
 function statusCard(m: ManifestSummary): string {
   const s = m.signature;
   const signer = [s?.common_name, s?.issuer].filter(Boolean).join(" · ") || "unknown";
   return `
     <section class="card">
       <header>
-        <span class="status" data-state="${esc(m.validation_state)}" title="${esc(stateTitle(m))}"><span class="dot"></span>${esc(stateText(m))}</span>
+        <span class="status" data-state="${esc(m.validation_state)}" title="${esc(stateTitle(m))}"${m.sidecar ? "" : " data-strip"}><span class="dot"></span>${esc(stateText(m))}</span>
         <span class="grow"></span>
         <span class="hint">${m.manifest_count} manifest${m.manifest_count === 1 ? "" : "s"} in store</span>
       </header>

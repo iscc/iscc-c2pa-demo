@@ -3,10 +3,11 @@
 //! finds the manifests uploaded to it at once, and the resolver, which finds every manifest
 //! declared on the ISCC Discovery Protocol a minute or so after its declaration. The query goes
 //! by POST, so the ISCC stays out of URLs and their logs; it holds all of the file's units except
-//! its Meta-Code, which the services do not score. The services' answers are only candidates: each
-//! manifest store is fetched and checked here against the file ([`recover::screen`],
-//! [`recover::examine`]), and their scores only decide which candidates are fetched. Only the
-//! ISCC leaves the machine, never the file.
+//! its Meta-Code: a title alone, or a file name in its place, would bring candidates that share
+//! only the name, and it would tell the services more about the file. The services' answers are
+//! only candidates: each manifest store is fetched and checked here against the file
+//! ([`recover::screen`], [`recover::examine`]), and their scores only decide which candidates are
+//! fetched. Only the ISCC leaves the machine, never the file.
 
 use std::cmp::Reverse;
 use std::path::Path;
@@ -282,8 +283,8 @@ fn bounded<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> R + Sync) -> Vec
     results
 }
 
-/// The base64 ISCC-SEQ the services are asked with: every unit but the Meta-Code, which they do
-/// not score and which would only tell them more about the file.
+/// The base64 ISCC-SEQ the services are asked with: every unit but the Meta-Code, which would
+/// find files that share only a title or file name and tell the services more about the file.
 fn query_value(units: &[IsccUnit]) -> Result<String> {
     let queried: Vec<String> = units
         .iter()
