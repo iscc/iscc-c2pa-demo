@@ -41,7 +41,8 @@ calculate from the file, without registration. With the app you can:
 1. Inspect an image, document, audio or video file: who signed its Content Credentials, when, whether the
    signature holds, and what its ISCC is.
 2. Sign a copy whose Content Credentials carry the ISCC and, if you choose, whether AI training and
-   data mining is allowed.
+   data mining is allowed, and register its manifest on the ISCC test network, so that copies
+   which lose their Content Credentials can find them again.
 3. Check a signed file, changed or not. The app calculates the ISCC again and compares it with the
    one in the Content Credentials, unit by unit.
 4. Find the Content Credentials of a file that has none, on the ISCC test network: the app sends

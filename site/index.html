@@ -37,7 +37,7 @@
         <span class="label version">{{version_label}}</span>
       </div>
       <figure class="shot">
-        <img src="assets/signed.webp" width="1968" height="1386" alt="The app with a signed image open: the Content Credentials tab says Valid with a verified timestamp, the source is preserved, and every ISCC unit in the soft binding matches the file: Meta-Code, Semantic-Code Image, Content-Code Image and Data-Code at 100 percent, and the Instance-Code exactly.">
+        <img src="assets/signed.webp" width="2278" height="1637" alt="The app with a signed image open: the Content Credentials tab says Valid, signed with a public test key, with a verified timestamp, offers to register the manifest on the ISCC test network, and says the source is preserved, and every ISCC unit in the soft binding matches the file: Meta-Code, Semantic-Code Image, Content-Code Image and Data-Code at 100 percent, and the Instance-Code exactly.">
       </figure>
       <p class="caption">A signed image, opened again. C2PA says <b>Valid</b>, and every ISCC unit in its soft binding
         matches the file. Re-encode it at half size and the C2PA hash breaks, but the Content-Code still matches at
@@ -45,7 +45,7 @@
         where unrelated images score around 50%.</p>
     </section>
 
-    <section class="wrap grid3" aria-label="What you can do">
+    <section class="wrap grid4" aria-label="What you can do">
       <div>
         <h3><span class="step">1</span>Inspect</h3>
         <p>Drop an image, a document, an audio or a video file. See its Content Credentials (who signed it, when, and
@@ -54,12 +54,17 @@
       <div>
         <h3><span class="step">2</span>Sign</h3>
         <p>Save a signed copy. Its Content Credentials carry the ISCC, a timestamp and, if you choose, whether AI
-          training and data mining is allowed.</p>
+          training and data mining is allowed. Register its manifest on the ISCC test network.</p>
       </div>
       <div>
         <h3><span class="step">3</span>Check</h3>
         <p>Open a signed file, changed or not. The app calculates the ISCC again and compares it with the one in the
           Content Credentials, unit by unit.</p>
+      </div>
+      <div>
+        <h3><span class="step">4</span>Recover</h3>
+        <p>Open a copy that lost its Content Credentials. The app finds them on the ISCC test network by the ISCC,
+          checks them against the file and, for the original, puts them back.</p>
       </div>
     </section>
 
@@ -165,10 +170,11 @@
       <p class="label">Good to know</p>
       <h2>What the demo does not do</h2>
       <ul class="notes">
-        <li><b>It does not look up credentials.</b> The app compares ISCCs, but it does not find the credentials of a
-          stripped copy. That needs a lookup service, which C2PA specifies as the Soft Binding Resolution API.</li>
-        <li><b>The built-in certificate is for testing.</b> Anyone can check the ISCC, but only this app trusts the
-          demo signature. Sign with your own certificate and key for anything real.</li>
+        <li><b>Recovery runs on a test network.</b> The app asks the ISCC test store and resolver through the C2PA
+          Soft Binding Resolution API. Their data is for trying things out and may be reset.</li>
+        <li><b>The built-in certificate is for testing.</b> Its private key is public, so no one trusts it, this app
+          included: files signed with it show "Valid, signed with a public test key". Sign with your own
+          certificate and key for anything real.</li>
         <li><b>A matching ISCC shows similar content.</b> It is a strong signal, not proof, that two files hold the
           same or similar content. It says nothing about who made them or who holds the rights.</li>
         <li><b>Video needs ffmpeg, downloaded once.</b> The first time you open a video, the app offers to download
@@ -185,7 +191,8 @@
           that are scans (Latin script and Chinese), so a scanned document gets a Content-Code. Off, every PDF keeps
           the codes iscc-sdk computes. The models are built in.</li>
         <li><b>Your files stay on your computer.</b> Inspecting works offline, once ffmpeg and the models are there.
-          When you sign, only a hash of the signature goes to a timestamp service.</li>
+          When you sign, only a hash of the signature goes to a timestamp service. Registering uploads the manifest
+          (signer, title, description, ISCC, thumbnail), and recovering sends the file's ISCC; never the file.</li>
       </ul>
     </section>
 

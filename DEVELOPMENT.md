@@ -29,9 +29,9 @@ Opening a file shows:
 - the claim thumbnail of the manifest next to the file's own picture, to compare by eye (see
   [Thumbnail](#thumbnail));
 - the CAWG training and data mining assertion, if present;
-- for a file without Content Credentials, a search of the ISCC test network for credentials
-  published for it or for a near-identical copy, each checked here against the file, and Restore,
-  which puts found credentials back into an unsigned original (see
+- for a file without Content Credentials, Recover Content Credentials: a lookup on the ISCC test
+  network for credentials published for it or for a near-identical copy, each checked here
+  against the file, and Restore, which puts found credentials back into an unsigned original (see
   [Search and recovery](#search-and-recovery)).
 
 The Sign tab has three actions behind one split button (see
@@ -383,7 +383,9 @@ there), and the menu shows Sign disabled with that reason. The result's inspecti
 source with its sidecar: valid, source-preserving, every unit equal.
 
 **Register.** `register::register` uploads the manifest store of a file (`register::manifest_store`:
-a `.c2pa` file itself, the store a file embeds, else its sidecar) to the test store with
+a `.c2pa` file itself, the store a file embeds, else its sidecar; the zeros c2pa-rs pads a PDF's
+store with to fill its reserved space are dropped, as the store takes the JUMBF superbox alone, and
+the PDF rebuild pads them back) to the test store with
 `POST /v1/manifests?declare=true`, `Content-Type: application/c2pa`, anonymous, 30 s budget (the
 store declares on the hub during the upload). The answer carries the manifest ID, its address on
 the store and the declaration (`declared` with an ISCC-ID on `staging.iscc.id`, `pending` while the

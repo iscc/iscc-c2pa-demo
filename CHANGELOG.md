@@ -1,60 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-10-14
 
-- Three signing actions behind one split button: **Sign, embed & register** (the default) writes
-  the signed copy and registers its manifest store on the ISCC test network, where the test store
-  keeps it and declares its ISCC, so a copy that loses its Content Credentials can be matched to
-  them; **Sign & embed** writes the signed copy only; **Sign** writes the manifest as a sidecar
-  `<stem>.c2pa` next to the file, which stays as it is, for the formats c2pa-rs leaves untouched
-  (JPEG, PNG, WebP, GIF, TIFF, SVG, TXT, Markdown, WAV, M4A, MP4, MOV, M4V, AVI) and files without
-  embedded Content Credentials. Any file with Content Credentials can be registered from its
-  Content Credentials tab, which shows the store's answer. Registering uploads the manifest store
-  (signer, title, description, ISCC, thumbnail), never the file. Enter in a field of the Sign tab
-  no longer signs. In the CLI: `sign --sidecar` and `register`.
-- Recover Content Credentials: a file without them can be looked up on the ISCC test network (the
-  test store and the resolver, through the C2PA Soft Binding Resolution API). The file's ISCC,
-  which identifies this exact file, is sent with the IP address, by POST and without its
-  Meta-Code; never the file. The card says so before the first search. Each
-  manifest found is fetched and checked against the file: C2PA's verdict for the file as it is
-  (credentials found this way are rejected for it, with both warnings the specification asks
-  for), the app's ISCC check of every `io.iscc.v0` block (labelled as not part of C2PA
-  validation), the signer (a public test key named as such), a verified time only from a trusted
-  timestamp, the claim thumbnail next to the file, and every detail of the manifest, in one
-  expandable card per match. Near-identical matches only (an equal Instance-Code, or a
-  Content-Code at least 92% similar) first, equal Instance-Codes first, then the earliest; then
-  related content, the strongest kind of match first. Each card names its kind of match (Exact,
-  Near-identical, Re-encoded, Adaptation, Corroborated, Title only, Isolated, Incoherent, from
-  iscc-hub's tiered ranking) with the scores it rests on, and opens with one tile per unit;
-  manifests that do not read, hold another manifest, fail their signature or
-  claim several files are left out, with the reason.
-- Restore Content Credentials: for a match with an equal Instance-Code, the app puts the found
-  credentials back into the file and validates the result; when it validates ("Exact match"),
-  Restore writes it as a copy and opens it. For the unsigned original of a signed file in any of
-  the 24 formats that is the signed file again, byte for byte (a PDF only when signing left its
-  title and description as they were). The check passes only when their hash covers the whole
-  file; an MP3 signed by c2pa-rs leaves its ID3 tag out of the hash, so it gets no Restore.
-- Every assertion the app signs is listed as created, so the C2PA specification attributes the
-  ISCC soft binding, the claim thumbnail, the parent ingredient and the CAWG assertions to the
-  signer. Before, c2pa-rs listed all but the actions as gathered.
-- Signed manifests declare the C2PA specification version they follow, 2.4
-  (`specVersion` in `claim_generator_info`), which the C2PA Conformance Program requires from
-  spec 2.4 on. A new check signs a file of every kind of container and evaluates the manifests
-  with the C2PA Conformance Task Force's asset rubric (`scripts/conformance.py`, in CI).
+- Recover Content Credentials: a file without them can be looked up on the ISCC test network,
+  the test store and the resolver, through the C2PA Soft Binding Resolution API. Only the file's
+  ISCC is sent, never the file. Every manifest found is checked against the file and shown in a
+  card of its own: C2PA's verdict, the app's ISCC check unit by unit, the kind of match (Exact,
+  Near-identical, Re-encoded and so on, from iscc-hub's tiered ranking), the signer, the
+  timestamp and the claim thumbnail next to the file.
+- Restore: for an exact match, the app puts the found credentials back into the file and
+  validates the result. For the unsigned original of a signed file this writes the signed file
+  again, byte for byte, in every format but MP3 (c2pa-rs leaves its ID3 tag out of the hash); a
+  PDF only when signing kept its title and description.
+- Three signing actions: **Sign, embed & register** (the default) also registers the manifest
+  on the ISCC test network, so a copy that loses its Content Credentials can find them again;
+  **Sign & embed** writes the signed copy only; **Sign** writes a `.c2pa` sidecar and leaves the
+  file as it is. Registering uploads the manifest (signer, title, description, ISCC, thumbnail),
+  never the file. In the CLI: `sign --sidecar` and `register`.
+- "How was this file made?" asks two plain questions, where the content comes from and what
+  happened to it afterwards, and records the matching IPTC digital source type. The Sign tab
+  folds its sections and keeps its help behind info tips.
+- Closer to the C2PA specification: signed manifests declare spec version 2.4, every assertion
+  the app signs is listed as created and so attributed to the signer, and CI checks signed files
+  against the C2PA Conformance Task Force's asset rubric.
 - The built-in demo certificate is no longer trusted inside the app: its private key is public,
-  so files signed with it show "Valid, signed with a public test key" instead of "Valid, signer
-  on the c2pa-rs test list".
-- Signing no longer deletes a file whose name is a tilde plus the output's name (signing
-  `~photo.jpg` to `photo.jpg` deleted the source): the copy is written in a temporary folder of
-  its own next to the output.
-- "How was this file made?" in the Sign tab asks two plain questions instead of offering one
-  long list of IPTC terms: where the content comes from (photographed, scanned, written or drawn
-  by a person, generated by AI, …, only what fits the file) and what happened to it afterwards
-  (nothing, edited by hand, enhanced automatically, changed with generative AI). The app records
-  the matching IPTC digital source type and shows it with its definition, and says when viewers
-  show it as made with generative AI. "Choose the term yourself" still offers every active IPTC
-  term, `virtualRecording` included, which was missing; "Empty (blank canvas)" is gone, as it
-  does not describe an existing file.
+  so files signed with it show "Valid, signed with a public test key".
+- Signing no longer deletes a source named like the output with a leading tilde (signing
+  `~photo.jpg` to `photo.jpg`).
 
 ## 0.4.0 - 2026-10-08
 

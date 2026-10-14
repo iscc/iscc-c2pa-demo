@@ -74,9 +74,9 @@ main > section.hero { background: none; padding-top: 48px; }
 
 .shot { margin: 0; border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; background: var(--white); box-shadow: 0 24px 48px -32px rgba(33, 37, 41, 0.35); }
 
-.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; }
-.grid3 h3 { padding-top: 16px; border-top: 2px solid var(--ink); }
-.grid3 p { font-size: 16px; line-height: 24px; }
+.grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 32px; }
+.grid4 h3 { padding-top: 16px; border-top: 2px solid var(--ink); }
+.grid4 p { font-size: 16px; line-height: 24px; }
 .step { font: 400 14px/28px var(--font-mono); color: var(--coral); margin-right: 12px; }
 
 /* Watermark versus fingerprint: two cards, the ISCC one marked with the coral rule */
@@ -124,7 +124,8 @@ footer { padding-block: 48px 64px; font-size: 16px; line-height: 24px; }
 
 @media (max-width: 960px) {
   h1 { font-size: 44px; line-height: 52px; }
-  .grid3, .split, .downloads { grid-template-columns: minmax(0, 1fr); }
+  .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .split, .downloads { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 600px) {
@@ -133,6 +134,7 @@ footer { padding-block: 48px 64px; font-size: 16px; line-height: 24px; }
   h2 { font-size: 26px; line-height: 32px; }
   .lead { font-size: 18px; line-height: 28px; }
   .top nav { display: none; }
+  .grid4 { grid-template-columns: minmax(0, 1fr); }
   .kinds { grid-template-columns: minmax(0, 1fr); }
   .units li { grid-template-columns: 1fr; gap: 4px; }
   main > section { padding-block: 48px; }
