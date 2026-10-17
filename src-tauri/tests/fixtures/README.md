@@ -53,8 +53,8 @@ bash audio_fixtures.sh                                        # audio conversion
 bash video_fixtures.sh                                        # video clips and tags (ffmpeg 7+; FFMPEG=path)
 uv run --with iscc-sdk pdf_fixtures.py                        # meta-*.pdf, scan*.pdf, mixed.pdf, rtl.pdf (LibreOffice; SOFFICE=path)
 uv run --with pillow --with numpy synthetic.py                # synthetic-*.png
-uv run --with pillow --with iscc-core expected_iscc.py        # expected_iscc.json
-uv run --with iscc-sdk expected_meta.py                       # expected_meta.json
+uv run --with pillow --with "iscc-core>=1.5" expected_iscc.py  # expected_iscc.json
+uv run --with iscc-sdk --with "iscc-core>=1.5" expected_meta.py  # expected_meta.json
 uv run --with iscc-sdk expected_text.py [DUMP_DIR]            # expected_text.json; Tika's texts to DUMP_DIR
 uv run --with iscc-sdk expected_audio.py                      # expected_audio.json
 uv run --with iscc-sdk expected_video.py                      # expected_video.json, demo.mp4.mp7sig

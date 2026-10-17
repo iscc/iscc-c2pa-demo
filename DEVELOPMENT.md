@@ -67,7 +67,7 @@ another list than the actions that reference it, against the ingredient rule of 
 |---|---|
 | Shell | [Tauri 2](https://tauri.app) (Rust core, system web view) |
 | C2PA | [`c2pa`](https://crates.io/crates/c2pa) 0.91 with Rust native crypto, no OpenSSL |
-| ISCC | [`iscc-lib`](https://crates.io/crates/iscc-lib) 0.6 plus a Pillow-equivalent image normalisation in `src-tauri/src/iscc.rs` |
+| ISCC | [`iscc-lib`](https://crates.io/crates/iscc-lib) 0.7 plus a Pillow-equivalent image normalisation in `src-tauri/src/iscc.rs` |
 | PDF | [pdfium](https://pdfium.googlesource.com/pdfium/) (bblanchon's prebuilt library, bundled with the app) through the raw C API of [`pdfium-render`](https://crates.io/crates/pdfium-render) for text and the first page; [`lopdf`](https://crates.io/crates/lopdf) for docinfo and XMP |
 | EPUB | [`rbook`](https://crates.io/crates/rbook) for metadata, cover and reading order; text extracted with `quick-xml` |
 | Office | [`zip`](https://crates.io/crates/zip) and `quick-xml`; text follows Tika's inclusion rules, Excel number formats rendered as Apache POI does |
@@ -174,8 +174,8 @@ Python ISCC tools, and sign and re-inspect a file of every format. The reference
 
 ```sh
 cd src-tauri/tests/fixtures
-uv run --with pillow --with iscc-core expected_iscc.py   # raster images (Pillow + iscc-core)
-uv run --with iscc-sdk expected_meta.py                  # image and SVG metadata (iscc-sdk)
+uv run --with pillow --with "iscc-core>=1.5" expected_iscc.py   # raster images (Pillow + iscc-core)
+uv run --with iscc-sdk --with "iscc-core>=1.5" expected_meta.py   # image and SVG metadata (iscc-sdk)
 uv run --with iscc-sdk expected_text.py                  # documents (iscc-sdk with Tika)
 uv run --with iscc-sdk expected_audio.py                 # audio (iscc-sdk with fpcalc and TagLib)
 uv run --with iscc-sdk --with pypdfium2==5.14.0b1 expected_pdf.py   # PDF (iscc-sdk, pdfium 8076)

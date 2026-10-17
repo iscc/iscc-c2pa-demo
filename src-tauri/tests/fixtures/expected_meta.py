@@ -1,6 +1,6 @@
 """Generate Meta-Code reference values for the image fixtures with iscc-sdk (exiv2 metadata).
 
-Run: uv run --with iscc-sdk expected_meta.py
+Run: uv run --with iscc-sdk --with "iscc-core>=1.5" expected_meta.py
 
 For every image in this folder it records the name, description, meta and creator that
 iscc-sdk extracts, the file-name fallback title, and the 256-bit Meta-Code that `code_meta`

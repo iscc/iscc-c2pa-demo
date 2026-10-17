@@ -1,6 +1,6 @@
 """Generate reference ISCC units for the fixture images with Pillow and iscc-core.
 
-Run: uv run --with pillow --with iscc-core expected_iscc.py
+Run: uv run --with pillow --with "iscc-core>=1.5" expected_iscc.py
 """
 
 import io

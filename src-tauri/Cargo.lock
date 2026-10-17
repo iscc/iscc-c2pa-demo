@@ -3310,9 +3310,9 @@ dependencies = [
 
 [[package]]
 name = "iscc-lib"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21acd4dfb65037270a4067bcca217a698fcd0f9d324645e73dac69dd84bc09e9"
+checksum = "69ed2c6cee45f36d48f94ca4edb50a9ad14960deb58259bc9a42aa634e67862b"
 dependencies = [
  "blake3",
  "data-encoding",

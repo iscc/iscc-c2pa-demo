@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Content-Code Image follows ISO 24138 for bits beyond 64 (iscc-lib 0.7, as iscc-core 1.5):
+  the 256-bit code the app embeds changes after its first 64 bits. Files signed with earlier
+  versions compare lower on their Content-Code Image; sign them again to refresh it.
+
 ## 0.5.0 - 2026-10-14
 
 - Recover Content Credentials: a file without them can be looked up on the ISCC test network,
