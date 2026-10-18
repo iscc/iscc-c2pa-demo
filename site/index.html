@@ -150,8 +150,10 @@
           <p>Paste it into Terminal. It downloads the latest release, checks its checksum, installs the app and opens
             it, with no security warning.</p>
           <p class="small">Prefer the <a href="{{macos_url}}">disk image</a> ({{macos_size}})? Then macOS says it “could
-            not verify” the app: choose <b>Done</b>, not Move to Bin, and <b>Open Anyway</b> in System Settings →
-            Privacy &amp; Security.</p>
+            not verify” the app: choose <b>Done</b>, not Move to Bin, then <b>Open Anyway</b> in System Settings →
+            Privacy &amp; Security, confirm with your password or Touch ID, start the app again and choose <b>Open</b>.
+            Or clear the download flag in Terminal, which also helps when macOS calls the app “damaged”:
+            <code>xattr -dr com.apple.quarantine "/Applications/ISCC C2PA Demo.app"</code></p>
         </article>
         <article data-os="linux">
           <h3>Linux</h3>
