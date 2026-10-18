@@ -638,7 +638,9 @@ fn cell_value(cell: Cell, book: &Workbook) -> Option<String> {
 fn odf_text(zip: &mut Zip) -> Result<String> {
     let mut out = String::new();
     for index in 0..zip.len() {
-        let name = zip.by_index(index)?.name().to_owned();
+        let Ok(name) = zip.by_index(index)?.name().map(|name| name.into_owned()) else {
+            continue;
+        };
         if name == "content.xml" || name == "styles.xml" {
             out.push_str(&xml_text(&zip_text(zip, &name)?, &ODF));
         }

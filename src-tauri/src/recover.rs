@@ -661,8 +661,9 @@ fn lists_every_member(collection: &Value, zip: &mut File) -> bool {
     let listed = &collection["uris"];
     (0..archive.len()).all(|i| {
         archive.by_index(i).is_ok_and(|member| {
-            let name = member.name();
-            member.is_dir() || name == ZIP_MANIFEST || listed.get(name).is_some()
+            member.name().is_ok_and(|name| {
+                member.is_dir() || name == ZIP_MANIFEST || listed.get(name.as_ref()).is_some()
+            })
         })
     })
 }

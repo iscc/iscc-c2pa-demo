@@ -25,7 +25,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # Pinned: the unstable_* text handlers may change between c2pa releases.
-c2pa = { version = "=0.91.2", default-features = false, features = [
+c2pa = { version = "=0.91.3", default-features = false, features = [
   "rust_native_crypto",
   "file_io",
   "unstable_plain_text",
@@ -47,8 +47,9 @@ rbook = { version = "0.7", default-features = false }
 quick-xml = "0.42.0"
 # The version resvg_py 0.5.0 uses, so SVGs rasterise like in iscc-sdk.
 resvg = "0.48"
-# Same version and features as the copy rbook and c2pa already pull in.
-zip = { version = "8.6", default-features = false, features = [
+# The version c2pa uses, which enables no compression method of its own: this feature is what lets
+# c2pa read deflated EPUB, OOXML and ODF files. rbook keeps a zip 8 with the same feature.
+zip = { version = "9.0.4", default-features = false, features = [
   "deflate-flate2-zlib-rs",
 ] }
 html-escape = "0.2.15"
