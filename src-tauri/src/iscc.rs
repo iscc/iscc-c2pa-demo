@@ -3,7 +3,8 @@
 //!
 //! Image preprocessing mirrors `iscc_sdk.image_normalize` (EXIF transpose, white fill for
 //! transparency, uniform border trim, ITU-R 601-2 luma, bicubic 32x32 resize) so that codes
-//! agree with the Python reference implementation. The same Pillow resize, with the bilinear
+//! agree with the Python reference implementation. JPEGs decode with libjpeg-turbo-rs, a port of
+//! the libjpeg-turbo that Pillow uses, to the same pixels. The same Pillow resize, with the bilinear
 //! filter, prepares the Semantic-Code Image.
 
 use std::io::{Cursor, Read};
@@ -362,9 +363,62 @@ fn weighted_sample(samples: impl Iterator<Item = u8>, weights: &[i32]) -> u8 {
 
 /// Decode an image, honour EXIF orientation and flatten transparency onto white.
 pub fn decode_rgb(bytes: &[u8]) -> Result<RgbImage> {
-    let img = image::load_from_memory(bytes)?;
+    let img = match decode_jpeg(bytes) {
+        Some(rgb) => DynamicImage::ImageRgb8(rgb),
+        None => image::load_from_memory(bytes)?,
+    };
     let img = exif_transpose(img, bytes);
     Ok(fill_transparency(&img))
+}
+
+/// Memory a JPEG may take to decode: the `image` crate's default allocation limit.
+const JPEG_MAX_MEMORY: u64 = 512 * 1024 * 1024;
+
+/// Decode a JPEG to the pixels Pillow's libjpeg-turbo gives. None for any other format, for a
+/// JPEG the decoder refuses, such as one with stray bytes between segments (libjpeg-turbo skips
+/// them with a warning), and for a header it would misread (`reads_like_libjpeg`); the `image`
+/// crate then decodes it, a few pixels one shade off.
+fn decode_jpeg(bytes: &[u8]) -> Option<RgbImage> {
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let limits = libjpeg_turbo_rs::DecodeLimits {
+        max_memory: Some(JPEG_MAX_MEMORY),
+        ..Default::default()
+    };
+    let mut decoder = libjpeg_turbo_rs::Decoder::new_with_limits(bytes, limits).ok()?;
+    if !reads_like_libjpeg(&decoder) {
+        return None;
+    }
+    decoder.set_output_format(libjpeg_turbo_rs::PixelFormat::Rgb);
+    let img = decoder.decode_image().ok()?;
+    RgbImage::from_raw(
+        img.width.try_into().ok()?,
+        img.height.try_into().ok()?,
+        img.data,
+    )
+}
+
+/// Whether libjpeg-turbo-rs 0.8 decodes this header as libjpeg-turbo does. Not for CMYK or YCCK
+/// whose components differ in sampling: it panics on those, and the release build aborts on a
+/// panic. Not for components named R, G, B without a JFIF or Adobe marker: libjpeg-turbo reads
+/// them as RGB, the port as YCbCr.
+fn reads_like_libjpeg(decoder: &libjpeg_turbo_rs::Decoder) -> bool {
+    let components = &decoder.header().components;
+    let sampling =
+        |c: &libjpeg_turbo_rs::ComponentInfo| (c.horizontal_sampling, c.vertical_sampling);
+    match components.len() {
+        4 => components
+            .iter()
+            .all(|c| sampling(c) == sampling(&components[0])),
+        3 => {
+            let named_rgb = components.iter().map(|c| c.id).eq(*b"RGB");
+            !named_rgb
+                || decoder.saw_jfif_marker()
+                || decoder.jpeg_color_space() == libjpeg_turbo_rs::ColorSpace::Rgb
+        }
+        _ => true,
+    }
 }
 
 /// Apply the EXIF Orientation tag the way `PIL.ImageOps.exif_transpose` does.
@@ -615,8 +669,7 @@ mod tests {
             ..Default::default()
         };
         for (file, codes) in expected.as_object().unwrap() {
-            let path = format!("{}/tests/fixtures/{file}", env!("CARGO_MANIFEST_DIR"));
-            let bytes = std::fs::read(path).unwrap();
+            let bytes = std::fs::read(fixture(file)).unwrap();
             let rgb = decode_rgb(&bytes).unwrap();
             let bitstream = bitstream_units(&bytes).unwrap();
             let units = units_for(
@@ -634,21 +687,104 @@ mod tests {
                 .iter()
                 .map(|v| v.as_str().unwrap())
                 .collect();
-            // Deviation: our JPEG decoder is not Pillow's libjpeg-turbo. A few pixels off by one
-            // flip up to 2 bits of the last 64, which come from the high frequencies; the 48x32
-            // `meta-*.jpg` with 4:2:0 chroma land about 16 bits off.
-            let floor = match file.as_str() {
-                f if f.starts_with("meta-") && f.ends_with(".jpg") => 0.9,
-                f if f.ends_with(".jpg") => 0.99,
-                _ => 1.0,
-            };
-            let content = similarity(got[0], want[0]).unwrap().unwrap();
-            assert!(
-                content >= floor,
-                "{file}: Content-Code similarity {content}"
-            );
-            assert_eq!(got[1..], want[1..], "{file}");
+            assert_eq!(got, want, "{file}");
         }
+    }
+
+    fn fixture(name: &str) -> String {
+        format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// Offset of the first JPEG header segment with `marker`, walking the segments from SOI.
+    fn segment(bytes: &[u8], marker: u8) -> usize {
+        let mut pos = 2;
+        while bytes[pos + 1] != marker {
+            pos += 2 + usize::from(u16::from_be_bytes([bytes[pos + 2], bytes[pos + 3]]));
+        }
+        pos
+    }
+
+    /// `bytes` with two zero bytes before its quantisation table, as in some camera files.
+    fn with_stray_bytes(bytes: &[u8]) -> Vec<u8> {
+        let pos = segment(bytes, 0xDB);
+        [&bytes[..pos], &[0, 0], &bytes[pos..]].concat()
+    }
+
+    #[test]
+    fn a_jpeg_the_decoder_refuses_falls_back_to_the_image_crate() {
+        let bytes = std::fs::read(fixture("IMG_0003.jpg")).unwrap();
+        let stray = with_stray_bytes(&bytes);
+        assert!(
+            decode_jpeg(&stray).is_none(),
+            "refused; once accepted, drop this test"
+        );
+        let rgb = decode_rgb(&stray).unwrap();
+        assert_eq!(rgb.dimensions(), decode_rgb(&bytes).unwrap().dimensions());
+    }
+
+    #[test]
+    fn subsampled_cmyk_falls_back_to_the_image_crate() {
+        let bytes = std::fs::read(fixture("jpeg/cmyk-420.jpg")).unwrap();
+        assert!(decode_jpeg(&bytes).is_none());
+        assert_eq!(decode_rgb(&bytes).unwrap().dimensions(), (17, 23));
+    }
+
+    #[test]
+    fn rgb_named_components_without_markers_decode_as_rgb() {
+        let bytes = std::fs::read(fixture("jpeg/rgb-no-marker.jpg")).unwrap();
+        assert!(decode_jpeg(&bytes).is_none());
+        let rgb = decode_rgb(&bytes).unwrap();
+        assert!(
+            rgb.pixels().all(|p| p.0 == [255, 0, 0]),
+            "{:?}",
+            rgb.get_pixel(0, 0)
+        );
+    }
+
+    #[test]
+    fn a_jpeg_header_asking_for_gigabytes_is_refused() {
+        let mut bytes = std::fs::read(fixture("CA.jpg")).unwrap();
+        let sof = segment(&bytes, 0xC0);
+        // 40000 x 40000: under the decoder's own pixel limit, far over JPEG_MAX_MEMORY.
+        bytes[sof + 5..sof + 9].copy_from_slice(&[0x9C, 0x40, 0x9C, 0x40]);
+        assert!(decode_jpeg(&bytes).is_none());
+        assert!(decode_rgb(&bytes).is_err());
+    }
+
+    /// Every JPEG of `JPEG_CORPUS_DIR` decodes to the pixels Pillow gives, as recorded there by
+    /// `expected_jpeg.py`; files the decoder refuses are listed, not failed.
+    #[test]
+    #[ignore = "needs a local corpus; set JPEG_CORPUS_DIR and run with --ignored"]
+    fn jpeg_corpus_decodes_like_pillow() {
+        let dir =
+            std::path::PathBuf::from(std::env::var("JPEG_CORPUS_DIR").expect("JPEG_CORPUS_DIR"));
+        let json = std::fs::read_to_string(dir.join("expected_jpeg.json")).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let files = expected
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| !name.starts_with('_'));
+        let (mut refused, mut wrong, mut count) = (Vec::new(), Vec::new(), 0);
+        for (name, want) in files {
+            count += 1;
+            match decode_jpeg(&std::fs::read(dir.join(name)).unwrap()) {
+                None => refused.push(name.as_str()),
+                Some(rgb) if blake3::hash(rgb.as_raw()).to_hex().as_str() != want["rgb_blake3"] => {
+                    wrong.push(name.as_str())
+                }
+                Some(_) => {}
+            }
+        }
+        println!(
+            "{count} JPEGs, {} refused (the image crate decodes them): {refused:?}",
+            refused.len()
+        );
+        assert!(
+            wrong.is_empty(),
+            "{} not as Pillow decodes them: {wrong:?}",
+            wrong.len()
+        );
     }
 
     /// A reader that hands out at most 7777 bytes per read, so chunk borders fall anywhere.

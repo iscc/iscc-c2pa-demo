@@ -5,6 +5,9 @@
 - Content-Code Image follows ISO 24138 for bits beyond 64 (iscc-lib 0.7, as iscc-core 1.5):
   the 256-bit code the app embeds changes after its first 64 bits. Files signed with earlier
   versions compare lower on their Content-Code Image; sign them again to refresh it.
+- JPEGs decode to exactly the pixels Pillow gives (libjpeg-turbo-rs, a pure Rust port of
+  libjpeg-turbo), so their Content-Code Image and Semantic-Code Image equal those of iscc-sdk
+  and iscc-sci. Before, a few pixels came out one shade off, which moved a few bits.
 
 ## 0.5.0 - 2026-10-14
 

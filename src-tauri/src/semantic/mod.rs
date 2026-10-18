@@ -385,27 +385,12 @@ mod tests {
             && blake3::hash(&bytes).to_hex().as_str() == want["tensor_blake3"].as_str().unwrap()
     }
 
-    /// Whether `name` is a JPEG: the image crate's decoder is not libjpeg-turbo, which Pillow
-    /// uses, so its pixels differ slightly (see [`is_gradient_jpeg`]).
-    fn is_jpeg(name: &str) -> bool {
-        name.ends_with(".jpg")
-    }
-
-    /// The `meta-*.jpg` fixtures: one 48x32 colour gradient with 4:2:0 chroma under different
-    /// metadata. On a picture without content many components of the embedding sit near zero,
-    /// so the decoder's few differing pixels move 58 bits; fed Pillow's pixels, the model is 0
-    /// bits off. Photos decoded by both decoders are 0 to 3 bits apart.
-    fn is_gradient_jpeg(name: &str) -> bool {
-        name.starts_with("meta-") && is_jpeg(name)
-    }
-
     #[test]
     fn image_input_equals_iscc_sci_preprocessing() {
         let reference = reference();
         let images = reference["images"].as_object().unwrap();
-        let exact: Vec<&String> = images.keys().filter(|n| !is_jpeg(n)).collect();
-        assert!(exact.len() >= 8, "PNG, GIF, TIFF and WebP fixtures");
-        for name in exact {
+        assert!(images.len() >= 16, "JPEG, PNG, GIF, TIFF and WebP fixtures");
+        for name in images.keys() {
             assert!(
                 same_input(name, &images[name]),
                 "{name}: model input differs from iscc-sci's"
@@ -420,9 +405,6 @@ mod tests {
         let never = |_: Option<f64>| true;
         let mut report = Vec::new();
         for (name, want) in reference["images"].as_object().unwrap() {
-            if is_gradient_jpeg(name) {
-                continue;
-            }
             let rgb = iscc::decode_rgb(&std::fs::read(fixture(name)).unwrap()).unwrap();
             let got = unit(Content::Image(&rgb), &never).unwrap();
             report.push((

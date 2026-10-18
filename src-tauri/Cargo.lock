@@ -3283,6 +3283,7 @@ dependencies = [
  "image",
  "iscc-lib",
  "kamadak-exif",
+ "libjpeg-turbo-rs",
  "lofty",
  "lopdf",
  "pdfium-render",
@@ -3622,6 +3623,15 @@ checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
 dependencies = [
  "arbitrary",
  "cc",
+]
+
+[[package]]
+name = "libjpeg-turbo-rs"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0d8a1c652b51dbb85c3c3164b1da63b88dafcc3fc12ecceb52f7577738c21f1"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]

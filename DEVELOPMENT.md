@@ -68,6 +68,7 @@ another list than the actions that reference it, against the ingredient rule of 
 | Shell | [Tauri 2](https://tauri.app) (Rust core, system web view) |
 | C2PA | [`c2pa`](https://crates.io/crates/c2pa) 0.91 with Rust native crypto, no OpenSSL |
 | ISCC | [`iscc-lib`](https://crates.io/crates/iscc-lib) 0.7 plus a Pillow-equivalent image normalisation in `src-tauri/src/iscc.rs` |
+| JPEG | [`libjpeg-turbo-rs`](https://crates.io/crates/libjpeg-turbo-rs), a pure Rust port of libjpeg-turbo, so JPEGs decode to the pixels Pillow gives; the `image` crate for every other raster format, for JPEGs that crate refuses and for the two layouts it misreads (CMYK with subsampled components, RGB named only by its component IDs) |
 | PDF | [pdfium](https://pdfium.googlesource.com/pdfium/) (bblanchon's prebuilt library, bundled with the app) through the raw C API of [`pdfium-render`](https://crates.io/crates/pdfium-render) for text and the first page; [`lopdf`](https://crates.io/crates/lopdf) for docinfo and XMP |
 | EPUB | [`rbook`](https://crates.io/crates/rbook) for metadata, cover and reading order; text extracted with `quick-xml` |
 | Office | [`zip`](https://crates.io/crates/zip) and `quick-xml`; text follows Tika's inclusion rules, Excel number formats rendered as Apache POI does |
@@ -187,6 +188,12 @@ The video tests run ffmpeg and the Semantic-Code tests the semantic models; both
 on the first run (see [Video](#video) and [Semantic-Codes](#semantic-codes)).
 `expected_semantic.py` reads the texts our extractors produce from `DUMP_DIR`, written by
 `DUMP_TEXT_DIR=DUMP_DIR cargo test --lib dump_texts -- --ignored`.
+
+`expected_jpeg.py DIR` writes the hash of the pixels Pillow decodes for every JPEG in a folder
+of your own (`uv run --with pillow --with blake3`), and `JPEG_CORPUS_DIR=DIR cargo test --lib
+jpeg_corpus -- --ignored --nocapture` decodes them with the app. Run it before updating
+`libjpeg-turbo-rs`; it lists the files the decoder refuses (they fall back to the `image` crate)
+and fails on any file decoded to other pixels.
 
 `expected_pdf.py DIR` writes references for every PDF below a folder of your own, and
 `PDF_CORPUS_DIR=DIR cargo test --lib pdf_corpus -- --ignored` compares the app with them. Run it
@@ -849,11 +856,9 @@ bits, and CI checks that on Windows, Linux and macOS (NEON).
 **Image.** As iscc-sci 0.3.0: the decoded picture (EXIF-rotated, transparency on white, the same
 `AssetContent::Image` the Content-Code uses), its uniform border trimmed, squashed to 512x512 with
 Pillow's bilinear filter (`iscc::resize_pillow`, bit for bit), each sample `(x / 255 - 0.5) / 0.5`
-in f32. The model input equals iscc-sci's exactly for every PNG, GIF, TIFF and WebP fixture.
-JPEGs decode a little differently from Pillow's libjpeg-turbo; photos still come out 0 to 3 bits
-apart, but the `meta-*.jpg` fixtures, a 48x32 colour gradient without content, come out 58 bits
-apart, and the tests leave them out. SVGs get the unit of their rendered picture; covers, cover
-art and video frames get none.
+in f32. The model input equals iscc-sci's exactly for every raster fixture, JPEGs included,
+because JPEGs decode to Pillow's pixels (see [Stack](#stack)). SVGs get the unit of their
+rendered picture; covers, cover art and video frames get none.
 
 **Text.** As iscc-sct 0.2.2: the cleaned text (whitespace kept, because it moves chunk
 boundaries), split into chunks of at most 127 tokens overlapping by 48, with text-splitter 0.33,
