@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Paste to open: a file copied in the file manager opens as if dropped, and a picture on the
+  clipboard (a screenshot, an image copied in a web browser) is saved into
+  `Pictures/ISCC C2PA Demo` as `pasted-<date>-<time>.png` and opened from there. On Windows an
+  image dragged from a web browser opens too: the browser hands over the file it downloaded,
+  Content Credentials included, saved into the same folder under the name the browser gives it.
 - Content-Code Image follows ISO 24138 for bits beyond 64 (iscc-lib 0.7, as iscc-core 1.5):
   the 256-bit code the app embeds changes after its first 64 bits. Files signed with earlier
   versions compare lower on their Content-Code Image; sign them again to refresh it.

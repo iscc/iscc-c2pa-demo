@@ -3293,6 +3293,7 @@ dependencies = [
  "lofty",
  "lopdf",
  "pdfium-render",
+ "percent-encoding",
  "quick-xml 0.42.0",
  "rbook",
  "resvg",
@@ -3312,6 +3313,8 @@ dependencies = [
  "text-splitter",
  "tokenizers",
  "ureq",
+ "webview2-com",
+ "windows-core 0.61.2",
  "zip 9.0.5",
 ]
 

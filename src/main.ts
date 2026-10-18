@@ -1,5 +1,6 @@
 // Application state, rendering and event wiring for the ISCC C2PA Demo.
 
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -24,6 +25,7 @@ import {
   type SemanticKind,
   type Stripped,
   type Switches,
+  saveDropped,
   setOcr,
   setSemantic,
   signAsset,
@@ -32,6 +34,7 @@ import {
   type UnitSlug,
 } from "./api";
 import logoUrl from "./assets/iscc-logo-black-coral.svg";
+import { pastedName } from "./dropped";
 import { type SourceChoice, toggleList } from "./sourcetype";
 import { copyText, esc, json, listJoin, splitPath } from "./util";
 import { type Analysis, assetCard, codeCard, patchPending, shownUnits, unitList } from "./views/asset";
@@ -263,6 +266,8 @@ function workspace(inspection: Inspection): string {
 /** Sequence numbers of the latest load and signing; results of older ones are discarded. */
 let loadSeq = 0;
 let signSeq = 0;
+/** Moves on with every dropped or pasted file that has to be saved first (openDropped), so the latest one wins. */
+let importSeq = 0;
 
 /** What each stage of a signing is called on its progress card. */
 const STAGE_LABEL: Partial<Record<Progress["stage"], string>> = {
@@ -481,15 +486,22 @@ interface LoadOptions {
  * replaces whatever load or signing still runs. Nothing opens while a tool downloads or a switch in Settings is
  * being changed, since opening cancels the tasks that run. Opening closes the ffmpeg offer and, unless kept,
  * Settings: a switch flipped while the file is read would act on the file open before it. */
+/** Why the file at `path` cannot be opened, from its extension; null when the app reads it. */
+function unsupported(path: string): string | null {
+  const ext = splitPath(path).ext.slice(1).toLowerCase();
+  if (!state.info || state.info.extensions.includes(ext)) return null;
+  const kinds = listJoin(state.info.kinds.map((k) => `${k.label.toLowerCase()} (${k.extensions.join(", ")})`));
+  return `Unsupported file type ".${ext}". Supported are ${kinds}.`;
+}
+
 async function load(path: string, { offerFfmpeg = true, keepSettings = false }: LoadOptions = {}) {
   if (state.tool?.download || state.settings?.operation) return;
   state.tool = null;
   state.stripAsk = false;
   if (!keepSettings) state.settings = null;
-  const ext = splitPath(path).ext.slice(1).toLowerCase();
-  if (state.info && !state.info.extensions.includes(ext)) {
-    const kinds = listJoin(state.info.kinds.map((k) => `${k.label.toLowerCase()} (${k.extensions.join(", ")})`));
-    state.error = `Unsupported file type ".${ext}". Supported are ${kinds}.`;
+  const refused = unsupported(path);
+  if (refused) {
+    state.error = refused;
     render();
     return;
   }
@@ -1060,29 +1072,104 @@ function wireEvents() {
     else if (ev.key === "Escape" && state.stripAsk) cancelStrip();
     else if (ev.key === "Escape" && state.signMenu) toggleSignMenu();
   });
-
-  // Block the web view's default file navigation; Tauri delivers paths through its own event.
-  window.addEventListener("dragover", (e) => e.preventDefault());
-  window.addEventListener("drop", (e) => e.preventDefault());
 }
 
+/** Show or hide the drop overlay in place. */
+function setDragging(on: boolean) {
+  state.dragging = on;
+  app.querySelector(".dropoverlay")?.classList.toggle("active", on);
+}
+
+type WebView2 = { postMessageWithAdditionalObjects(message: string, objects: ArrayLike<unknown>): void };
+
+/** Ask WebView2 (Windows) for the path of `file`, which the dropped-path event brings; false without WebView2 and
+ * for a file that is not on disk, which WebView2 refuses. */
+function postForPath(file: File): boolean {
+  const webview = (window as { chrome?: { webview?: WebView2 } }).chrome?.webview;
+  if (!webview) return false;
+  try {
+    webview.postMessageWithAdditionalObjects("dropped-file", [file]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Open a file the page received by drop or paste: a file on disk by its path, anything else (an image dragged from a
+ * web browser, a pasted picture) saved into the app's folder among the pictures first. */
+async function openDropped(file: File, pasted: boolean) {
+  if (state.tool?.download || state.settings?.operation) return;
+  if (postForPath(file)) return;
+  const name = pasted ? pastedName(file.name, new Date()) : file.name;
+  const refused = unsupported(name);
+  if (refused) {
+    state.error = refused;
+    return render();
+  }
+  // Reading and saving take time: a later drop or paste, a file opened or Close in the meantime wins, and this one
+  // is dropped, its error too.
+  const seq = ++importSeq;
+  const loads = loadSeq;
+  const current = () => seq === importSeq && loads === loadSeq;
+  try {
+    const path = await saveDropped(name, new Uint8Array(await file.arrayBuffer()));
+    if (current()) await load(path);
+  } catch (e) {
+    if (!current()) return;
+    state.error = `The file could not be saved: ${e}`;
+    render();
+  }
+}
+
+/** True when a paste goes into a text field, where it stays the field's own. */
+function editable(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target as HTMLElement)?.isContentEditable;
+}
+
+/** Drops and pastes. On Windows Tauri's drop handler is off (lib.rs `main_window`) and the page takes every drop
+ * itself, through the DOM events; elsewhere Tauri's handler delivers paths and the DOM sees no file drops. */
 async function wireDragDrop() {
   await getCurrentWebview().onDragDropEvent((event) => {
     const payload = event.payload;
     if (payload.type === "enter" || payload.type === "over") {
-      if (!state.dragging) {
-        state.dragging = true;
-        app.querySelector(".dropoverlay")?.classList.add("active");
-      }
+      if (!state.dragging) setDragging(true);
     } else if (payload.type === "leave") {
-      state.dragging = false;
-      app.querySelector(".dropoverlay")?.classList.remove("active");
+      setDragging(false);
     } else if (payload.type === "drop") {
-      state.dragging = false;
+      setDragging(false);
       const first = payload.paths[0];
       if (first) void load(first);
-      else render();
     }
+  });
+  await listen<string>("dropped-path", (event) => void load(event.payload));
+  // The overlay follows enter and leave by count: both fire for every element the pointer crosses.
+  let depth = 0;
+  window.addEventListener("dragenter", (e) => {
+    if (!e.dataTransfer?.types.includes("Files")) return;
+    depth++;
+    setDragging(true);
+  });
+  window.addEventListener("dragleave", () => {
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) setDragging(false);
+  });
+  // Without preventDefault the web view refuses the drop, or navigates to the dropped file.
+  window.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+  window.addEventListener("drop", (e) => {
+    e.preventDefault();
+    depth = 0;
+    setDragging(false);
+    const file = e.dataTransfer?.files[0];
+    if (file) void openDropped(file, false);
+  });
+  window.addEventListener("paste", (e) => {
+    const file = e.clipboardData?.files[0];
+    if (!file || editable(e.target)) return;
+    e.preventDefault();
+    void openDropped(file, true);
   });
 }
 

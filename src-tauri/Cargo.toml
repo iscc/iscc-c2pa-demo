@@ -88,6 +88,8 @@ lopdf = "0.45.0"
 # tree already (c2pa, Tauri).
 blake3 = "1.8"
 dirs = "6"
+# Names of files saved from a drop or a paste come percent-encoded in a request header (in the tree).
+percent-encoding = "2"
 tempfile = "3"
 # Semantic-Codes: the iscc-sci and iscc-sct models (downloaded on first use, tools.rs) run in rten,
 # pure Rust and bit-exact with onnxruntime. The tokenizer and the chunking are those iscc-sct
@@ -104,6 +106,12 @@ tokenizers = { version = "=0.23.2", default-features = false, features = [
   "unstable_wasm",
 ] }
 text-splitter = "=0.33.0"
+
+# Real paths of files dropped on or pasted into the page (webview_files.rs): WebView2's
+# postMessageWithAdditionalObjects. Both are in the tree already (wry), at wry's versions.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [features]
 # The c2pa-iscc command-line tool. Off by default, because `tauri build` puts every binary whose

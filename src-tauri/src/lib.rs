@@ -4,6 +4,7 @@ pub mod asset;
 pub mod audio;
 pub mod audio_tags;
 pub mod context;
+pub mod dropped;
 pub mod epub;
 pub mod formats;
 pub mod inspect;
@@ -31,6 +32,8 @@ pub mod thumbnail;
 pub mod timestamp;
 pub mod tools;
 pub mod video;
+#[cfg(windows)]
+mod webview_files;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -91,6 +94,32 @@ fn app_info() -> AppInfo {
         tsa_presets: &timestamp::TSA_PRESETS,
         tsa_timeout_secs: timestamp::TIMEOUT.as_secs(),
     }
+}
+
+/// Save a file that reached the page without a path (an image dragged from a web browser, a
+/// picture pasted from the clipboard) into [`dropped::folder`] and return its path. The bytes
+/// are the raw request body, the suggested name the percent-encoded `name` header.
+#[tauri::command]
+async fn save_dropped(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    let bytes = bytes.clone();
+    let name = request
+        .headers()
+        .get("name")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            percent_encoding::percent_decode_str(v)
+                .decode_utf8_lossy()
+                .into_owned()
+        })
+        .unwrap_or_default();
+    let dir = dropped::folder().ok_or("no folder for pictures found")?;
+    tauri::async_runtime::spawn_blocking(move || dropped::save(&dir, &name, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 /// File path given on the command line (e.g. via "Open with"), consumed once by the UI at startup.
@@ -407,8 +436,23 @@ fn fit_to_screen(window: &WebviewWindow, min: Option<LogicalSize<f64>>) -> tauri
     window.center()
 }
 
-/// Load the settings, point the PDF reader at the bundled pdfium, fit the main window (created
-/// hidden) to the screen, then show it.
+/// Create the main window from its configuration (`create: false`). On Windows it goes without
+/// Tauri's drop handler, so the page receives every drop itself (`webview_files`).
+fn main_window(app: &tauri::App) -> tauri::Result<Option<WebviewWindow>> {
+    let Some(config) = app.config().app.windows.first().cloned() else {
+        return Ok(None);
+    };
+    let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?;
+    #[cfg(windows)]
+    let builder = builder.disable_drag_drop_handler();
+    let window = builder.build()?;
+    #[cfg(windows)]
+    webview_files::watch(&window);
+    Ok(Some(window))
+}
+
+/// Load the settings, point the PDF reader at the bundled pdfium, create the main window (hidden),
+/// fit it to the screen, then show it.
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let loaded = settings::path()
         .map(|path| settings::load_from(&path))
@@ -417,7 +461,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(resources) = app.path().resource_dir() {
         pdf::set_library_dir(resources.join("pdfium"));
     }
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = main_window(app)? else {
         return Ok(());
     };
     let min = app
@@ -441,6 +485,7 @@ pub fn run() {
         .setup(setup)
         .invoke_handler(tauri::generate_handler![
             app_info,
+            save_dropped,
             initial_path,
             meta_code,
             inspect_asset,

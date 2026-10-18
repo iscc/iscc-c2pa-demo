@@ -782,6 +782,34 @@ source-preserving. MKV, WebM, MPEG-TS and OGV stay out: c2pa-rs has no handler f
 on a machine downloads it; they never skip. CI caches the folder per OS and installs Rosetta 2
 on the arm64 macOS runner.
 
+## Drop and paste
+
+Everything the app does starts from a path: the signed copy goes next to the file. A file reaches
+the app by the Open file dialog, a drop, Ctrl+V (Cmd+V) or the command line.
+
+- **Windows.** Tauri's drop handler only takes drags that carry file paths and turns everything
+  else away, an image dragged from a web browser included (Chrome and Edge offer it as a virtual
+  file). So `main_window` in `lib.rs` builds the window without it (`create: false` in
+  `tauri.conf.json`), and the page takes drops and pastes through the DOM events (`wireDragDrop`
+  in `src/main.ts`). A DOM `File` has no path; the page posts it with WebView2's
+  `postMessageWithAdditionalObjects`, `webview_files.rs` reads its path and sends it back as the
+  `dropped-path` event, and the file opens as usual. WebView2 refuses files that are not on disk:
+  an image dragged from a browser (the bytes the browser downloaded, credentials and metadata
+  intact) or a picture on the clipboard. Those bytes go to `save_dropped`, which writes them into
+  `Pictures/ISCC C2PA Demo` (`dropped::folder`, from the `dirs` crate) under a cleaned name that
+  never overwrites (`-2`, `-3`, ...), and that file opens. A pasted picture is always called
+  `image.png`, so it gets `pasted-<date>-<time>.png` (`src/dropped.ts`). Tauri's IPC handler also
+  sees the posted message and logs a harmless JSON error in the web view's console.
+- **macOS and Linux.** Tauri's drop handler stays, so file drops keep their paths, and dragging
+  from a web browser is turned away as before (on macOS wry gives the web view nothing either).
+  Paste goes through the DOM: there is no WebView2 to give a path, so even a copied file is saved
+  into the pictures folder first.
+
+"Copy image" in a browser puts re-encoded pixels on the clipboard (no metadata, no manifest),
+while a drag hands over the original file: a ChatGPT image dragged in shows OpenAI's Content
+Credentials, the same image copied and pasted has none. The pixels survive: `CA.jpg` copied as a
+picture and pasted has the Content-Code Image and Semantic-Code Image of the file itself.
+
 ## Shown at once
 
 Opening a file shows it at once and computes the slow units afterwards, in the background

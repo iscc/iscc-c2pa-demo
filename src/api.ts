@@ -410,6 +410,10 @@ export const appInfo = () => invoke<AppInfo>("app_info");
 
 export const initialPath = () => invoke<string | null>("initial_path");
 
+/** Save the bytes of a file that came without a path (dragged from a web browser, pasted) under `name`; its path. */
+export const saveDropped = (name: string, bytes: Uint8Array) =>
+  invoke<string>("save_dropped", bytes, { headers: { name: encodeURIComponent(name) } });
+
 /** Inspect `path`: at a glance, its slow units pending, or in `full`, reporting their progress. */
 export const inspectAsset = (path: string, full: boolean, onProgress: (p: Progress) => void) =>
   invoke<Inspection>("inspect_asset", { path, full, onProgress: channel(onProgress) });
