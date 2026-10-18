@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-10-18
 
-- Paste to open: a file copied in the file manager opens as if dropped, and a picture on the
-  clipboard (a screenshot, an image copied in a web browser) is saved into
-  `Pictures/ISCC C2PA Demo` as `pasted-<date>-<time>.png` and opened from there. On Windows an
-  image dragged from a web browser opens too: the browser hands over the file it downloaded,
-  Content Credentials included, saved into the same folder under the name the browser gives it.
+- Paste to open: Ctrl+V (Cmd+V on macOS) opens a file copied in the file manager as if it were
+  dropped. A picture on the clipboard, such as a screenshot or an image copied in a web browser,
+  is saved into `Pictures/ISCC C2PA Demo` as `pasted-<date>-<time>.png` and opened from there.
+  A copied picture loses its metadata and Content Credentials on the way, which makes it a case
+  for Recover Content Credentials.
+- On Windows, an image dragged from a web browser opens too: the browser hands over the file it
+  downloaded, Content Credentials included, which is saved into the same folder under the name
+  the browser gives it.
 - Content-Code Image follows ISO 24138 for bits beyond 64 (iscc-lib 0.7, as iscc-core 1.5):
   the 256-bit code the app embeds changes after its first 64 bits. Files signed with earlier
   versions compare lower on their Content-Code Image; sign them again to refresh it.
