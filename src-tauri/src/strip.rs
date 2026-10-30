@@ -90,7 +90,7 @@ fn write_stripped(path: &Path, format: &Format, reader: &Reader, copy: &Path) ->
     if RIFF_MIMES.contains(&format.mime) {
         let ranges = inspect::data_hash_exclusions(reader)
             .ok_or_else(|| anyhow!("its hard binding is no data hash"))?;
-        write_view(path, &ranges, copy)?;
+        write_view(path, &with_riff_pad(ranges, file_len(path)?), copy)?;
         return shrink_riff(copy, file_len(path)? - file_len(copy)?);
     }
     std::fs::copy(path, copy).with_context(|| format!("cannot write {}", copy.display()))?;
@@ -100,6 +100,18 @@ fn write_stripped(path: &Path, format: &Format, reader: &Reader, copy: &Path) ->
 
 /// Formats c2pa-rs embeds into a RIFF chunk.
 const RIFF_MIMES: [&str; 3] = [formats::WEBP, formats::WAV, formats::AVI];
+
+/// The `(start, length)` exclusions of a RIFF file of `len` bytes, each of odd length extended by
+/// the pad byte RIFF puts after a chunk of odd length (c2pa-rs 0.91 leaves it out of the range).
+fn with_riff_pad(exclusions: Vec<(u64, u64)>, len: u64) -> Vec<(u64, u64)> {
+    exclusions
+        .into_iter()
+        .map(|(start, n)| match n % 2 == 1 && start + n < len {
+            true => (start, n + 1),
+            false => (start, n),
+        })
+        .collect()
+}
 
 /// Write the file at `path` without the `(start, length)` ranges `exclusions` to `copy`.
 fn write_view(path: &Path, exclusions: &[(u64, u64)], copy: &Path) -> Result<()> {
@@ -194,7 +206,20 @@ mod tests {
         "video/mp4",
         "video/quicktime",
         "video/x-m4v",
+        formats::AVI,
     ];
+
+    #[test]
+    fn odd_riff_exclusions_take_their_pad_byte() {
+        // demo.wav signed: a chunk of 4771 bytes at the end, then its pad byte.
+        assert_eq!(
+            with_riff_pad(vec![(220636, 4771)], 225408),
+            [(220636, 4772)]
+        );
+        assert_eq!(with_riff_pad(vec![(644, 5848)], 6492), [(644, 5848)]);
+        // A file cut right after the chunk has no pad byte to take.
+        assert_eq!(with_riff_pad(vec![(10, 5)], 15), [(10, 5)]);
+    }
 
     #[test]
     fn stripping_leaves_no_credentials_and_says_when_it_gives_back_the_signed_file() {
