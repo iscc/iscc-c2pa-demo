@@ -99,7 +99,13 @@ pub const AVI: &str = "video/x-msvideo";
 /// Every supported format. c2pa-rs 0.91 embeds manifests into all of them; PDF needs its `pdf`
 /// feature, TXT and Markdown its `unstable_plain_text` and `unstable_structured_text` features.
 pub const FORMATS: &[Format] = &[
-    signable(&["jpg", "jpeg"], JPEG, Kind::Image, "JPEG", "JPEG"),
+    signable(
+        &["jpg", "jpeg", "jfif", "jpe", "jif"],
+        JPEG,
+        Kind::Image,
+        "JPEG",
+        "JPEG",
+    ),
     signable(&["png"], PNG, Kind::Image, "PNG", "PNG"),
     signable(&["webp"], WEBP, Kind::Image, "WebP", "WebP"),
     signable(&["gif"], GIF, Kind::Image, "GIF", "GIF"),

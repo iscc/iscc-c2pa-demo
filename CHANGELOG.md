@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- JPEGs named `.jfif`, `.jpe` or `.jif` open, sign and register like `.jpg` files. Web
+  browsers on Windows often save JPEGs as `.jfif`, which c2pa-rs does not know by name, so the
+  app tells it the format by MIME type.
+
 ## 0.6.0 - 2026-10-18
 
 - Paste to open: Ctrl+V (Cmd+V on macOS) opens a file copied in the file manager as if it were

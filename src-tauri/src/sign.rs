@@ -349,7 +349,8 @@ fn differs(own: &Embedded, requested: MetaInput<'_>) -> bool {
 
 /// Sign `source` into `tmp` with the manifest of `builder`. A PDF gets the manifest store as an
 /// update section of its own, appended to `edited` when its metadata was written first; every
-/// other format is embedded by c2pa-rs.
+/// other format is embedded by c2pa-rs, told the format by MIME type (it knows only some of the
+/// extensions, `.jfif` not).
 fn write_signed(
     builder: &mut Builder,
     format: &Format,
@@ -358,7 +359,15 @@ fn write_signed(
     tmp: &Path,
 ) -> Result<()> {
     if format.mime != formats::PDF {
-        builder.save_to_file(source, tmp)?;
+        let mut input =
+            File::open(source).with_context(|| format!("cannot read {}", source.display()))?;
+        let mut output = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(tmp)
+            .with_context(|| format!("cannot write {}", tmp.display()))?;
+        builder.save_to_stream(format.mime, &mut input, &mut output)?;
         return Ok(());
     }
     let original;
@@ -472,6 +481,13 @@ fn output_path(request: &SignRequest, source: &Path, format: &Format) -> Result<
     if same_file(source, &output) {
         bail!("choose an output path different from the source file");
     }
+    if formats::by_path(&output).is_none_or(|f| f.mime != format.mime) {
+        bail!(
+            "the output must be a {} file like the source ({})",
+            format.label,
+            format.extensions.join(", ")
+        );
+    }
     Ok(output)
 }
 
@@ -500,7 +516,15 @@ pub fn sidecar_block(path: &Path, format: &Format, embedded: bool) -> Option<Str
 
 /// Whether the file at `path` embeds a manifest store.
 pub fn embeds_manifest(path: &Path) -> bool {
-    c2pa::jumbf_io::load_jumbf_from_file(path).is_ok()
+    embedded_store(path).is_ok()
+}
+
+/// The manifest store the file at `path` embeds, read by the MIME type of its format: c2pa-rs
+/// would go by the extension, and knows only some of them (`.jfif` not).
+pub fn embedded_store(path: &Path) -> c2pa::Result<Vec<u8>> {
+    let format = formats::by_path(path).ok_or(c2pa::Error::UnsupportedType)?;
+    let mut file = File::open(path)?;
+    c2pa::jumbf_io::load_jumbf_from_stream(format.mime, &mut file)
 }
 
 /// Sign `source` into the sidecar `output` with the manifest of `builder`. c2pa-rs hashes a copy
@@ -1009,6 +1033,26 @@ pub(crate) mod tests {
         assert_eq!(manifest.validation_state, "Valid");
         assert_eq!(manifest.ingredients[0].relationship, "ParentOf");
         assert_eq!(manifest.ingredients[0].digital_source_type, None);
+    }
+
+    /// An output of another format is refused before anything is written, so an existing file of
+    /// that name stays; another extension of the same format is fine.
+    #[test]
+    fn sign_rejects_output_of_another_format() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["photo.png", "existing.bin"] {
+            let output = dir.path().join(name);
+            std::fs::write(&output, b"keep").unwrap();
+            let err = sign(&request("no_manifest.jpg", &output)).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "the output must be a JPEG file like the source (jpg, jpeg, jfif, jpe, jif)"
+            );
+            assert_eq!(std::fs::read(&output).unwrap(), b"keep", "{name}");
+        }
+        let output = dir.path().join("photo.jfif");
+        sign(&request("no_manifest.jpg", &output)).unwrap();
+        assert!(embeds_manifest(&output));
     }
 
     // Windows and macOS file systems are case-insensitive by default.

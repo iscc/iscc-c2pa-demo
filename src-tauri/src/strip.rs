@@ -47,12 +47,15 @@ pub fn strip(path: &Path) -> Result<Stripped> {
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    // c2pa-rs removes in place and finds the format by the extension, so the copy keeps the name.
+    // c2pa-rs removes in place and finds the format by the extension, of which it knows only some
+    // (`.jfif` not), so the copy takes the format's main extension until it is renamed.
     let staging = tempfile::Builder::new()
         .prefix("~stripping")
         .tempdir_in(dir)
         .with_context(|| format!("cannot write into {}", dir.display()))?;
-    let copy = staging.path().join(name);
+    let copy = staging
+        .path()
+        .join(Path::new(name).with_extension(format.extensions[0]));
     write_stripped(path, format, &reader, &copy)?;
     ensure!(
         !sign::embeds_manifest(&copy),
@@ -225,6 +228,26 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "GIVEN_BACK is wrong for {wrong:?}");
+    }
+
+    /// A JPEG named by any of its extensions signs, registers and strips, also by the ones c2pa-rs
+    /// does not know (`.jfif`, as Windows browsers save JPEGs).
+    #[test]
+    fn every_jpeg_extension_signs_registers_and_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        for ext in formats::by_path(Path::new("x.jfif")).unwrap().extensions {
+            let source = dir.path().join(format!("photo.{ext}"));
+            std::fs::copy(fixture("no_manifest.jpg"), &source).unwrap();
+            let signed = dir.path().join(format!("signed.{ext}"));
+            sign_as_is(&source, &signed);
+            let manifest = inspect::inspect(&signed).unwrap().manifest.unwrap();
+            assert_eq!(manifest.validation_state, "Valid", "{ext}");
+            assert!(crate::register::manifest_store(&signed).is_ok(), "{ext}");
+            let stripped = strip(&signed).unwrap();
+            let expected = dir.path().join(format!("signed-stripped.{ext}"));
+            assert_eq!(PathBuf::from(stripped.output), expected);
+            assert_eq!(stripped.original, Some(true), "{ext}");
+        }
     }
 
     #[test]

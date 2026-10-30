@@ -72,7 +72,7 @@ pub fn manifest_store(path: &Path) -> Result<Vec<u8>> {
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case(SIDECAR_EXTENSION));
     if !is_sidecar {
-        match c2pa::jumbf_io::load_jumbf_from_file(path) {
+        match crate::sign::embedded_store(path) {
             Ok(store) => return Ok(without_padding(store)),
             Err(c2pa::Error::JumbfNotFound) => {}
             Err(e) => return Err(e).context("cannot read the manifest store"),
