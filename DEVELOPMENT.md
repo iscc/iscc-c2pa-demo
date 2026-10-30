@@ -362,8 +362,10 @@ the CLI without `--source-type`, which takes the URI.
 The assertion also carries the optional `bindingMetadata` map of the C2PA specification (2.3
 and later) with a description of the ISCC, the contact `info@iscc.io` and a link to IEP-0020, so
 anyone reading the manifest learns how to interpret the value without consulting the soft binding
-algorithm list. Validators ignore the map by spec; the Content Credentials tab shows it for any
-soft-binding assertion that has one.
+algorithm list, plus the member `io.iscc.generator` that IEP-0020 requires: the software that
+generated the ISCC units, here `{"name": "iscc-c2pa-demo", "version": <app version>}`. Validators
+ignore the map by spec; the Content Credentials tab shows it for any soft-binding assertion that
+has one.
 
 The assertion is built in `src-tauri/src/sign.rs` and verified in `src-tauri/src/inspect.rs`
 (`source_view`, `preservation`, `summarize_assertion`); both go through `iscc::encode_seq` /

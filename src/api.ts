@@ -21,6 +21,8 @@ export interface BindingMetadata {
   description: string | null;
   contact: string | null;
   informational_url: string | null;
+  /** `io.iscc.generator` as "name version": the software that generated the ISCC units. */
+  generator: string | null;
 }
 
 export interface SoftBindingSummary {

@@ -430,12 +430,13 @@ function missingIsccCard(): string {
     </section>`;
 }
 
-/** Description, contact and link from the assertion's `bindingMetadata`; empty when absent. */
+/** Description, contact, generator and link from the assertion's `bindingMetadata`; empty when absent. */
 function bindingMetadata(md: BindingMetadata | null): string {
   if (!md) return "";
   const rows: string[] = [];
   if (md.description) rows.push(`<dt>About</dt><dd>${esc(md.description)}</dd>`);
   if (md.contact) rows.push(`<dt>Contact</dt><dd class="mono">${esc(md.contact)}</dd>`);
+  if (md.generator) rows.push(`<dt>Generator</dt><dd class="mono">${esc(md.generator)}</dd>`);
   if (md.informational_url)
     rows.push(`<dt>Details</dt><dd><a class="ext" href="${esc(md.informational_url)}">${esc(linkText(md.informational_url))}</a></dd>`);
   return `<dl class="kv meta">${rows.join("")}</dl>`;

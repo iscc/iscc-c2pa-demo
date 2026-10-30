@@ -13,7 +13,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::asset::{self, Asset, AssetContent, Loaded};
-use crate::context::{base_settings, signed_with_test_key, ISCC_SOFT_BINDING_ALG};
+use crate::context::{
+    base_settings, signed_with_test_key, ISCC_GENERATOR_KEY, ISCC_SOFT_BINDING_ALG,
+};
 use crate::formats::{self, Format, Kind};
 use crate::iscc::{self, Content, IsccUnit, MetaInput};
 use crate::metadata::{self, ManifestMeta, MetaFields};
@@ -231,6 +233,8 @@ pub struct BindingMetadata {
     pub description: Option<String>,
     pub contact: Option<String>,
     pub informational_url: Option<String>,
+    /// `io.iscc.generator` as "name version": the software that generated the ISCC units.
+    pub generator: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -1576,11 +1580,33 @@ fn binding_metadata(sb: &SoftBinding) -> Option<BindingMetadata> {
         description: filled(&m.description),
         contact: filled(&m.contact),
         informational_url: filled(&m.informational_url),
+        generator: m
+            .additional_fields
+            .get(ISCC_GENERATOR_KEY)
+            .and_then(|v| serde_json::to_value(v).ok())
+            .and_then(|v| generator(&v)),
     };
     (metadata.description.is_some()
         || metadata.contact.is_some()
-        || metadata.informational_url.is_some())
+        || metadata.informational_url.is_some()
+        || metadata.generator.is_some())
     .then_some(metadata)
+}
+
+/// "name version" of an `io.iscc.generator` map; the name alone without a text version, `None`
+/// without a text name.
+fn generator(map: &serde_json::Value) -> Option<String> {
+    let text = |key| {
+        map.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let name = text("name")?;
+    Some(match text("version") {
+        Some(version) => format!("{name} {version}"),
+        None => name.to_owned(),
+    })
 }
 
 /// Decode one soft-binding block and compare it against the computed units.
@@ -2479,6 +2505,26 @@ mod tests {
         }))
         .unwrap();
         assert!(binding_metadata(&sb).is_none());
+    }
+
+    #[test]
+    fn binding_metadata_reads_the_iscc_generator() {
+        let with = |generator: serde_json::Value| {
+            let sb: SoftBinding = serde_json::from_value(serde_json::json!({
+                "alg": ISCC_SOFT_BINDING_ALG,
+                "blocks": [{ "scope": {}, "value": [1, 2, 3] }],
+                "bindingMetadata": { "io.iscc.generator": generator },
+            }))
+            .unwrap();
+            binding_metadata(&sb).and_then(|m| m.generator)
+        };
+        let named = with(serde_json::json!({ "name": "iscc-sdk", "version": "0.9.7" }));
+        assert_eq!(named.as_deref(), Some("iscc-sdk 0.9.7"));
+        let unversioned = with(serde_json::json!({ "name": "iscc-sdk", "version": 1 }));
+        assert_eq!(unversioned.as_deref(), Some("iscc-sdk"));
+        // Malformed members show as absent, never as an error (IEP-0020).
+        assert_eq!(with(serde_json::json!({ "version": "1" })), None);
+        assert_eq!(with(serde_json::json!("iscc-sdk")), None);
     }
 
     /// A block for part of the asset is decoded, but compared with nothing and given no

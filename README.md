@@ -74,7 +74,8 @@ Image once it is switched on), each a header and a 256-bit body, concatenated. C
     "bindingMetadata": {
       "description": "International Standard Content Code (ISCC - ISO 24138:2024) - Open Source Content Identification",
       "contact": "info@iscc.io",
-      "informationalUrl": "https://ieps.iscc.codes/iep-0020/"
+      "informationalUrl": "https://ieps.iscc.codes/iep-0020/",
+      "io.iscc.generator": { "name": "iscc-c2pa-demo", "version": "0.6.0" }
     }
   }
 }

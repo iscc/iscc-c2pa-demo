@@ -255,6 +255,10 @@ pub fn sign_with(
             "description": context::ISCC_BINDING_DESCRIPTION,
             "contact": context::ISCC_BINDING_CONTACT,
             "informationalUrl": context::ISCC_BINDING_INFO_URL,
+            (context::ISCC_GENERATOR_KEY): {
+                "name": context::ISCC_GENERATOR_NAME,
+                "version": context::ISCC_GENERATOR_VERSION,
+            },
         },
     }))?;
     builder.add_assertion(labels::SOFT_BINDING, &soft_binding)?;
@@ -682,6 +686,11 @@ pub(crate) mod tests {
             description: Some(context::ISCC_BINDING_DESCRIPTION.into()),
             contact: Some(context::ISCC_BINDING_CONTACT.into()),
             informational_url: Some(context::ISCC_BINDING_INFO_URL.into()),
+            generator: Some(format!(
+                "{} {}",
+                context::ISCC_GENERATOR_NAME,
+                context::ISCC_GENERATOR_VERSION
+            )),
         }
     }
 
@@ -818,6 +827,19 @@ pub(crate) mod tests {
         assert!(!output.exists(), "nothing written");
     }
 
+    /// The soft binding's `bindingMetadata` is in the signed file itself, not only in the summary.
+    fn assert_binding_metadata_is_signed(assertions: &[inspect::AssertionSummary]) {
+        let assertion = assertions
+            .iter()
+            .find(|a| a.label.starts_with(labels::SOFT_BINDING))
+            .unwrap();
+        let map = &assertion.data["bindingMetadata"];
+        assert_eq!(map["informationalUrl"], context::ISCC_BINDING_INFO_URL);
+        let generator = &map[context::ISCC_GENERATOR_KEY];
+        assert_eq!(generator["name"], context::ISCC_GENERATOR_NAME);
+        assert_eq!(generator["version"], context::ISCC_GENERATOR_VERSION);
+    }
+
     #[test]
     fn sign_new_manifest_and_read_it_back() {
         let result = sign_no_manifest("iscc-c2pa-demo-test-create");
@@ -837,16 +859,7 @@ pub(crate) mod tests {
         assert_eq!(sb.alg.as_deref(), Some("io.iscc.v0"));
         assert_eq!(sb.units, result.units);
         assert_eq!(sb.metadata, Some(expected_metadata()));
-        // The map must be in the signed file itself, not only in the summary.
-        let assertion = manifest
-            .assertions
-            .iter()
-            .find(|a| a.label.starts_with(labels::SOFT_BINDING))
-            .unwrap();
-        assert_eq!(
-            assertion.data["bindingMetadata"]["informationalUrl"],
-            context::ISCC_BINDING_INFO_URL
-        );
+        assert_binding_metadata_is_signed(&manifest.assertions);
 
         let training = manifest.training_mining.expect("training-mining assertion");
         assert_eq!(training["entries"]["cawg.ai_training"]["use"], "notAllowed");

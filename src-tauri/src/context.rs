@@ -33,6 +33,13 @@ pub const ISCC_BINDING_DESCRIPTION: &str =
 pub const ISCC_BINDING_CONTACT: &str = "info@iscc.io";
 /// `bindingMetadata.informationalUrl` of the soft-binding assertion: the IEP-0020 page.
 pub const ISCC_BINDING_INFO_URL: &str = "https://ieps.iscc.codes/iep-0020/";
+/// `bindingMetadata` member naming the software that generated the ISCC units (IEP-0020 requires
+/// it, a map with text members `name` and `version`).
+pub const ISCC_GENERATOR_KEY: &str = "io.iscc.generator";
+/// `name` of [`ISCC_GENERATOR_KEY`]: this app.
+pub const ISCC_GENERATOR_NAME: &str = "iscc-c2pa-demo";
+/// `version` of [`ISCC_GENERATOR_KEY`]: the app version.
+pub const ISCC_GENERATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Name reported as claim generator in signed manifests.
 pub const CLAIM_GENERATOR_NAME: &str = "ISCC C2PA Demo";
 /// Version of the C2PA specification signed manifests declare they follow (`specVersion` in
