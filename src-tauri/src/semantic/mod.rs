@@ -1,8 +1,9 @@
 //! Semantic-Code Image and Semantic-Code Text, the experimental ISCC units: the sign bits of a
 //! neural embedding. rten runs weight-compressed copies of the iscc-sci and iscc-sct models
 //! in-process; tools.rs installs them on first use. All maths stays fp32, only the stored
-//! weights are smaller, so codes differ from iscc-sci and iscc-sct by a few bits at most (1 and 2
-//! of 256 measured on the test sets).
+//! weights are smaller, so codes differ from the fp32 models by a few bits at most (1 and 2 of 256
+//! measured on the test sets). iscc-sci runs the same image model since 0.4.0, which gives the
+//! same codes on the fixtures; iscc-sct still runs the fp32 text model.
 //!
 //! Each kind has a model of its own, installed and switched on separately ([`SemanticKinds`]).
 //! Each computation loads its model, runs it and drops it, so the app holds no model while it
@@ -212,8 +213,8 @@ mod tests {
         assert!(text.iscc.starts_with("ISCC:CAD"), "{}", text.iscc);
     }
 
-    /// The reference values `tests/fixtures/expected_semantic.py` wrote with iscc-sci and
-    /// iscc-sct and their fp32 models.
+    /// The reference values `tests/fixtures/expected_semantic.py` wrote with iscc-sci 0.4.1 (the
+    /// image model this app runs) and iscc-sct 0.2.2 (the fp32 text model).
     fn reference() -> serde_json::Value {
         serde_json::from_str(include_str!("../../tests/fixtures/expected_semantic.json")).unwrap()
     }
@@ -224,7 +225,7 @@ mod tests {
             .join(name)
     }
 
-    /// Most bits of 256 a code of the compressed models may differ from the fp32 reference.
+    /// Most bits of 256 a code may differ from the reference (the fp32 text model, other kernels).
     const BUDGET: u32 = 16;
 
     /// Bits in which two units differ.
@@ -399,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn codes_stay_within_the_budget_of_the_fp32_reference() {
+    fn codes_stay_within_the_budget_of_the_reference() {
         crate::tools::tests::ensure_semantic();
         let reference = reference();
         let never = |_: Option<f64>| true;
@@ -437,10 +438,7 @@ mod tests {
             report.len()
         );
         for (name, d) in &report {
-            assert!(
-                *d <= BUDGET,
-                "{name}: {d} of 256 bits off the fp32 reference"
-            );
+            assert!(*d <= BUDGET, "{name}: {d} of 256 bits off the reference");
         }
     }
 

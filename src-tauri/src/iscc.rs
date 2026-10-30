@@ -2,7 +2,7 @@
 //! defined by IEP-0020. The Semantic-Codes come from `semantic`; this module only places them.
 //!
 //! Image preprocessing mirrors `iscc_sdk.image_normalize` (EXIF transpose, white fill for
-//! transparency, uniform border trim, ITU-R 601-2 luma, bicubic 32x32 resize) so that codes
+//! transparency, tolerant border trim, ITU-R 601-2 luma, bicubic 32x32 resize) so that codes
 //! agree with the Python reference implementation. JPEGs decode with libjpeg-turbo-rs, a port of
 //! the libjpeg-turbo that Pillow uses, to the same pixels. The same Pillow resize, with the bilinear
 //! filter, prepares the Semantic-Code Image.
@@ -465,26 +465,83 @@ pub fn flatten_on_white(rgba: &RgbaImage) -> RgbImage {
     out
 }
 
-/// Crop a uniform border whose colour is taken from the top-left pixel.
+/// Largest per-channel difference of a border pixel to the border colour (iscc-sdk's and
+/// iscc-sci's `tolerance`).
+const TRIM_TOLERANCE: u8 = 16;
+
+/// Upper bound of trim passes (iscc-sdk's `TRIM_MAX_PASSES`, against crafted nested borders).
+const TRIM_MAX_PASSES: usize = 16;
+
+/// A box of pixels as Pillow writes it: left, top, right and bottom, the last two exclusive.
+type Area = (u32, u32, u32, u32);
+
+/// Crop near-uniform borders as iscc-sdk's `image_trim_tolerant` and iscc-sci's
+/// `trim_border_tolerant` do (see `trim_area`).
 pub(crate) fn trim_border(img: &RgbImage) -> RgbImage {
-    let (w, h) = img.dimensions();
-    if w == 0 || h == 0 {
-        return img.clone();
-    }
-    let bg = *img.get_pixel(0, 0);
-    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
-    for (x, y, p) in img.enumerate_pixels() {
-        if *p != bg {
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x + 1);
-            y1 = y1.max(y + 1);
+    let (left, top, right, bottom) = trim_area(img);
+    image::imageops::crop_imm(img, left, top, right - left, bottom - top).to_image()
+}
+
+/// The area the tolerant trim keeps: pass after pass, the box of the pixels that differ from the
+/// area's top-left pixel by more than `TRIM_TOLERANCE` in any channel, until a pass crops nothing
+/// or `TRIM_MAX_PASSES` have cropped.
+fn trim_area(img: &RgbImage) -> Area {
+    let mut area = (0, 0, img.width(), img.height());
+    for _ in 0..TRIM_MAX_PASSES {
+        match trim_pass(img, area) {
+            Some(next) => area = next,
+            None => break,
         }
     }
-    if x1 == 0 || (x0 == 0 && y0 == 0 && x1 == w && y1 == h) {
-        return img.clone();
+    area
+}
+
+/// The area one pass crops `area` to, or None when it crops nothing. A pass that cuts one side
+/// only must cut a flat band (no pixel there beyond half the tolerance), so smooth one-sided
+/// gradients such as a sky stay.
+fn trim_pass(img: &RgbImage, area: Area) -> Option<Area> {
+    let [content, flat] = content_bounds(img, area);
+    let content = content.filter(|b| *b != area)?;
+    let (left, top, right, bottom) = content;
+    let sides = [left > area.0, top > area.1, right < area.2, bottom < area.3];
+    let one_side = sides.iter().filter(|cut| **cut).count() == 1;
+    (!one_side || flat == Some(content)).then_some(content)
+}
+
+/// Bounding boxes, within `area`, of the pixels whose largest channel difference to the area's
+/// top-left pixel exceeds `TRIM_TOLERANCE` and half of it; None where no pixel does.
+fn content_bounds(img: &RgbImage, area: Area) -> [Option<Area>; 2] {
+    let (x0, y0, x1, y1) = area;
+    let mut found = [None, None];
+    if x0 >= x1 || y0 >= y1 {
+        return found;
     }
-    image::imageops::crop_imm(img, x0, y0, x1 - x0, y1 - y0).to_image()
+    let reference = *img.get_pixel(x0, y0);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let pixel = img.get_pixel(x, y);
+            let distance = (0..3)
+                .map(|c| pixel[c].abs_diff(reference[c]))
+                .max()
+                .unwrap_or(0);
+            for (bounds, limit) in found.iter_mut().zip([TRIM_TOLERANCE, TRIM_TOLERANCE / 2]) {
+                if distance > limit {
+                    *bounds = Some(grown(*bounds, x, y));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// `bounds` grown to take in the pixel at `x`, `y`.
+fn grown(bounds: Option<Area>, x: u32, y: u32) -> Area {
+    match bounds {
+        None => (x, y, x + 1, y + 1),
+        Some((left, top, right, bottom)) => {
+            (left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1))
+        }
+    }
 }
 
 /// ITU-R 601-2 luma with Pillow's fixed-point rounding.
@@ -689,6 +746,56 @@ mod tests {
                 .collect();
             assert_eq!(got, want, "{file}");
         }
+    }
+
+    /// IEP-0020's sample vectors 0008 to 0011 (iscc-sdk's `c2pa_vectors.json`): the area the
+    /// tolerant trim keeps (`image_crop`) and the Content-Code Image of each embedded picture.
+    #[test]
+    fn tolerant_trim_follows_the_iep_0020_vectors() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let vectors: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/c2pa_vectors.json")).unwrap();
+        let mut checked = 0;
+        for (name, vector) in vectors["soft_binding"].as_object().unwrap() {
+            let Some(crop) = vector["outputs"].get("image_crop") else {
+                continue;
+            };
+            let png = STANDARD
+                .decode(vector["inputs"]["bytes_b64"].as_str().unwrap())
+                .unwrap();
+            let rgb = decode_rgb(&png).unwrap();
+            let (left, top, right, bottom) = trim_area(&rgb);
+            assert_eq!(
+                *crop,
+                serde_json::json!([left, top, right, bottom]),
+                "{name}"
+            );
+            let code = content_unit(Content::Image(&rgb)).unwrap().iscc;
+            let units = vector["outputs"]["units"].as_array().unwrap();
+            assert!(units.iter().any(|u| *u == code), "{name}: {code}");
+            checked += 1;
+        }
+        assert_eq!(checked, 4, "vectors 0008 to 0011");
+    }
+
+    /// Twenty-one nested rings of alternating black and white: each pass removes one ring, and
+    /// the trim stops after 16 passes as iscc-sdk's does (checked with iscc-sdk 0.9.7).
+    #[test]
+    fn tolerant_trim_stops_after_sixteen_passes() {
+        let side = 42;
+        let img = RgbImage::from_fn(side, side, |x, y| {
+            let ring = x.min(y).min(side - 1 - x).min(side - 1 - y);
+            image::Rgb([if ring % 2 == 0 { 0 } else { 255 }; 3])
+        });
+        assert_eq!(trim_area(&img), (16, 16, side - 16, side - 16));
+    }
+
+    /// A picture without any pixel beyond the tolerance keeps its size.
+    #[test]
+    fn tolerant_trim_keeps_a_near_uniform_picture() {
+        let img = RgbImage::from_fn(5, 3, |x, _| image::Rgb([100 + 4 * x as u8; 3]));
+        assert_eq!(trim_area(&img), (0, 0, 5, 3));
+        assert_eq!(trim_area(&RgbImage::new(1, 1)), (0, 0, 1, 1));
     }
 
     fn fixture(name: &str) -> String {

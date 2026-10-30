@@ -5,6 +5,11 @@
 - JPEGs named `.jfif`, `.jpe` or `.jif` open, sign and register like `.jpg` files. Web
   browsers on Windows often save JPEGs as `.jfif`, which c2pa-rs does not know by name, so the
   app tells it the format by MIME type.
+- Content-Code Image and Semantic-Code Image trim near-uniform borders, as iscc-sdk 0.9.7 and
+  iscc-sci 0.4.1 do: a frame, a caption bar or a noisy background close to the colour of the
+  top-left pixel is cut off, while a smooth gradient on one side, such as a sky, stays. Before,
+  only a border of exactly one colour was cut off. Pictures with such borders get other codes
+  than before; sign them again to refresh the embedded ones.
 
 ## 0.6.0 - 2026-10-18
 

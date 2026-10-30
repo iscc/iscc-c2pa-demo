@@ -1,6 +1,6 @@
-"""Generate reference values for the Semantic-Codes with iscc-sci and iscc-sct (fp32 models).
+"""Generate reference values for the Semantic-Codes with iscc-sci and iscc-sct.
 
-Run: uv run --with "iscc-sci[cpu]==0.3.0" --with "iscc-sct[cpu]==0.2.2"
+Run: uv run --with "iscc-sci[cpu]==0.4.1" --with "iscc-sct[cpu]==0.2.2"
      --with semantic-text-splitter==0.33.0 --with blake3 expected_semantic.py DUMP_DIR
 
 DUMP_DIR holds the texts this app extracts from the text fixtures, written by
@@ -12,8 +12,11 @@ float32 NCHW tensor plus four samples, minimum and maximum) and its 256-bit code
 texts, synthetic chunking cases (from iscc-sct's `tests/test_chunking_vectors.py`) and the text
 fixtures it records iscc-sct's chunks (code point offsets, chunk lengths, a BLAKE3 hash of the
 chunks joined with U+001F) and, except for the long synthetic cases, the 256-bit code. The text
-fixtures are those of `expected_text.json`. The app's
-compressed models stay within a few bits of these codes; the tests allow 16 of 256.
+fixtures are those of `expected_text.json`.
+
+iscc-sci runs the weight-compressed image model the app uses (since 0.4.0) and trims near-uniform
+borders (since 0.4.1); iscc-sct runs its fp32 text model, which the app's compressed copy follows
+within a few bits. The tests allow 16 of 256.
 """
 
 import json

@@ -67,7 +67,7 @@ another list than the actions that reference it, against the ingredient rule of 
 |---|---|
 | Shell | [Tauri 2](https://tauri.app) (Rust core, system web view) |
 | C2PA | [`c2pa`](https://crates.io/crates/c2pa) 0.91 with Rust native crypto, no OpenSSL |
-| ISCC | [`iscc-lib`](https://crates.io/crates/iscc-lib) 0.7 plus a Pillow-equivalent image normalisation in `src-tauri/src/iscc.rs` |
+| ISCC | [`iscc-lib`](https://crates.io/crates/iscc-lib) 0.7 plus iscc-sdk 0.9.7's image normalisation (tolerant border trim, Pillow's luma and bicubic resize, bit for bit) in `src-tauri/src/iscc.rs` |
 | JPEG | [`libjpeg-turbo-rs`](https://crates.io/crates/libjpeg-turbo-rs), a pure Rust port of libjpeg-turbo, so JPEGs decode to the pixels Pillow gives; the `image` crate for every other raster format, for JPEGs that crate refuses and for the two layouts it misreads (CMYK with subsampled components, RGB named only by its component IDs) |
 | PDF | [pdfium](https://pdfium.googlesource.com/pdfium/) (bblanchon's prebuilt library, bundled with the app) through the raw C API of [`pdfium-render`](https://crates.io/crates/pdfium-render) for text and the first page; [`lopdf`](https://crates.io/crates/lopdf) for docinfo and XMP |
 | EPUB | [`rbook`](https://crates.io/crates/rbook) for metadata, cover and reading order; text extracted with `quick-xml` |
@@ -175,13 +175,13 @@ Python ISCC tools, and sign and re-inspect a file of every format. The reference
 
 ```sh
 cd src-tauri/tests/fixtures
-uv run --with pillow --with "iscc-core>=1.5" expected_iscc.py   # raster images (Pillow + iscc-core)
+uv run --with "iscc-sdk>=0.9.7" --with "iscc-core>=1.5" expected_iscc.py   # raster images (iscc-sdk + iscc-core)
 uv run --with iscc-sdk --with "iscc-core>=1.5" expected_meta.py   # image and SVG metadata (iscc-sdk)
 uv run --with iscc-sdk expected_text.py                  # documents (iscc-sdk with Tika)
 uv run --with iscc-sdk expected_audio.py                 # audio (iscc-sdk with fpcalc and TagLib)
 uv run --with iscc-sdk --with pypdfium2==5.14.0b1 expected_pdf.py   # PDF (iscc-sdk, pdfium 8076)
 uv run --with iscc-sdk expected_video.py                 # video (iscc-sdk with ffmpeg 8.1)
-uv run --with "iscc-sci[cpu]==0.3.0" --with "iscc-sct[cpu]==0.2.2" --with semantic-text-splitter==0.33.0 --with blake3 expected_semantic.py DUMP_DIR   # Semantic-Codes
+uv run --with "iscc-sci[cpu]==0.4.1" --with "iscc-sct[cpu]==0.2.2" --with semantic-text-splitter==0.33.0 --with blake3 expected_semantic.py DUMP_DIR   # Semantic-Codes
 ```
 
 The video tests run ffmpeg and the Semantic-Code tests the semantic models; both are installed
@@ -881,10 +881,13 @@ set and 2 on the text set (AVX-512); on the fixtures 0 to 3 bits on x86_64 with 
 The smaller variants (`w8mix`, `w8`, 56 and 119 MB) drift up to 13 and 4 bits at the same speed,
 which is why the larger ones were chosen (Titusz, 2026-10-04). rten's kernels depend on the
 instruction set, so codes may differ by a bit or so between machines; the tests allow 16 of 256
-bits, and CI checks that on Windows, Linux and macOS (NEON).
+bits, and CI checks that on Windows, Linux and macOS (NEON). iscc-sci runs the same image model
+since 0.4.0, so the image reference comes from it (0.4.1) and our codes equal it on the fixtures;
+the text reference is iscc-sct's fp32 model.
 
-**Image.** As iscc-sci 0.3.0: the decoded picture (EXIF-rotated, transparency on white, the same
-`AssetContent::Image` the Content-Code uses), its uniform border trimmed, squashed to 512x512 with
+**Image.** As iscc-sci 0.4.1: the decoded picture (EXIF-rotated, transparency on white, the same
+`AssetContent::Image` the Content-Code uses), its near-uniform borders trimmed as for the
+Content-Code (`iscc::trim_border`, the tolerant trim of iscc-sdk 0.9.7), squashed to 512x512 with
 Pillow's bilinear filter (`iscc::resize_pillow`, bit for bit), each sample `(x / 255 - 0.5) / 0.5`
 in f32. The model input equals iscc-sci's exactly for every raster fixture, JPEGs included,
 because JPEGs decode to Pillow's pixels (see [Stack](#stack)). SVGs get the unit of their

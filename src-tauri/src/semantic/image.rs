@@ -1,6 +1,7 @@
-//! Semantic-Code Image as iscc-sci 0.3.0 computes it: the decoded picture (EXIF-transposed and
-//! flattened on white, as for the Content-Code), its uniform border trimmed, squashed to 512x512
-//! with Pillow's bilinear filter, scaled to [-1, 1] and embedded by the ISC21 descriptor model.
+//! Semantic-Code Image as iscc-sci 0.4.1 computes it: the decoded picture (EXIF-transposed and
+//! flattened on white, as for the Content-Code), its near-uniform borders trimmed as for the
+//! Content-Code, squashed to 512x512 with Pillow's bilinear filter, scaled to [-1, 1] and embedded
+//! by the ISC21 descriptor model.
 
 use std::path::Path;
 
@@ -35,7 +36,7 @@ pub(super) fn embedding(model: &Path, rgb: &RgbImage) -> Result<Vec<f32>> {
     Ok(output.to_vec())
 }
 
-/// The model input of the picture, NCHW: border trimmed, resized like
+/// The model input of the picture, NCHW: borders trimmed, resized like
 /// `Image.resize((512, 512), BILINEAR)` and each sample `(x / 255 - 0.5) / 0.5` in f32, the
 /// operations iscc-sci runs in numpy.
 pub(super) fn preprocess(rgb: &RgbImage) -> Vec<f32> {
