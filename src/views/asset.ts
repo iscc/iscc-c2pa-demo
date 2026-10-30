@@ -173,6 +173,9 @@ function pendingRow(slug: UnitSlug, name: string, label: string, analysis: Analy
 /** Where a signed video copy's Content-Code came from. */
 const FROM_SOURCE = "From the file just signed, whose video this copy carries unchanged, packet for packet";
 
+/** What a featureless Content-Code Image is not used for (IEP-0020). */
+const FEATURELESS = "Featureless: too little structure to tell this picture apart; never compared or embedded";
+
 /** Row of a computed unit, with where its inputs came from when that needs saying (`from`). */
 function unitRow(u: IsccUnit, from: string): string {
   return `
@@ -193,10 +196,11 @@ function ocrFrom(ocr: OcrPages): string {
   return ocr.pages === 1 ? "Text recognised by OCR" : `Text of all ${ocr.pages} pages recognised by OCR`;
 }
 
-/** Where a Content-Code's inputs came from when that needs saying: a signed video copy's, a scan's text. The
- * Meta-Code's title is named only when the code could not be computed (`row`). */
+/** Where a Content-Code's inputs came from when that needs saying: a signed video copy's, a scan's text; or that it is
+ * featureless. The Meta-Code's title is named only when the code could not be computed (`row`). */
 function unitFrom(u: IsccUnit, inspection: Inspection): string {
   if (u.unit !== "content") return "";
+  if (u.featureless) return FEATURELESS;
   if (inspection.ocr?.on) return ocrFrom(inspection.ocr);
   return inspection.content_from_source ? FROM_SOURCE : "";
 }

@@ -1254,6 +1254,33 @@ pub(crate) mod tests {
         assert_eq!(found.content, Some(1.0 - 46.0 / 256.0));
     }
 
+    /// IEP-0020, Matching: a featureless Image-Code on either side is not compared, so it makes
+    /// no match near-identical, not even an equal one.
+    #[test]
+    fn featureless_image_codes_give_no_content_similarity() {
+        let featureless = "ISCC:EEDYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let sb = |content| {
+            binding(
+                ISCC_SOFT_BINDING_ALG,
+                &[(&[content, DATA, INSTANCE], false)],
+            )
+        };
+        for (theirs, mine) in [
+            (featureless, featureless),
+            (featureless, CONTENT),
+            (CONTENT, featureless),
+        ] {
+            let found = iscc_match(&[sb(theirs)], &units(&[mine, INSTANCE_MODIFIED])).unwrap();
+            assert_eq!(
+                (found.content, found.near),
+                (None, false),
+                "{theirs} {mine}"
+            );
+        }
+        let exact = iscc_match(&[sb(featureless)], &units(&[featureless, INSTANCE])).unwrap();
+        assert_eq!((exact.content, exact.near), (None, true));
+    }
+
     #[test]
     fn every_iscc_block_must_match_and_others_are_not_checked() {
         let original = units(&[CONTENT, INSTANCE]);

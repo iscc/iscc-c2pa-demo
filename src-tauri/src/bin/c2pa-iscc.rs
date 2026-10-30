@@ -487,7 +487,8 @@ fn with_required(units: &[String]) -> Vec<String> {
 /// description and the file's ISCC metadata, and, when the inspection computed none (a video's
 /// tags unread without ffmpeg), only for a title `given`; the Semantic-Code and the Content-Code
 /// only when the inspection computed them (audio can be too short, the Semantic-Code not asked
-/// for or its model missing); each with a note on stderr otherwise, unless
+/// for or its model missing), the Content-Code only when it is no featureless Image-Code; each
+/// with a note on stderr otherwise, unless
 /// [`note_missing_tools`] told already or the Semantic-Code was not asked for.
 fn default_units(
     source: &Inspection,
@@ -517,7 +518,12 @@ fn default_units(
             eprintln!("note: Semantic-Code left out: {e}");
         }
     }
-    if let Some(e) = &source.content_error {
+    let featureless = source.iscc.iter().any(|u| u.featureless);
+    if let Some(e) = source
+        .content_error
+        .as_deref()
+        .or(featureless.then_some(iscc::FEATURELESS))
+    {
         eprintln!("note: Content-Code left out: {e}");
         units.retain(|u| *u != content);
     }

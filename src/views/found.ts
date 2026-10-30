@@ -326,10 +326,11 @@ function isccVerdict(found: Found, near: number, kind: Kind): string {
 const CELL_NAME: Record<string, string> = { meta: "Meta", semantic: "Semantic", content: "Content", data: "Data", instance: "Instance" };
 
 /** What a tile shows for `mt`: the value, the share of its meter (0 to 1) and a note. A Semantic-Code is compared only
- * while this file's is shown; the Instance-Code is equal or not. */
+ * while this file's is shown, a featureless Image-Code never; the Instance-Code is equal or not. */
 function cellValue(mt: UnitMatch, semantic: boolean): [string, number, string] {
   const unit = mt.embedded.unit;
   if (unit === "semantic" && !semantic) return ["—", 0, "not compared"];
+  if (mt.featureless) return ["—", 0, "featureless"];
   if (mt.similarity === null) return ["—", 0, "not comparable"];
   if (unit === "instance") return mt.similarity === 1 ? ["Match", 1, "the same bytes"] : ["No match", 0, "other bytes"];
   return [percent(mt.similarity), mt.similarity, unit === "semantic" ? "experimental" : ""];

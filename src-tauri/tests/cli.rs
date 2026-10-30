@@ -378,6 +378,64 @@ fn sign_always_embeds_the_data_code_and_the_instance_code() {
     );
 }
 
+/// The picture of IEP-0020's sample vector 0007, written into `dir`: its Content-Code Image is
+/// featureless.
+fn featureless_png(dir: &Path) -> PathBuf {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let vectors: Value = serde_json::from_str(include_str!("fixtures/c2pa_vectors.json")).unwrap();
+    let vector = &vectors["soft_binding"]["test_0007_featureless_image"];
+    let png = STANDARD
+        .decode(vector["inputs"]["bytes_b64"].as_str().unwrap())
+        .unwrap();
+    let path = dir.join("featureless.png");
+    std::fs::write(&path, png).unwrap();
+    path
+}
+
+#[test]
+fn sign_leaves_a_featureless_content_code_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = featureless_png(dir.path());
+    let source = source.to_str().unwrap();
+    let inspection = json(&cli(&["inspect", source, "--no-preview"]));
+    assert_eq!(inspection["iscc"][1]["name"], "Content-Code Image");
+    assert_eq!(inspection["iscc"][1]["featureless"], true);
+
+    let output = dir.path().join("featureless-signed.png");
+    let output = output.to_str().unwrap();
+    let signed = cli(&[
+        "sign",
+        source,
+        "--output",
+        output,
+        "--no-timestamp",
+        "--no-preview",
+    ]);
+    let stderr = String::from_utf8_lossy(&signed.stderr);
+    assert!(
+        stderr.contains("note: Content-Code left out: the Content-Code Image is featureless"),
+        "{stderr}"
+    );
+    let result = json(&signed);
+    let embedded = ["Meta-Code", "Data-Code", "Instance-Code"];
+    assert_eq!(names(&result["units"]), embedded);
+    let sb = &result["inspection"]["manifest"]["soft_bindings"][0];
+    assert_eq!(names(&sb["units"]), embedded);
+
+    let asked = cli(&[
+        "sign",
+        source,
+        "--output",
+        dir.path().join("asked.png").to_str().unwrap(),
+        "--units",
+        "image",
+        "--no-timestamp",
+    ]);
+    assert_eq!(asked.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    assert!(stderr.contains("is featureless"), "{stderr}");
+}
+
 #[test]
 fn sign_pdf_refuses_encryption_and_notes_a_digital_signature() {
     let dir = std::env::temp_dir().join("iscc-c2pa-demo-test-cli-pdf");

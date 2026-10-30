@@ -215,14 +215,15 @@ export function metaPreviewHint(form: SignForm): string {
 }
 
 /** Fresh form state for a newly loaded file; timestamps with the first preset. The Semantic-Code of an image or a
- * text starts ticked when it is computed or on its way (its kind switched on). */
+ * text starts ticked when it is computed or on its way (its kind switched on), the Content-Code unless featureless. */
 export function newSignForm(inspection: Inspection, presets: TsaPreset[]): SignForm {
   const semantic = semanticOption(inspection).length > 0 && semanticAvailable(inspection);
+  const content = featurelessContent(inspection) ? [] : [inspection.kind];
   return {
     title: inspection.meta_fields.name,
     description: inspection.meta_fields.description ?? "",
     source: newSourceChoice(),
-    units: new Set(["meta", ...(semantic ? ["semantic"] : []), inspection.kind, ...REQUIRED_UNITS]),
+    units: new Set(["meta", ...(semantic ? ["semantic"] : []), ...content, ...REQUIRED_UNITS]),
     open: { binding: false, training: false },
     training: {},
     credentials: { kind: "demo" },
@@ -236,6 +237,11 @@ export function newSignForm(inspection: Inspection, presets: TsaPreset[]): SignF
 /** Whether the file's Semantic-Code is computed or on its way. */
 function semanticAvailable(inspection: Inspection): boolean {
   return inspection.iscc.some((u) => u.unit === "semantic") || inspection.pending.includes("semantic");
+}
+
+/** Whether the file's Content-Code is a featureless Image-Code, which IEP-0020 leaves out of a soft binding. */
+function featurelessContent(inspection: Inspection): boolean {
+  return inspection.iscc.some((u) => u.unit === "content" && u.featureless);
 }
 
 /** Untick the units the finished analysis could not compute (a video without frames, a text the models could not
@@ -371,8 +377,11 @@ function timestampFieldset(choice: TimestampChoice, info: AppInfo | null): strin
       </div>`;
 }
 
+/** Why a featureless Content-Code Image is not offered. */
+const FEATURELESS_LEFT_OUT = "left out: featureless, too little structure to tell this picture apart";
+
 /** The code line under a unit option: the code, "computing…" while a later pass computes it, why the Semantic-Code
- * is not available, or the Meta-Code preview hint. */
+ * is not available or the Content-Code left out, or the Meta-Code preview hint. */
 function optionCode(o: UnitOption, form: SignForm, inspection: Inspection): string {
   const muted = (html: string, meta = false) =>
     `<span class="code"${meta ? ` data-meta-code="1"` : ""} style="color:var(--muted)">${html}</span>`;
@@ -380,6 +389,7 @@ function optionCode(o: UnitOption, form: SignForm, inspection: Inspection): stri
     const code = form.metaPreview?.iscc;
     return code ? `<span class="code" data-meta-code="1">${isccHtml(code)}</span>` : muted(esc(metaPreviewHint(form)), true);
   }
+  if (o.unit === "content" && featurelessContent(inspection)) return muted(esc(FEATURELESS_LEFT_OUT));
   const unit = inspection.iscc.find((u) => u.name === o.title);
   if (unit) return `<span class="code">${isccHtml(unit.iscc)}</span>`;
   if (inspection.pending.includes(o.unit)) return muted("computing…");
@@ -391,10 +401,11 @@ function optionCode(o: UnitOption, form: SignForm, inspection: Inspection): stri
  * source in a block for the whole asset. */
 const REQUIRED_UNITS = ["data", "instance"];
 
-/** One unit option as a checkbox; a required unit is ticked and locked, and a hidden input sends it. */
+/** One unit option as a checkbox; a required unit is ticked and locked, and a hidden input sends it; a unit the file
+ * cannot give is unticked and locked. */
 function unitCheck(o: UnitOption, form: SignForm, inspection: Inspection): string {
   const required = REQUIRED_UNITS.includes(o.slug);
-  const unavailable = o.slug === "semantic" && !semanticAvailable(inspection);
+  const unavailable = (o.slug === "semantic" && !semanticAvailable(inspection)) || (o.unit === "content" && featurelessContent(inspection));
   const checked = required || (form.units.has(o.slug) && !unavailable);
   const name = required ? "" : `name="unit" value="${o.slug}"`;
   const sent = required ? `<input type="hidden" name="unit" value="${o.slug}" />` : "";

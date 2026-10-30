@@ -1,5 +1,6 @@
 //! ISCC units for image, text, audio and video assets and the ISCC-SEQ soft-binding value
-//! defined by IEP-0020. The Semantic-Codes come from `semantic`; this module only places them.
+//! defined by IEP-0020, which never carries or compares a featureless Image-Code. The
+//! Semantic-Codes come from `semantic`; this module only places them.
 //!
 //! Image preprocessing mirrors `iscc_sdk.image_normalize` (EXIF transpose, white fill for
 //! transparency, tolerant border trim, ITU-R 601-2 luma, bicubic 32x32 resize) so that codes
@@ -26,6 +27,8 @@ pub struct IsccUnit {
     pub name: &'static str,
     /// Canonical unit string with `ISCC:` prefix.
     pub iscc: String,
+    /// A featureless Image-Code ([`featureless`]): never compared, never put in a soft binding.
+    pub featureless: bool,
 }
 
 /// Which units to generate for an asset.
@@ -72,7 +75,7 @@ pub enum Content<'a> {
 
 /// Classify a unit string and normalize it.
 pub fn describe_unit(iscc: &str) -> Result<IsccUnit> {
-    let (mt, st, _vs, _len, _body) = iscc_lib::iscc_decode(iscc)?;
+    let (mt, st, _vs, _len, body) = iscc_lib::iscc_decode(iscc)?;
     let (unit, name) = match (mt, st) {
         (0, _) => ("meta", "Meta-Code"),
         (1, 0) => ("semantic", "Semantic-Code Text"),
@@ -92,7 +95,31 @@ pub fn describe_unit(iscc: &str) -> Result<IsccUnit> {
         unit,
         name,
         iscc: format!("ISCC:{}", clean(iscc)),
+        featureless: featureless(mt, st, &body),
     })
+}
+
+/// Fewest bits set to 1 in each 64-bit segment of an Image-Code with features; a regular segment
+/// has 32 (the median split of 64 DCT coefficients).
+const FEATURE_BITS: u32 = 8;
+
+/// Why a featureless Content-Code Image is never in an ISCC soft binding.
+pub const FEATURELESS: &str = "the Content-Code Image is featureless: the picture has too little \
+    structure (uniform, a gradient along one axis, plain stripes) to tell it apart from others, \
+    and IEP-0020 leaves such a code out of an ISCC soft binding";
+
+/// Whether a unit of MainType `mt` and SubType `st` with `body` is a featureless Image-Code
+/// (IEP-0020): a Content-Code Image whose body, cut from its first bit into 64-bit segments, has
+/// a complete segment with fewer than [`FEATURE_BITS`] bits set to 1. Uniform pictures, gradients
+/// along one axis and plain stripes give such codes, and those of unrelated pictures are as close
+/// as those of one picture. A Semantic-Code Image is never featureless.
+fn featureless(mt: u8, st: u8, body: &[u8]) -> bool {
+    (mt, st) == (2, 1)
+        && body
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .any(|segment| u64::from_be_bytes(*segment).count_ones() < FEATURE_BITS)
 }
 
 /// Strip prefix, dashes and whitespace and upper-case the base32 payload.
@@ -132,7 +159,8 @@ pub fn meta_unit(meta: MetaInput<'_>) -> Result<IsccUnit> {
 /// The selected units of an asset, in the order of their MainType: the Meta-Code over `meta`,
 /// the Semantic-Code computed by the caller (`semantic`, which keeps the models out of this
 /// module), the Content-Code over `content`, and the Data-Code and Instance-Code from
-/// `bitstream`, those of the asset's bytes.
+/// `bitstream`, those of the asset's bytes. A featureless Content-Code Image fails
+/// ([`FEATURELESS`]).
 pub fn units_for(
     bitstream: &[IsccUnit; 2],
     content: Content<'_>,
@@ -148,7 +176,11 @@ pub fn units_for(
         units.push(semantic.ok_or_else(|| anyhow!("the Semantic-Code is not available"))?);
     }
     if selection.content {
-        units.push(content_unit(content)?);
+        let unit = content_unit(content)?;
+        if unit.featureless {
+            bail!("{FEATURELESS}");
+        }
+        units.push(unit);
     }
     if selection.data {
         units.push(bitstream[0].clone());
@@ -593,11 +625,15 @@ pub fn decode_seq(bytes: &[u8]) -> Result<Vec<String>> {
     Ok(units)
 }
 
-/// Similarity of two units of the same kind as the fraction of equal bits; None when kinds differ.
+/// Similarity of two units of the same kind as the fraction of equal bits; None when kinds differ,
+/// and for two Image-Codes of which one is featureless, which IEP-0020 never compares.
 pub fn similarity(a: &str, b: &str) -> Result<Option<f64>> {
     let (mt_a, st_a, _, _, body_a) = iscc_lib::iscc_decode(a)?;
     let (mt_b, st_b, _, _, body_b) = iscc_lib::iscc_decode(b)?;
     if mt_a != mt_b || st_a != st_b || body_a.len() != body_b.len() || body_a.is_empty() {
+        return Ok(None);
+    }
+    if featureless(mt_a, st_a, &body_a) || featureless(mt_b, st_b, &body_b) {
         return Ok(None);
     }
     let differing: u32 = body_a
@@ -672,7 +708,9 @@ mod tests {
         let bitstream = bitstream_units(b"some bytes").unwrap();
         let semantic =
             describe_unit("ISCC:CEDQ2WTPK2QPZTK47HLOYUUTO3TCA35K5UQZODFMMY42S6O6RDQWFEA").unwrap();
-        let rgb = RgbImage::from_pixel(8, 8, image::Rgb([200, 30, 30]));
+        let rgb = RgbImage::from_fn(8, 8, |x, y| {
+            image::Rgb([((x * 7 + y * 13) * 97 % 256) as u8; 3])
+        });
         let meta = MetaInput {
             name: Some("A title"),
             ..Default::default()
@@ -712,6 +750,103 @@ mod tests {
     fn similarity_is_one_for_identical_units_and_none_across_kinds() {
         assert_eq!(similarity(IEP_UNITS[1], IEP_UNITS[1]).unwrap(), Some(1.0));
         assert_eq!(similarity(IEP_UNITS[1], IEP_UNITS[2]).unwrap(), None);
+    }
+
+    /// IEP-0020, Table 3: each Image-Code with the bits set to 1 per 64-bit segment.
+    const TABLE_3: [(&str, bool); 5] = [
+        (
+            "ISCC:EEDYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            true,
+        ), // 1, 0, 0, 0
+        (
+            "ISCC:EED74AAAAAAAAAAAVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKQ",
+            true,
+        ), // 7, 32, 32, 32
+        (
+            "ISCC:EED76AAAAAAAAAAAVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKQ",
+            false,
+        ), // 8, 32, 32, 32
+        (
+            "ISCC:EED2VKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKAAAAAAAAAAAAA",
+            true,
+        ), // 32, 32, 32, 1
+        (
+            "ISCC:EED2VKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKQ",
+            false,
+        ), // 32, 32, 32, 32
+    ];
+
+    #[test]
+    fn featureless_image_codes_follow_iep_0020_table_3() {
+        for (code, featureless) in TABLE_3 {
+            assert_eq!(
+                describe_unit(code).unwrap().featureless,
+                featureless,
+                "{code}"
+            );
+        }
+    }
+
+    /// Only a Content-Code Image can be featureless, and only by a complete 64-bit segment.
+    #[test]
+    fn other_units_and_partial_segments_are_never_featureless() {
+        let zeros = [0u8; 32];
+        let unit = |mt, st, bits| {
+            let code = codec::encode_component(mt, st, codec::Version::V0, bits, &zeros).unwrap();
+            describe_unit(&format!("ISCC:{code}")).unwrap().featureless
+        };
+        assert!(unit(MainType::Content, codec::SubType::Image, 256));
+        assert!(unit(MainType::Content, codec::SubType::Image, 64));
+        assert!(!unit(MainType::Content, codec::SubType::Image, 32));
+        assert!(!unit(MainType::Semantic, codec::SubType::Image, 256));
+        assert!(!unit(MainType::Content, codec::SubType::None, 256));
+        assert!(!unit(MainType::Data, codec::SubType::None, 256));
+    }
+
+    /// IEP-0020, Matching: no pair with a featureless Image-Code is compared, not even an equal one.
+    #[test]
+    fn featureless_image_codes_are_never_compared() {
+        let (featureless, regular) = (TABLE_3[0].0, TABLE_3[4].0);
+        assert_eq!(similarity(featureless, featureless).unwrap(), None);
+        assert_eq!(similarity(featureless, regular).unwrap(), None);
+        assert_eq!(similarity(regular, featureless).unwrap(), None);
+        assert_eq!(similarity(regular, regular).unwrap(), Some(1.0));
+    }
+
+    /// IEP-0020's sample vector 0007 (iscc-sdk's `c2pa_vectors.json`): the picture's Content-Code
+    /// Image is featureless, so its soft binding has only the Data-Code and the Instance-Code, and
+    /// asking for the Content-Code fails.
+    #[test]
+    fn a_featureless_picture_gets_no_content_code_in_its_soft_binding() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let vectors: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/c2pa_vectors.json")).unwrap();
+        let vector = &vectors["soft_binding"]["test_0007_featureless_image"];
+        let png = STANDARD
+            .decode(vector["inputs"]["bytes_b64"].as_str().unwrap())
+            .unwrap();
+        let rgb = decode_rgb(&png).unwrap();
+        assert!(content_unit(Content::Image(&rgb)).unwrap().featureless);
+        let bitstream = bitstream_units(&png).unwrap();
+        let mut selection = UnitSelection::from_slugs(&["data".into(), "instance".into()]);
+        let units = units_for(
+            &bitstream,
+            Content::Image(&rgb),
+            Default::default(),
+            None,
+            &selection,
+        );
+        let got: Vec<String> = units.unwrap().into_iter().map(|u| u.iscc).collect();
+        assert_eq!(serde_json::json!(got), vector["outputs"]["units"]);
+        selection.content = true;
+        let refused = units_for(
+            &bitstream,
+            Content::Image(&rgb),
+            Default::default(),
+            None,
+            &selection,
+        );
+        assert_eq!(refused.unwrap_err().to_string(), FEATURELESS);
     }
 
     #[test]

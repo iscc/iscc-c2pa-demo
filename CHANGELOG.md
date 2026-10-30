@@ -10,6 +10,11 @@
   top-left pixel is cut off, while a smooth gradient on one side, such as a sky, stays. Before,
   only a border of exactly one colour was cut off. Pictures with such borders get other codes
   than before; sign them again to refresh the embedded ones.
+- A featureless Content-Code Image is left out of the soft binding and never compared, as
+  IEP-0020 requires. Pictures with too little structure (one colour, a gradient along one axis,
+  plain stripes) give such codes, and those of unrelated pictures are as close as those of one
+  picture. The left panel says so under the code, the Sign tab offers it unticked, `sign` leaves
+  it out with a note, and a search does not send it.
 
 ## 0.6.0 - 2026-10-18
 

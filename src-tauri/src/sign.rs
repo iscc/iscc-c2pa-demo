@@ -1987,6 +1987,8 @@ pub(crate) mod tests {
         let _ = std::fs::remove_file(&output);
         let mut req = request("eku/base.jpg", &output);
         req.source = source.to_string_lossy().into_owned();
+        // The picture is uniform, so its Content-Code Image is featureless and never embedded.
+        req.units.retain(|u| u != "image");
         sign(&req).unwrap();
 
         // The demo key's root trusted too, so that the active signer is on a list of its own.

@@ -284,11 +284,12 @@ fn bounded<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> R + Sync) -> Vec
 }
 
 /// The base64 ISCC-SEQ the services are asked with: every unit but the Meta-Code, which would
-/// find files that share only a title or file name and tell the services more about the file.
+/// find files that share only a title or file name and tell the services more about the file,
+/// and a featureless Image-Code, which IEP-0020 never compares.
 fn query_value(units: &[IsccUnit]) -> Result<String> {
     let queried: Vec<String> = units
         .iter()
-        .filter(|u| u.unit != "meta")
+        .filter(|u| u.unit != "meta" && !u.featureless)
         .map(|u| u.iscc.clone())
         .collect();
     if queried.is_empty() {
@@ -623,9 +624,10 @@ mod tests {
     }
 
     #[test]
-    fn the_query_leaves_out_the_meta_code() {
+    fn the_query_leaves_out_the_meta_code_and_a_featureless_image_code() {
         let units: Vec<IsccUnit> = [
             "ISCC:AADXGJPPWDJ7QI7XL4LH43DWUJ6WLYBHK6Z72JXO7Z2UGD5QDQMBDQI",
+            "ISCC:EEDYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "ISCC:GADWYSEQ44YZMECUTBZO2GWBOISZNBVO24KF4UTHRNPRQI74E6UKRYY",
             "ISCC:IADZUC27FXMNE4P7YLACBSKWIMZSVGZWYMSCN4QMV6MEEKABNLIBAPQ",
         ]
@@ -634,8 +636,8 @@ mod tests {
         .collect();
         let value = STANDARD.decode(query_value(&units).unwrap()).unwrap();
         let sent = iscc::decode_seq(&value).unwrap();
-        assert_eq!(sent, [units[1].iscc.clone(), units[2].iscc.clone()]);
-        assert!(query_value(&units[..1]).is_err());
+        assert_eq!(sent, [units[2].iscc.clone(), units[3].iscc.clone()]);
+        assert!(query_value(&units[..2]).is_err());
     }
 
     #[test]

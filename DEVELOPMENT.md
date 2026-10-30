@@ -274,6 +274,17 @@ back from it, and the manifest records the original as the `parentOf` ingredient
 therefore computes every embedded unit, the Meta-Code included. Other formats still take the title
 and description of the Sign tab into `cawg.metadata` only, until they get a metadata writer.
 
+**Featureless Image-Codes.** IEP-0020 calls a Content-Code Image featureless when a complete
+64-bit segment of its body, counted from its first bit, has fewer than 8 bits set to 1
+(`iscc::featureless`, iscc-sdk's `is_featureless_image_code`). Uniform pictures, gradients along
+one axis and plain stripes give such codes, and those of unrelated pictures are as close as those
+of one picture. The left panel still shows the code, as iscc-sdk's `code_iscc` computes it, with a
+line saying it is featureless; the Sign tab offers it unticked and locked, `sign` leaves it out
+with a note, and the signing core refuses a request for it (`iscc::units_for`). Such a pair is
+never compared (`iscc::similarity` gives none): the soft binding card shows "not compared" for a
+featureless code that an earlier version or another tool embedded, and a search neither sends it
+nor scores it.
+
 **Source preservation.** A signed file is *source-preserving* when its *source view* (the file
 without the byte ranges its C2PA data hash excludes) is byte for byte the file that was signed. The
 embedded Instance-Code proves it: the app computes the Instance-Code of the source view and
@@ -417,7 +428,7 @@ turn) with the soft binding query of the C2PA Soft Binding Resolution API, by PO
 stays out of URLs and their logs. The query holds the file's units as the left column shows them,
 the Meta-Code left out: the services score it too (up to 85), but a title, or a file name in
 its place, would bring candidates that share only the name, and it tells them more about the
-file. The card says before the first search what is sent: the ISCC, which identifies this exact
+file. A featureless Content-Code Image is left out too (IEP-0020 never compares it). The card says before the first search what is sent: the ISCC, which identifies this exact
 file, with the IP address; never the file.
 
 **Candidates, not answers.** The services' answers decide only which manifest stores are fetched

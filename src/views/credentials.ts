@@ -331,6 +331,10 @@ const SCOPED_NOTE =
 /** Match column of a unit that was not compared. */
 const NOT_COMPARED = `<span class="hint">not compared</span>`;
 
+/** Why a pair of Image-Codes is not compared (IEP-0020, Matching). */
+const FEATURELESS_NOTE =
+  "Content-Code Image is not compared: one of the two is featureless, from a picture with too little structure to tell it apart (one colour, a gradient along one axis, plain stripes).";
+
 /** Match column: yes or no for the exact Instance-Code, a similarity meter for the other units.
  * A `neutral` unit describes the file before signing, so its difference is no failed match. */
 export function verdict(mt: UnitMatch, neutral: boolean): string {
@@ -356,23 +360,25 @@ function matchNote(sb: SoftBindingSummary, m: ManifestSummary, inspection: Inspe
     if (has("content")) html.push(contentNote(inspection));
     if (has("data") || has("instance")) html.push(esc(`Data-Code and Instance-Code are recomputed from ${bitstreamSource(m)}.`));
   }
+  if (sb.matches.some((mt) => mt.featureless)) html.push(esc(FEATURELESS_NOTE));
   if (has("semantic")) html.push(semanticNote(sb.preservation === "preserved", inspection, semantic));
   if (has("data") || has("instance")) {
     html.push(esc("Data-Code tolerates small byte changes; Instance-Code is exact and either matches or not."));
   }
-  if (has("meta")) {
-    // This app writes a PDF's title and description into the signed copy, so editing them at signing changes no match.
-    const edited =
-      inspection.mime === "application/pdf"
-        ? "This app writes a title and description given at signing into the PDF itself."
-        : "Changing an embedded title at signing therefore lowers the match.";
-    html.push(
-      esc(
-        `Meta-Code is recomputed from this file's title and description: the file's own metadata first, then the title and description stored in the Content Credentials at signing, then the manifest title, then the file name. ${edited}`,
-      ),
-    );
-  }
+  if (has("meta")) html.push(metaNote(inspection));
   return html.join(" ");
+}
+
+/** What the Meta-Code in the match column is recomputed from, as HTML. */
+function metaNote(inspection: Inspection): string {
+  // This app writes a PDF's title and description into the signed copy, so editing them at signing changes no match.
+  const edited =
+    inspection.mime === "application/pdf"
+      ? "This app writes a title and description given at signing into the PDF itself."
+      : "Changing an embedded title at signing therefore lowers the match.";
+  return esc(
+    `Meta-Code is recomputed from this file's title and description: the file's own metadata first, then the title and description stored in the Content Credentials at signing, then the manifest title, then the file name. ${edited}`,
+  );
 }
 
 /** What the Semantic-Code in the match column was computed from, or why it was not compared, as HTML: its kind is

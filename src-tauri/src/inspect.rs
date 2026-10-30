@@ -243,6 +243,8 @@ pub struct UnitMatch {
     pub computed: Option<String>,
     /// Fraction of equal bits, 1.0 for identical units.
     pub similarity: Option<f64>,
+    /// The embedded or the computed Image-Code is featureless, so the two are not compared.
+    pub featureless: bool,
 }
 
 /// First `<stem>-signed<ext>`, `<stem>-signed-2<ext>`, ... next to `path` that does not exist,
@@ -1642,6 +1644,7 @@ fn summarize_soft_binding(
                 embedded: embedded.clone(),
                 computed: peer.map(|c| c.iscc.clone()),
                 similarity,
+                featureless: embedded.featureless || peer.is_some_and(|c| c.featureless),
             }
         })
         .collect();
@@ -2505,6 +2508,32 @@ mod tests {
         }))
         .unwrap();
         assert!(binding_metadata(&sb).is_none());
+    }
+
+    /// A featureless Image-Code, embedded (signed before IEP-0020 forbade it) or computed, is
+    /// listed and not compared, with the reason; the other units are compared as usual.
+    #[test]
+    fn featureless_image_codes_are_listed_but_not_compared() {
+        let featureless = "ISCC:EEDYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let regular = "ISCC:EED2VKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKQ";
+        let data = "ISCC:GADWYSEQ44YZMECUTBZO2GWBOISZNBVO24KF4UTHRNPRQI74E6UKRYY";
+        let compare = |embedded: &str, computed: &str| {
+            let value = iscc::encode_seq(&[embedded.to_owned(), data.to_owned()]).unwrap();
+            let units = [computed, data].map(|u| iscc::describe_unit(u).unwrap());
+            summarize_soft_binding(Some(ISCC_SOFT_BINDING_ALG.into()), &value, &units, None).matches
+        };
+        for (embedded, computed) in [(featureless, regular), (regular, featureless)] {
+            let [image, data] = &compare(embedded, computed)[..] else {
+                panic!("two units");
+            };
+            assert_eq!((image.similarity, image.featureless), (None, true));
+            assert_eq!(image.computed.as_deref(), Some(computed));
+            assert_eq!((data.similarity, data.featureless), (Some(1.0), false));
+        }
+        let [image, _] = &compare(regular, regular)[..] else {
+            panic!("two units");
+        };
+        assert_eq!((image.similarity, image.featureless), (Some(1.0), false));
     }
 
     #[test]

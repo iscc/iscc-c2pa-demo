@@ -8,12 +8,16 @@ export interface IsccUnit {
   unit: UnitSlug;
   name: string;
   iscc: string;
+  /** A featureless Image-Code (IEP-0020): never compared, never put in a soft binding. */
+  featureless: boolean;
 }
 
 export interface UnitMatch {
   embedded: IsccUnit;
   computed: string | null;
   similarity: number | null;
+  /** The embedded or the computed Image-Code is featureless, so the two are not compared. */
+  featureless: boolean;
 }
 
 /** Informational `bindingMetadata` of a soft-binding assertion (C2PA spec 2.3+). */
