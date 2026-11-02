@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 - 2026-11-02
+
+Updated for the revised IEP-0020 draft and iscc-sdk 0.9.7, its reference implementation.
 
 - JPEGs named `.jfif`, `.jpe` or `.jif` open, sign and register like `.jpg` files. Web
   browsers on Windows often save JPEGs as `.jfif`, which c2pa-rs does not know by name, so the
@@ -15,6 +17,11 @@
   plain stripes) give such codes, and those of unrelated pictures are as close as those of one
   picture. The left panel says so under the code, the Sign tab offers it unticked, `sign` leaves
   it out with a note, and a search does not send it.
+- The soft binding names the software that computed its ISCC units: `bindingMetadata` carries
+  `io.iscc.generator` with the app's name and version, as IEP-0020 requires. The Content
+  Credentials tab shows the generator of any manifest that has one.
+- c2pa-rs 0.91.7: a timestamp with a SHA-1 message imprint shows as rejected, and a MOV file
+  that begins with another box than `ftyp` can be inspected.
 
 ## 0.6.0 - 2026-10-18
 

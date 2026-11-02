@@ -1,6 +1,5 @@
 // Per-format wording shared by the Sign tab and the Content Credentials tab: what the Content-Code
-// is computed from, and what embedding a manifest does to a format's bytes (IEP-0020, Source
-// Preservation).
+// is computed from, and what embedding a manifest does to a format's bytes (source preservation).
 
 import type { AssetKind, Inspection } from "./api";
 

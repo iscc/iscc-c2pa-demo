@@ -27,7 +27,7 @@
 <p align="center"><sub>A signed image, opened again. C2PA says <b>Valid</b>, and every ISCC unit in its
 soft binding matches the file. Re-encode it at half size and the C2PA hash breaks
 (<code>assertion.dataHash.mismatch</code>), but the Content-Code still matches at <b>100%</b> and the
-experimental Semantic-Code at 99%. Crop 5% off each side as well and they score 81% and 95%, where
+experimental Semantic-Code at 99%. Crop 5% off each side as well and they score 72% and 95%, where
 unrelated images score around 50%.</sub></p>
 
 Content Credentials tell you where a file comes from. C2PA ties them to the file by a hash of its
@@ -75,7 +75,7 @@ Image once it is switched on), each a header and a 256-bit body, concatenated. C
       "description": "International Standard Content Code (ISCC - ISO 24138:2024) - Open Source Content Identification",
       "contact": "info@iscc.io",
       "informationalUrl": "https://ieps.iscc.codes/iep-0020/",
-      "io.iscc.generator": { "name": "iscc-c2pa-demo", "version": "0.6.0" }
+      "io.iscc.generator": { "name": "iscc-c2pa-demo", "version": "0.7.0" }
     }
   }
 }

@@ -104,7 +104,7 @@ function contentOption(inspection: Inspection): UnitOption {
   };
 }
 
-/** What the Instance-Code will prove after signing (IEP-0020, Source Preservation). */
+/** What the Instance-Code will prove after signing (source preservation). */
 function afterSigning(inspection: Inspection): string {
   if (inspection.manifest) {
     return "This file already has Content Credentials, which signing replaces, so after signing Data-Code and Instance-Code identify this file, not the signed copy.";

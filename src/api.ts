@@ -37,13 +37,13 @@ export interface SoftBindingSummary {
   matches: UnitMatch[];
   error: string | null;
   metadata: BindingMetadata | null;
-  /** Whether the file is source-preserving (IEP-0020); null unless the block decoded as ISCC. */
+  /** Whether the file is source-preserving (the app's own check); null unless the block decoded as ISCC. */
   preservation: Preservation | null;
   /** For part of the asset (a region or a timespan): its units are not compared, and there is no preservation verdict. */
   scoped: boolean;
 }
 
-/** Result of the IEP-0020 Source Preservation check, with the reason when not preserved. */
+/** Result of the app's source preservation check, with the reason when not preserved. */
 export type Preservation =
   | "preserved"
   | "changed"

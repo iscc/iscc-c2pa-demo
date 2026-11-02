@@ -205,7 +205,7 @@ pub struct SoftBindingSummary {
     pub scoped: bool,
 }
 
-/// Whether a signed file is source-preserving (IEP-0020, Source Preservation), with the reason
+/// Whether a signed file is source-preserving (the app's own check), with the reason
 /// when it is not or cannot be told.
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1547,7 +1547,7 @@ fn binding_facts(reader: &Reader, manifest: &Manifest, source_view: bool) -> Bin
     }
 }
 
-/// The Source Preservation check of IEP-0020, with the reason for every result other than
+/// The app's source preservation check, with the reason for every result other than
 /// preserved. `instance_equal` tells whether the embedded Instance-Code equals the one of the
 /// source view, `None` without an embedded Instance-Code. A hard binding that does not match
 /// means the file is not the one the manifest was made for, whatever the Instance-Codes say.

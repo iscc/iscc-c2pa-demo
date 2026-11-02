@@ -252,7 +252,8 @@ the trust list; the tab says so.
 
 ## Notes on the soft binding
 
-The app follows [IEP-0020](https://ieps.iscc.codes/iep-0020/) in full.
+The app writes and checks the ISCC soft binding of [IEP-0020](https://ieps.iscc.codes/iep-0020/), a
+draft.
 
 **What is embedded.** Every unit is computed from the file handed to the signer exactly as it is,
 including any Content Credentials it already carries. These are the units the left panel shows for
@@ -285,10 +286,11 @@ never compared (`iscc::similarity` gives none): the soft binding card shows "not
 featureless code that an earlier version or another tool embedded, and a search neither sends it
 nor scores it.
 
-**Source preservation.** A signed file is *source-preserving* when its *source view* (the file
-without the byte ranges its C2PA data hash excludes) is byte for byte the file that was signed. The
-embedded Instance-Code proves it: the app computes the Instance-Code of the source view and
-compares. The soft binding card shows one of three results:
+**Source preservation.** This check is the app's own, not part of IEP-0020. A signed file is
+*source-preserving* when its *source view* (the file without the byte ranges its C2PA data hash
+excludes) is byte for byte the file that was signed. The embedded Instance-Code proves it: the app
+computes the Instance-Code of the source view and compares. The soft binding card shows one of
+three results:
 
 | Result | When | Formats signed here (c2pa-rs 0.91) |
 |---|---|---|
@@ -305,7 +307,7 @@ c2pa-rs's embeddable API (`Builder::placeholder`, `set_data_hash_exclusions`,
 `update_hash_from_stream`, `sign_embeddable`, then the signed store patched into its place). Every
 update section starts with a single line feed, whatever the source ends with. The exclusion ranges
 of such a file still leave the appended catalog and cross-reference section in the view, so the
-app takes a PDF source view in their place, drafted for IEP-0020: the update section begins with
+app takes a PDF source view of its own in their place: the update section begins with
 the first object after the last `%%EOF` before the manifest store; when the byte before it is a
 line feed and the update section adds nothing but the manifest store (`only_adds_manifest`), the
 source view is every byte before that line feed. The app reads the update section's own
@@ -510,8 +512,8 @@ the app trusts no such signer (see [Stack](#stack)).
 **Why a data hash.** The app keeps c2pa-rs's default hard binding, a data hash, for every format,
 although the specification says JPEG, PNG and GIF *should* use a box hash: c2pa-rs keeps box
 hashes off by default "until BoxHash support is more widely tested", one binding serves all
-formats, and IEP-0020 defines the source view by the data hash's exclusion ranges. A box-hash
-source view (the file without its C2PA box) would be definable; IEP-0020 could add one later.
+formats, and the app defines the source view by the data hash's exclusion ranges. A box-hash
+source view (the file without its C2PA box) would be definable.
 
 **Stripped copies for tests and demos.** Recovery needs a file whose credentials are gone. The app
 is no tool to remove credentials, so this is out of sight: an Alt-click (Option on a Mac) on the

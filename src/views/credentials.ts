@@ -255,7 +255,7 @@ function softBindingCard(m: ManifestSummary, inspection: Inspection, semantic: b
 }
 
 /** True when Data-Code and Instance-Code describe the file as it was before signing rather than
- * this file (IEP-0020: not source-preserving, but the hard binding matches). */
+ * this file (not source-preserving, but the hard binding matches). */
 function describesSource(p: Preservation | null): boolean {
   return p === "changed" || p === "resigned" || p === "no_source_view" || p === "no_instance_code";
 }
@@ -313,7 +313,7 @@ function hashingBlock(m: ManifestSummary, inspection: Inspection): string {
           </div>`;
 }
 
-/** Whether the file is source-preserving (IEP-0020), in one line with its reason. */
+/** Whether the file is source-preserving (the app's own check), in one line with its reason. */
 function preservationBlock(p: Preservation, inspection: Inspection): string {
   const [title, text] = preservationText(p, inspection);
   const state = p === "preserved" ? "preserved" : p === "changed" || p === "resigned" ? "not_preserved" : "not_verifiable";
